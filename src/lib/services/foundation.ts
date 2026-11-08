@@ -99,6 +99,12 @@ export async function getScopedReportsForUser(
       },
     },
     photos: true,
+    parentReport: {
+      select: { id: true, ticketNo: true, status: true },
+    },
+    mergedChildReports: {
+      select: { id: true, ticketNo: true },
+    },
     underWarrantyOfVendor: {
       select: { id: true, name: true },
     },
