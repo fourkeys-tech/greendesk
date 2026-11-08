@@ -25,7 +25,7 @@ export function MasterDataForms({
 }: MasterDataFormsProps) {
   const [activeTab, setActiveTab] = useState<
     "wilayah" | "kategori" | "aset" | null
-  >("aset");
+  >(parks.length === 0 ? "wilayah" : "aset");
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(
     null
   );
@@ -35,11 +35,13 @@ export function MasterDataForms({
   } | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  function runAction(actionFn: (fd: FormData) => Promise<{
-    success?: boolean;
-    message?: string;
-    error?: string;
-  }>) {
+  function runAction(
+    actionFn: (fd: FormData) => Promise<{
+      success?: boolean;
+      message?: string;
+      error?: string;
+    }>
+  ) {
     return (formData: FormData) => {
       setFeedback(null);
       startTransition(async () => {
@@ -62,8 +64,9 @@ export function MasterDataForms({
             Panel Admin Fase 1: Kelola Hierarki Wilayah, Kategori & Aset
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Setiap penambahan dan perubahan data master otomatis divalidasi
-            hierarkinya dan dicatat ke AuditLog.
+            Urutan hierarki wajib: <strong>1. Komplek</strong> →{" "}
+            <strong>2. Cluster</strong> → <strong>3. Taman</strong> →{" "}
+            <strong>4. Kategori</strong> → <strong>5. Aset</strong>.
           </p>
         </div>
 
@@ -79,7 +82,7 @@ export function MasterDataForms({
                 : "bg-slate-100 text-slate-700 hover:bg-slate-200"
             }`}
           >
-            + Komplek / Cluster / Taman
+            1. + Komplek / Cluster / Taman ({parks.length} Taman)
           </button>
           <button
             type="button"
@@ -92,7 +95,7 @@ export function MasterDataForms({
                 : "bg-slate-100 text-slate-700 hover:bg-slate-200"
             }`}
           >
-            Kelola Kategori ({categories.length})
+            2. Kelola Kategori ({categories.length})
           </button>
           <button
             type="button"
@@ -103,7 +106,7 @@ export function MasterDataForms({
                 : "bg-slate-100 text-slate-700 hover:bg-slate-200"
             }`}
           >
-            + Tambah Aset & Buat QR
+            3. + Tambah Aset & Buat QR
           </button>
         </div>
       </div>
@@ -129,7 +132,7 @@ export function MasterDataForms({
             className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs"
           >
             <div className="font-bold text-slate-900 text-sm">
-              1. Tambah Komplek (Tingkat 2)
+              Langkah 1: Tambah Komplek (Tingkat 2)
             </div>
             <div>
               <label className="block font-medium text-slate-700 mb-1">
@@ -170,7 +173,7 @@ export function MasterDataForms({
             className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs"
           >
             <div className="font-bold text-slate-900 text-sm">
-              2. Tambah Cluster (Tingkat 3)
+              Langkah 2: Tambah Cluster (Tingkat 3)
             </div>
             <div>
               <label className="block font-medium text-slate-700 mb-1">
@@ -179,13 +182,20 @@ export function MasterDataForms({
               <select
                 name="complexId"
                 required
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                disabled={complexes.length === 0}
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100"
               >
-                {complexes.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
+                {complexes.length === 0 ? (
+                  <option value="">
+                    -- Buat Komplek di Langkah 1 dulu --
                   </option>
-                ))}
+                ) : (
+                  complexes.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))
+                )}
               </select>
             </div>
             <div>
@@ -196,14 +206,15 @@ export function MasterDataForms({
                 type="text"
                 name="name"
                 required
+                disabled={complexes.length === 0}
                 placeholder="Mis. Cluster Lavender"
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100"
               />
             </div>
             <button
               type="submit"
-              disabled={isPending}
-              className="w-full py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-semibold cursor-pointer"
+              disabled={isPending || complexes.length === 0}
+              className="w-full py-2 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white font-semibold cursor-pointer"
             >
               Simpan Cluster
             </button>
@@ -215,7 +226,7 @@ export function MasterDataForms({
             className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs"
           >
             <div className="font-bold text-slate-900 text-sm">
-              3. Tambah Taman (Tingkat 4)
+              Langkah 3: Tambah Taman (Tingkat 4)
             </div>
             <div>
               <label className="block font-medium text-slate-700 mb-1">
@@ -224,13 +235,20 @@ export function MasterDataForms({
               <select
                 name="clusterId"
                 required
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                disabled={clusters.length === 0}
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100"
               >
-                {clusters.map((cl) => (
-                  <option key={cl.id} value={cl.id}>
-                    {cl.name} ({cl.complexName})
+                {clusters.length === 0 ? (
+                  <option value="">
+                    -- Buat Cluster di Langkah 2 dulu --
                   </option>
-                ))}
+                ) : (
+                  clusters.map((cl) => (
+                    <option key={cl.id} value={cl.id}>
+                      {cl.name} ({cl.complexName})
+                    </option>
+                  ))
+                )}
               </select>
             </div>
             <div>
@@ -241,8 +259,9 @@ export function MasterDataForms({
                 type="text"
                 name="name"
                 required
+                disabled={clusters.length === 0}
                 placeholder="Mis. Taman Bermain Timur"
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100"
               />
             </div>
             <div>
@@ -252,14 +271,15 @@ export function MasterDataForms({
               <input
                 type="text"
                 name="locationNote"
+                disabled={clusters.length === 0}
                 placeholder="Mis. Sebelah Pos Sekuriti Blok B"
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100"
               />
             </div>
             <button
               type="submit"
-              disabled={isPending}
-              className="w-full py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-semibold cursor-pointer"
+              disabled={isPending || clusters.length === 0}
+              className="w-full py-2 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white font-semibold cursor-pointer"
             >
               Simpan Taman
             </button>
@@ -400,136 +420,173 @@ export function MasterDataForms({
 
       {/* TAB 3: TAMBAH ASET BARU (Tingkat 5 Hierarki) */}
       {activeTab === "aset" && (
-        <form
-          action={runAction(createAssetAction)}
-          className="p-4 rounded-xl bg-slate-50 border border-slate-200 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs"
-        >
-          <div className="sm:col-span-2 lg:col-span-3 font-bold text-slate-900 text-sm">
-            Tambah Aset Taman Baru (Otomatis Membuat Tautan QR `/r/&#123;kodeAset&#125;`)
-          </div>
+        <div className="space-y-3">
+          {(parks.length === 0 || categories.length === 0) && (
+            <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-xs text-amber-950 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <strong>Perhatian Hierarki 5 Tingkat:</strong>{" "}
+                {parks.length === 0
+                  ? "Perusahaan yang sedang aktif belum memiliki data Taman (Komplek → Cluster → Taman). Buat Taman terlebih dahulu di Tab 1 agar pilihan Taman muncul."
+                  : "Belum ada Kategori Aset. Buat Kategori terlebih dahulu di Tab 2."}
+              </div>
+              {parks.length === 0 && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("wilayah")}
+                  className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white font-semibold cursor-pointer"
+                >
+                  Buka Tab 1 (+ Komplek / Cluster / Taman) →
+                </button>
+              )}
+            </div>
+          )}
 
-          <div>
-            <label className="block font-medium text-slate-700 mb-1">
-              Kode Aset Unik (Tercetak di Bawah QR)
-            </label>
-            <input
-              type="text"
-              name="code"
-              required
-              placeholder="Mis. AST-BGV-003"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono uppercase"
-            />
-          </div>
+          <form
+            action={runAction(createAssetAction)}
+            className="p-4 rounded-xl bg-slate-50 border border-slate-200 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs"
+          >
+            <div className="sm:col-span-2 lg:col-span-3 font-bold text-slate-900 text-sm">
+              Tambah Aset Taman Baru (Otomatis Membuat Tautan QR `/r/&#123;kodeAset&#125;`)
+            </div>
 
-          <div>
-            <label className="block font-medium text-slate-700 mb-1">
-              Nama Aset
-            </label>
-            <input
-              type="text"
-              name="name"
-              required
-              placeholder="Mis. Perosotan Spiral Anak"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
-            />
-          </div>
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">
+                Kode Aset Unik (Tercetak di Bawah QR)
+              </label>
+              <input
+                type="text"
+                name="code"
+                required
+                placeholder="Mis. AST-BGV-003"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono uppercase"
+              />
+            </div>
 
-          <div>
-            <label className="block font-medium text-slate-700 mb-1">
-              Pilih Taman Induk (Wajib)
-            </label>
-            <select
-              name="parkId"
-              required
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
-            >
-              {parks.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.clusterName})
-                </option>
-              ))}
-            </select>
-          </div>
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">
+                Nama Aset
+              </label>
+              <input
+                type="text"
+                name="name"
+                required
+                placeholder="Mis. Perosotan Spiral Anak"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+              />
+            </div>
 
-          <div>
-            <label className="block font-medium text-slate-700 mb-1">
-              Kategori Aset (Wajib)
-            </label>
-            <select
-              name="categoryId"
-              required
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
-            >
-              {categories.map((cat) => (
-                <option key={cat.id} value={cat.id}>
-                  {cat.name}
-                </option>
-              ))}
-            </select>
-          </div>
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">
+                Pilih Taman Induk (Wajib)
+              </label>
+              <select
+                name="parkId"
+                required
+                disabled={parks.length === 0}
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100"
+              >
+                {parks.length === 0 ? (
+                  <option value="">
+                    -- Belum ada Taman (Buat di Tab 1 dulu) --
+                  </option>
+                ) : (
+                  parks.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({p.clusterName})
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
 
-          <div>
-            <label className="block font-medium text-slate-700 mb-1">
-              Titik Lokasi Spesifik
-            </label>
-            <input
-              type="text"
-              name="locationNote"
-              placeholder="Mis. Sebelah Timur Kolam Ikan"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
-            />
-          </div>
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">
+                Kategori Aset (Wajib)
+              </label>
+              <select
+                name="categoryId"
+                required
+                disabled={categories.length === 0}
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100"
+              >
+                {categories.length === 0 ? (
+                  <option value="">
+                    -- Belum ada Kategori (Buat di Tab 2 dulu) --
+                  </option>
+                ) : (
+                  categories.map((cat) => (
+                    <option key={cat.id} value={cat.id}>
+                      {cat.name}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
 
-          <div>
-            <label className="block font-medium text-slate-700 mb-1">
-              Tanggal Pasang
-            </label>
-            <input
-              type="date"
-              name="installedAt"
-              defaultValue="2026-11-08"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
-            />
-          </div>
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">
+                Titik Lokasi Spesifik
+              </label>
+              <input
+                type="text"
+                name="locationNote"
+                placeholder="Mis. Sebelah Timur Kolam Ikan"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+              />
+            </div>
 
-          <div>
-            <label className="block font-medium text-slate-700 mb-1">
-              Foto Aset (Opsional, maks 5 MB)
-            </label>
-            <input
-              type="file"
-              name="photo"
-              accept="image/jpeg,image/png,image/webp"
-              className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5"
-            />
-          </div>
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">
+                Tanggal Pasang
+              </label>
+              <input
+                type="date"
+                name="installedAt"
+                defaultValue="2026-11-08"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+              />
+            </div>
 
-          <div>
-            <label className="block font-medium text-slate-700 mb-1">
-              Status Awal Aset
-            </label>
-            <select
-              name="isActive"
-              defaultValue="true"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
-            >
-              <option value="true">Aktif (Menerima Laporan QR)</option>
-              <option value="false">Nonaktif (Tidak Bisa Dilaporkan)</option>
-            </select>
-          </div>
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">
+                Foto Aset (Opsional, maks 5 MB)
+              </label>
+              <input
+                type="file"
+                name="photo"
+                accept="image/jpeg,image/png,image/webp"
+                className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5"
+              />
+            </div>
 
-          <div className="flex items-end">
-            <button
-              type="submit"
-              disabled={isPending}
-              className="w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold cursor-pointer"
-            >
-              {isPending ? "Menyimpan..." : "Simpan Aset & Buat QR"}
-            </button>
-          </div>
-        </form>
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">
+                Status Awal Aset
+              </label>
+              <select
+                name="isActive"
+                defaultValue="true"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+              >
+                <option value="true">Aktif (Menerima Laporan QR)</option>
+                <option value="false">Nonaktif (Tidak Bisa Dilaporkan)</option>
+              </select>
+            </div>
+
+            <div className="flex items-end">
+              <button
+                type="submit"
+                disabled={
+                  isPending || parks.length === 0 || categories.length === 0
+                }
+                className="w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold cursor-pointer"
+              >
+                {isPending ? "Menyimpan..." : "Simpan Aset & Buat QR"}
+              </button>
+            </div>
+          </form>
+        </div>
       )}
     </div>
   );
 }
-
