@@ -1,6 +1,6 @@
 import React from "react";
 import Link from "next/link";
-import { CheckSquare, Wrench, CheckCircle2, Clock, ArrowRight, Building2, AlertTriangle } from "lucide-react";
+import { CheckSquare, Wrench, CheckCircle2, Clock, ArrowRight, Building2 } from "lucide-react";
 import { StatusBadge, PriorityBadge } from "@/components/dashboard/status-badge";
 import type { SessionPayload } from "@/lib/auth";
 

@@ -1,6 +1,6 @@
 import React from "react";
 import Link from "next/link";
-import { BarChart3, Building2, CheckCircle2, Clock, Layers, ArrowRight, ShieldCheck } from "lucide-react";
+import { BarChart3, Building2, CheckCircle2, Clock, Layers, ArrowRight } from "lucide-react";
 import { StatusBadge } from "@/components/dashboard/status-badge";
 import type { SessionPayload } from "@/lib/auth";
 

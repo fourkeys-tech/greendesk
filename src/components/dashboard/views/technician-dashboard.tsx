@@ -1,6 +1,6 @@
 import React from "react";
 import Link from "next/link";
-import { Hammer, CheckCircle2, Clock, UserCheck, ArrowRight, ShieldAlert } from "lucide-react";
+import { Hammer, CheckCircle2, Clock, UserCheck, ArrowRight } from "lucide-react";
 import { StatusBadge, PriorityBadge } from "@/components/dashboard/status-badge";
 import type { SessionPayload } from "@/lib/auth";
 
@@ -26,7 +26,7 @@ export function TechnicianDashboard({
             <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-orange-100 text-orange-800 border border-orange-300">
               Teknisi Lapangan
             </span>
-            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+            <span className="text-xs font-medium px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
               Privasi Pelapor Terlindungi
             </span>
           </div>
