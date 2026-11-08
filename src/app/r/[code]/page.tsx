@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
+import { getCurrentSession } from "@/lib/auth";
 import { TERMINAL_REPORT_STATUSES } from "@/lib/permissions";
+import { QrReportClientForm } from "./qr-report-client";
 
 export default async function QrAssetShortlinkPage({
   params,
@@ -11,27 +13,30 @@ export default async function QrAssetShortlinkPage({
   const { code } = await params;
   const decodedCode = decodeURIComponent(code).toUpperCase();
 
-  const asset = await prisma.asset.findUnique({
-    where: { code: decodedCode },
-    include: {
-      category: true,
-      park: {
-        include: {
-          cluster: {
-            include: {
-              complex: {
-                include: { company: true },
+  const [asset, session] = await Promise.all([
+    prisma.asset.findUnique({
+      where: { code: decodedCode },
+      include: {
+        category: true,
+        park: {
+          include: {
+            cluster: {
+              include: {
+                complex: {
+                  include: { company: true },
+                },
               },
             },
           },
         },
+        reports: {
+          orderBy: { createdAt: "desc" },
+          take: 10,
+        },
       },
-      reports: {
-        orderBy: { createdAt: "desc" },
-        take: 10,
-      },
-    },
-  });
+    }),
+    getCurrentSession(),
+  ]);
 
   if (!asset) {
     notFound();
@@ -55,7 +60,7 @@ export default async function QrAssetShortlinkPage({
         <div className="bg-emerald-950 text-white rounded-2xl p-5 shadow-sm">
           <div className="flex items-center justify-between gap-2 mb-2">
             <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-400/30 text-emerald-300">
-              Tautan Pendek QR Aset
+              Fase 3 – Pelaporan QR Tanpa Login Awal
             </span>
             <span className="font-mono text-xs font-bold bg-white/10 px-2.5 py-0.5 rounded">
               {asset.code}
@@ -72,7 +77,7 @@ export default async function QrAssetShortlinkPage({
           </p>
         </div>
 
-        {/* Kriteria Penerimaan Fase 1: Aset Nonaktif Tidak Bisa Dilaporkan */}
+        {/* Kriteria Penerimaan Fase 1 & 3: Aset Nonaktif Tidak Bisa Dilaporkan */}
         {!asset.isActive ? (
           <div className="bg-rose-50 border-2 border-rose-300 rounded-2xl p-6 text-rose-900 space-y-2">
             <div className="text-sm font-extrabold uppercase tracking-wide text-rose-700">
@@ -138,68 +143,17 @@ export default async function QrAssetShortlinkPage({
               </div>
             )}
 
-            {/* Form Pelaporan dengan Aset & Lokasi Terisi Otomatis */}
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
-              <div>
-                <h2 className="text-base font-bold text-slate-900">
-                  Formulir Laporan Kerusakan Aset
-                </h2>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Aset dan lokasi telah terisi otomatis dari hasil pindaian QR.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                  <div className="text-slate-400 font-medium">
-                    Aset Terpilih (Otomatis)
-                  </div>
-                  <div className="font-bold text-slate-900 mt-0.5">
-                    {asset.code} – {asset.name}
-                  </div>
-                </div>
-                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                  <div className="text-slate-400 font-medium">
-                    Cluster & Taman (Otomatis)
-                  </div>
-                  <div className="font-bold text-slate-900 mt-0.5">
-                    {asset.park.cluster.name} – {asset.park.name}
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Jenis Kerusakan Umum ({asset.category.name})
-                </label>
-                <div className="flex flex-wrap gap-1.5">
-                  {asset.category.damageTypes.map((dt) => (
-                    <span
-                      key={dt}
-                      className="px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-medium"
-                    >
-                      {dt}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              <div className="pt-2 border-t border-slate-200 flex items-center justify-between">
-                <Link
-                  href="/dashboard/wilayah"
-                  className="text-xs font-semibold text-slate-600 hover:text-slate-900"
-                >
-                  ← Kembali ke Data Wilayah & Aset
-                </Link>
-                <span className="text-xs font-medium text-emerald-700">
-                  ✓ Terhubung ke Aset {asset.code}
-                </span>
-              </div>
-            </div>
+            {/* Komponen Form QR Interaktif dengan IndexedDB Draft & 3 Pilihan Login */}
+            <QrReportClientForm
+              assetCode={asset.code}
+              assetName={asset.name}
+              companyId={asset.companyId}
+              damageTypes={asset.category.damageTypes}
+              initialUser={session}
+            />
           </>
         )}
       </div>
     </div>
   );
 }
-

@@ -1,7 +1,9 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentSession } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
+import { ManualReportForm } from "./manual-report-form";
 
 export default async function BuatLaporanPage() {
   const session = await getCurrentSession();
@@ -30,44 +32,38 @@ export default async function BuatLaporanPage() {
 
   return (
     <div className="space-y-6">
-      <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs">
-        <span className="inline-block text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 mb-2">
-          Akses Khusus Role PENGGUNA
-        </span>
-        <h1 className="text-xl font-bold text-slate-900">
-          Buat Laporan Kerusakan Fasilitas Taman
-        </h1>
-        <p className="text-xs sm:text-sm text-slate-600 mt-1">
-          Kerangka form pelaporan telah siap di Fase 0. Alur QR penuh + draft
-          IndexedDB tanpa login akan diaktifkan di Fase 3 sesuai urutan rencana
-          PRD.
-        </p>
-      </div>
-
-      <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4">
-        <h2 className="text-sm font-bold text-slate-900">
-          Daftar Aset Taman Aktif yang Dapat Dilaporkan ({assets.length} Aset)
-        </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {assets.map((asset) => (
-            <div
-              key={asset.id}
-              className="rounded-xl border border-slate-200 p-4 bg-slate-50/70"
+      <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <span className="inline-block text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 mb-2">
+            Fase 3 – Pelaporan Kerusakan (QR & Dashboard Manual)
+          </span>
+          <h1 className="text-xl font-bold text-slate-900">
+            Buat Laporan Kerusakan Fasilitas Taman
+          </h1>
+          <p className="text-xs sm:text-sm text-slate-600 mt-1">
+            Anda dapat melapor dengan memilih aset secara manual di bawah ini,
+            atau memindai langsung QR pada aset (mis.{" "}
+            <Link
+              href="/r/AST-BGV-001"
+              className="text-emerald-700 font-semibold underline"
             >
-              <div className="font-mono text-xs font-bold text-emerald-800">
-                {asset.code}
-              </div>
-              <div className="font-bold text-sm text-slate-900 mt-0.5">
-                {asset.name}
-              </div>
-              <div className="text-xs text-slate-600 mt-0.5">
-                {asset.park.name} ({asset.park.cluster.name})
-              </div>
-            </div>
-          ))}
+              /r/AST-BGV-001
+            </Link>
+            ).
+          </p>
         </div>
       </div>
+
+      <ManualReportForm
+        assets={assets.map((a) => ({
+          code: a.code,
+          name: a.name,
+          parkName: a.park.name,
+          clusterName: a.park.cluster.name,
+          categoryName: a.category.name,
+          damageTypes: a.category.damageTypes,
+        }))}
+      />
     </div>
   );
 }
-

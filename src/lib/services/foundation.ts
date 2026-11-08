@@ -41,6 +41,7 @@ export async function getScopedReportsForUser(
         stageEnteredAt: true,
         createdAt: true,
         archivedAt: true,
+        photos: true,
         asset: {
           select: {
             code: true,
@@ -96,6 +97,10 @@ export async function getScopedReportsForUser(
         vendor: true,
         technician: true,
       },
+    },
+    photos: true,
+    underWarrantyOfVendor: {
+      select: { id: true, name: true },
     },
   };
 
