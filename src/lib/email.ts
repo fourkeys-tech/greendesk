@@ -155,3 +155,57 @@ export async function sendReportStatusEmail(params: {
   });
 }
 
+/**
+ * Mengirim email status laporan ke pelapor utama SEKALIGUS ke seluruh pelapor
+ * yang laporannya digabung (DIGABUNG) ke laporan induk ini (PRD Bagian 6 Fase 4 & Bagian 8).
+ */
+export async function sendReportStatusEmailWithMergedChildren(params: {
+  reportId: string;
+  triggerType: Exclude<EmailTriggerType, "OTP_LOGIN" | "VENDOR_INVITE">;
+  reason?: string | null;
+  afterPhotoUrls?: string[];
+}) {
+  const report = await prisma.report.findUnique({
+    where: { id: params.reportId },
+    include: {
+      asset: true,
+      reporter: { select: { name: true, email: true } },
+      mergedChildReports: {
+        include: {
+          reporter: { select: { name: true, email: true } },
+        },
+      },
+    },
+  });
+
+  if (!report) return;
+
+  const assetLabel = `${report.asset.name} (${report.asset.code})`;
+
+  // 1. Kirim ke pelapor laporan induk
+  await sendReportStatusEmail({
+    companyId: report.companyId,
+    toEmail: report.reporter.email,
+    reporterName: report.reporter.name,
+    ticketNo: report.ticketNo,
+    assetName: assetLabel,
+    triggerType: params.triggerType,
+    reason: params.reason,
+    afterPhotoUrls: params.afterPhotoUrls,
+  });
+
+  // 2. Kirim ke seluruh pelapor dari laporan anak yang digabung (DIGABUNG)
+  for (const child of report.mergedChildReports) {
+    await sendReportStatusEmail({
+      companyId: report.companyId,
+      toEmail: child.reporter.email,
+      reporterName: child.reporter.name,
+      ticketNo: `${child.ticketNo} (Induk: ${report.ticketNo})`,
+      assetName: assetLabel,
+      triggerType: params.triggerType,
+      reason: params.reason,
+      afterPhotoUrls: params.afterPhotoUrls,
+    });
+  }
+}
+

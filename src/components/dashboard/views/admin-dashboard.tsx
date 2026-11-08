@@ -1,6 +1,6 @@
 import React from "react";
 import Link from "next/link";
-import { Layers, Building2, Users, History, QrCode, Shield, Eye } from "lucide-react";
+import { Layers, Building2, Users, History, QrCode, Shield, ArrowRight, Eye } from "lucide-react";
 import type { SessionPayload } from "@/lib/auth";
 
 interface AdminDashboardProps {

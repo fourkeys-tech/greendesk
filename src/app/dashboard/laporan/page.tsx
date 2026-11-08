@@ -5,6 +5,7 @@ import { getReportViewScope, hasPermission } from "@/lib/permissions";
 import { getScopedReportsForUser } from "@/lib/services/foundation";
 import { ArchiveReportButton } from "./archive-button";
 import { CancelReportButton } from "./cancel-report-button";
+import { PengelolaVerificationPanel } from "./pengelola-verification-panel";
 
 export default async function LaporanPage({
   searchParams,
@@ -23,16 +24,24 @@ export default async function LaporanPage({
 
   const scope = getReportViewScope(session.role);
   const canArchive = hasPermission(session.role, "ARCHIVE_REPORT");
+  const canVerify = hasPermission(session.role, "VERIFY_AND_PRIORITIZE");
+
+  const baruCount = reports.filter((r) => r.status === "BARU").length;
 
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex flex-wrap items-center gap-2 mb-2">
               <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
                 Cakupan Role {session.role}: {scope}
               </span>
+              {canVerify && (
+                <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-sky-100 text-sky-900 border border-sky-300">
+                  Fase 4 – Antrean Laporan Baru Menunggu Verifikasi: {baruCount}
+                </span>
+              )}
               {session.role === "TEKNISI" && (
                 <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
                   Privasi Aktif: Identitas Pelapor Disembunyikan di Query DB
@@ -47,10 +56,14 @@ export default async function LaporanPage({
             <h1 className="text-xl font-bold text-slate-900">
               {showArchived
                 ? "Arsip Laporan Kerusakan (archivedAt != null)"
+                : session.role === "PENGELOLA"
+                ? "Antrean Verifikasi Laporan Cluster Saya"
                 : "Daftar & Riwayat Laporan Kerusakan"}
             </h1>
             <p className="text-xs sm:text-sm text-slate-600 mt-1">
-              {session.role === "PENGGUNA"
+              {session.role === "PENGELOLA"
+                ? "Saring laporan BARU di cluster Anda: nyatakan Valid + tetapkan prioritas (Tinggi/Normal/Rendah), tandai Tidak Valid dengan alasan wajib, atau gabungkan laporan ganda."
+                : session.role === "PENGGUNA"
                 ? "Pantau status laporan Anda. Laporan hanya dapat dibatalkan selama statusnya masih BARU."
                 : "Sesuai PRD, laporan tidak pernah dihapus permanen. Query default menyembunyikan laporan yang diarsipkan."}
             </p>
@@ -101,6 +114,27 @@ export default async function LaporanPage({
               "underWarrantyOfVendor" in report
                 ? report.underWarrantyOfVendor
                 : null;
+            const parentReport =
+              "parentReport" in report ? report.parentReport : null;
+            const mergedChildren =
+              "mergedChildReports" in report ? report.mergedChildReports : [];
+
+            // Kandidat laporan induk untuk aset yang sama (saat Pengelola ingin menggabungkan laporan)
+            const candidateParents = reports
+              .filter(
+                (r) =>
+                  r.id !== report.id &&
+                  r.asset.code === report.asset.code &&
+                  r.status !== "DIGABUNG" &&
+                  r.status !== "TIDAK_VALID" &&
+                  r.status !== "DIBATALKAN"
+              )
+              .map((r) => ({
+                id: r.id,
+                ticketNo: r.ticketNo,
+                status: r.status,
+                description: r.description,
+              }));
 
             return (
               <div
@@ -125,14 +159,13 @@ export default async function LaporanPage({
                         🛡️ Masih Dalam Garansi Vendor ({warrantyVendor.name})
                       </span>
                     )}
-                    <span className="text-xs text-slate-500">
-                      Saluran: {report.channel} · {daysInStage} hari di tahap
-                      ini
+                    <span className="text-xs font-medium px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700">
+                      ⏱️ {daysInStage} hari di tahap {report.status} · Saluran:{" "}
+                      {report.channel}
                     </span>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {/* Pengguna dapat membatalkan laporannya sendiri hanya selama status BARU */}
                     {session.role === "PENGGUNA" &&
                       report.status === "BARU" && (
                         <CancelReportButton reportId={report.id} />
@@ -160,6 +193,32 @@ export default async function LaporanPage({
                 <p className="text-sm text-slate-700 bg-slate-50 rounded-xl p-3 border border-slate-200/80">
                   {report.description}
                 </p>
+
+                {report.reason && (
+                  <div className="text-xs p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-950">
+                    <strong>Alasan / Catatan:</strong> {report.reason}
+                  </div>
+                )}
+
+                {parentReport && (
+                  <div className="text-xs p-2.5 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-950">
+                    🔗 Laporan ini digabung ke Laporan Induk:{" "}
+                    <strong className="font-mono">
+                      {parentReport.ticketNo}
+                    </strong>{" "}
+                    (Status Induk: <strong>{parentReport.status}</strong>)
+                  </div>
+                )}
+
+                {mergedChildren && mergedChildren.length > 0 && (
+                  <div className="text-xs p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-950">
+                    📌 Laporan Induk dari {mergedChildren.length} laporan
+                    gabungan:{" "}
+                    <strong className="font-mono">
+                      {mergedChildren.map((c) => c.ticketNo).join(", ")}
+                    </strong>
+                  </div>
+                )}
 
                 {report.photos && report.photos.length > 0 && (
                   <div className="flex flex-wrap gap-2 pt-1">
@@ -196,6 +255,16 @@ export default async function LaporanPage({
                     </div>
                   )}
                 </div>
+
+                {/* Panel Verifikasi Pengelola (Hanya muncul untuk PENGELOLA pada laporan berstatus BARU) */}
+                {canVerify && report.status === "BARU" && (
+                  <PengelolaVerificationPanel
+                    reportId={report.id}
+                    ticketNo={report.ticketNo}
+                    assetCode={report.asset.code}
+                    candidateParentReports={candidateParents}
+                  />
+                )}
               </div>
             );
           })
