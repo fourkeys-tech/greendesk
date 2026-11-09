@@ -1,11 +1,14 @@
 "use client";
 
-import { use } from "react";
+import { use, useState, useEffect } from "react";
 import Link from "next/link";
 import {
   ChevronLeft,
   Armchair,
-  CheckCircle2
+  CheckCircle2,
+  Mail,
+  User as UserIcon,
+  Wrench
 } from "lucide-react";
 import { MobileContainer } from "@/components/MobileContainer";
 import { mockReports, mockStatusLogs } from "@/data/mock-park-data";
@@ -20,6 +23,32 @@ export default function ReportDetailPage({ params }: PageProps) {
   const report =
     mockReports.find((r) => r.id === resolvedParams.id || r.ticketNo === resolvedParams.id) ||
     mockReports[0];
+
+  const [reporterUser, setReporterUser] = useState(report.reporter);
+
+  const technician = {
+    name: "Budi Santoso",
+    email: "teknisi.budi@vendorjaya.id",
+    company: "PT Teknik Taman Jaya",
+    avatarUrl: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150",
+  };
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("greendesk_user");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed?.name || parsed?.email) {
+          setReporterUser((prev) => ({
+            ...prev,
+            name: parsed.name || prev.name,
+            email: parsed.email || prev.email,
+            avatarUrl: parsed.avatarUrl || prev.avatarUrl,
+          }));
+        }
+      }
+    } catch {}
+  }, []);
 
   const getStepState = (currentStatus: ReportStatus) => {
     switch (currentStatus) {
@@ -38,7 +67,7 @@ export default function ReportDetailPage({ params }: PageProps) {
   const activeStep = getStepState(report.status);
 
   return (
-    <MobileContainer className="bg-slate-50 pb-8">
+    <MobileContainer className="bg-[#F6F5F0] pb-8">
       <header className="p-4 bg-white border-b border-slate-100 sticky top-0 z-30 flex items-center justify-between">
         <Link
           href="/reports"
@@ -123,6 +152,34 @@ export default function ReportDetailPage({ params }: PageProps) {
           </div>
         </section>
 
+        <section className="card bg-white border border-slate-200/80 rounded-2xl p-4 shadow-sm">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">
+            Profil Pelapor
+          </h3>
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-full overflow-hidden bg-slate-200 flex items-center justify-center shrink-0 border border-slate-200">
+              {reporterUser.avatarUrl ? (
+                <img
+                  src={reporterUser.avatarUrl}
+                  alt={reporterUser.name}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <UserIcon className="w-6 h-6 text-slate-500" />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <h4 className="text-sm font-bold text-slate-900 leading-tight truncate">
+                {reporterUser.name}
+              </h4>
+              <p className="text-xs text-slate-500 mt-0.5 truncate flex items-center gap-1.5">
+                <Mail className="w-3.5 h-3.5 text-slate-400" />
+                <span>{reporterUser.email}</span>
+              </p>
+            </div>
+          </div>
+        </section>
+
         <section className="card bg-white border border-slate-200/80 rounded-2xl p-4 shadow-sm space-y-3">
           <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
             Deskripsi Kerusakan
@@ -150,6 +207,78 @@ export default function ReportDetailPage({ params }: PageProps) {
               ))}
             </div>
           </div>
+        </section>
+
+        <section className="card bg-white border border-slate-200/80 rounded-2xl p-4 shadow-sm space-y-3.5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              Laporan Setelah Diperbaiki
+            </h3>
+            {report.status === "SELESAI" ? (
+              <span className="badge badge-success text-[10px] font-semibold">
+                Perbaikan Selesai
+              </span>
+            ) : (
+              <span className="badge badge-warning text-[10px] font-semibold">
+                Sedang Dikerjakan
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
+            <div className="w-11 h-11 rounded-full overflow-hidden bg-slate-200 flex items-center justify-center shrink-0 border border-slate-200">
+              <img
+                src={technician.avatarUrl}
+                alt={technician.name}
+                className="w-full h-full object-cover"
+              />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
+                  Teknisi yang Mengerjakan
+                </span>
+                <span className="text-[10px] font-semibold text-slate-400">
+                  {technician.company}
+                </span>
+              </div>
+              <h4 className="text-xs font-bold text-slate-900 leading-tight mt-0.5 truncate">
+                {technician.name}
+              </h4>
+              <p className="text-[11px] text-slate-500 truncate flex items-center gap-1.5 mt-0.5">
+                <Mail className="w-3 h-3 text-slate-400 shrink-0" />
+                <span>{technician.email}</span>
+              </p>
+            </div>
+          </div>
+
+          {report.status === "SELESAI" ? (
+            <>
+              <div className="rounded-xl overflow-hidden border border-slate-200 h-44 bg-slate-100 shadow-sm">
+                <img
+                  src="https://images.unsplash.com/photo-1517457373958-b7bdd4587205?w=800"
+                  alt="Foto Setelah Diperbaiki"
+                  className="w-full h-full object-cover"
+                />
+              </div>
+
+              <p className="text-xs text-slate-700 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100">
+                Fasilitas taman telah selesai diperbaiki oleh teknisi lapangan. Struktur telah diperkuat, komponen yang longgar telah dikencangkan kembali, dan pembersihan menyeluruh telah dilakukan sehingga aman digunakan kembali oleh warga.
+              </p>
+            </>
+          ) : (
+            <div className="flex flex-col items-center justify-center p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
+              <div className="w-12 h-12 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center mb-2.5">
+                <Wrench className="w-6 h-6" />
+              </div>
+              <span className="text-xs font-bold text-slate-800">
+                Sedang dalam perbaikan
+              </span>
+              <p className="text-[11px] text-slate-500 mt-1 max-w-xs leading-relaxed">
+                Teknisi sedang menangani perbaikan fasilitas ini. Foto dan catatan hasil pekerjaan akan diperbarui saat perbaikan telah selesai.
+              </p>
+            </div>
+          )}
         </section>
 
         <section className="card bg-white border border-slate-200/80 rounded-2xl p-4 shadow-sm">

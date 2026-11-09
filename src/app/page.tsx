@@ -1,65 +1,57 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
-import { Megaphone } from "lucide-react";
+import { ArrowRight, BookOpen, Megaphone, X } from "lucide-react";
 import { MobileContainer } from "@/components/MobileContainer";
 
-function Leaf({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 100 100" className={className} fill="currentColor" aria-hidden>
-      <path d="M95 5C55 5 15 30 8 72c-1 8 0 15 2 20 5-3 12-6 20-8C65 78 92 45 95 5Z" />
-    </svg>
-  );
-}
+const MASK_SRC = "/images/maskgroup.png";
 
 export default function WelcomePage() {
+  const [isGuideOpen, setIsGuideOpen] = useState(false);
+
   return (
-    <MobileContainer className="bg-[#f6f4ee] justify-between overflow-hidden">
-      <div className="absolute top-0 right-0 w-44 h-44 pointer-events-none select-none text-[#cfe5d3]">
-        <Leaf className="absolute -top-6 -right-6 w-36 h-36 opacity-70 rotate-[20deg]" />
-        <Leaf className="absolute top-8 right-14 w-20 h-20 opacity-50 -rotate-[10deg]" />
-      </div>
-
-      <div className="absolute bottom-20 -left-6 w-32 h-40 pointer-events-none select-none text-[#cfe5d3]">
-        <Leaf className="absolute bottom-0 left-0 w-28 h-28 opacity-60 rotate-[200deg]" />
-        <Leaf className="absolute bottom-10 left-6 w-16 h-16 opacity-40 rotate-[160deg]" />
-      </div>
-
-      <div className="absolute bottom-16 right-0 w-20 h-20 pointer-events-none select-none text-[#9fd1ab]">
-        <Leaf className="absolute bottom-0 right-0 w-16 h-16 opacity-70 rotate-[-30deg]" />
-      </div>
-
-      <main className="relative z-10 px-6 pt-10 pb-6 flex-1 flex flex-col justify-between">
+    <MobileContainer className="bg-[#F6F5F0] justify-between overflow-hidden">
+      <main className="relative z-10 flex-1 flex flex-col justify-between px-6 pt-8 pb-6">
         <div>
-          <span className="block text-[15px] font-medium text-slate-900">
+          <span className="block text-[22px] font-medium text-slate-900 leading-tight">
             Selamat Datang di
           </span>
-          <h1 className="text-[40px] font-extrabold text-[#1b5e45] tracking-tight leading-none mt-1">
+          <h1 className="text-[48px] font-extrabold text-[#1b5e45] tracking-tight leading-none mt-1">
             GreenDesk
           </h1>
-          <h2 className="text-[22px] font-semibold text-[#1f7a55] leading-tight mt-2">
+          <h2 className="text-[22px] font-medium text-[#1f7a55] leading-tight mt-3">
             Mari Jaga Taman
             <br />
             Tetap Nyaman.
           </h2>
-          <p className="text-[10px] text-slate-500 max-w-[260px] leading-relaxed mt-3">
+          <p className="text-[11px] text-slate-500 max-w-[290px] leading-relaxed mt-3">
             Temukan fasilitas taman yang rusak? Laporkan dengan mudah melalui
             GreenDesk dan pantau proses perbaikannya hingga selesai.
           </p>
         </div>
 
-        <div className="flex-1 flex items-center justify-center py-2">
+        <div className="flex-1 flex items-center justify-center py-4">
           <img
             src="/images/Kursi%20Taman.png"
             alt="Ilustrasi Fasilitas Taman"
-            className="w-full max-w-[300px] h-auto object-contain select-none pointer-events-none"
+            className="w-full max-w-[340px] h-auto object-contain select-none pointer-events-none"
           />
         </div>
 
         <div className="space-y-3">
-          <div className="flex items-center gap-3 rounded-2xl bg-[#d9f0e2] px-4 py-3 shadow-[0_4px_12px_rgba(0,0,0,0.08)]">
+          <div className="relative overflow-hidden flex items-center gap-3 rounded-3xl bg-[#d9f0e2] px-4 py-5 shadow-[0_4px_12px_rgba(0,0,0,0.08)]">
+            <img
+              src={MASK_SRC}
+              alt=""
+              aria-hidden
+              className="absolute inset-0 w-full h-full object-fill -scale-x-100 pointer-events-none select-none"
+            />
             <div className="relative w-11 h-11 shrink-0 flex items-center justify-center">
-              <Megaphone className="w-8 h-8 text-[#1b5e45] fill-[#1b5e45]/90" strokeWidth={1.5} />
+              <Megaphone
+                className="w-9 h-9 text-[#1b5e45] fill-[#1b5e45]/90"
+                strokeWidth={1.5}
+              />
               <svg
                 viewBox="0 0 24 24"
                 className="absolute -top-1 right-0 w-5 h-5 text-[#f5b800]"
@@ -72,11 +64,11 @@ export default function WelcomePage() {
                 <path d="M12 3v4M18 6l-2.5 2.5M21 12h-4" />
               </svg>
             </div>
-            <div className="min-w-0 flex-1">
-              <h3 className="text-[13px] font-bold text-slate-900 leading-tight">
+            <div className="relative min-w-0 flex-1 pr-10">
+              <h3 className="text-[14px] font-bold text-slate-900 leading-tight">
                 Bersama Menjaga Taman
               </h3>
-              <p className="text-[10px] text-slate-800 leading-snug mt-0.5">
+              <p className="text-[11px] text-slate-800 leading-snug mt-0.5">
                 Laporkan, Dukung, dan Bantu Kami Merawat Fasilitas Taman.
               </p>
             </div>
@@ -84,12 +76,123 @@ export default function WelcomePage() {
 
           <Link
             href="/beranda"
-            className="w-full py-3.5 rounded-2xl bg-[#1b5e45] hover:bg-[#154a36] text-white font-bold text-sm shadow-lg shadow-[#1b5e45]/20 flex items-center justify-center gap-1 transition-transform active:scale-[0.98]"
+            className="relative overflow-hidden w-full h-[64px] rounded-3xl bg-white text-[#1b5e45] font-bold text-[22px] shadow-[0_4px_14px_rgba(0,0,0,0.10)] flex items-center justify-center transition-transform active:scale-[0.98]"
           >
-            <span>Mulai &gt;</span>
+            <img
+              src={MASK_SRC}
+              alt=""
+              aria-hidden
+              className="absolute inset-0 w-full h-full object-fill pointer-events-none select-none"
+            />
+            <span className="relative">Mulai</span>
           </Link>
+
+          <button
+            type="button"
+            onClick={() => setIsGuideOpen(true)}
+            className="w-full rounded-3xl bg-white px-5 py-3.5 shadow-[0_4px_14px_rgba(0,0,0,0.10)] flex items-center gap-4 transition-transform active:scale-[0.98] text-left"
+          >
+            <BookOpen className="w-9 h-9 text-[#1b5e45] shrink-0" strokeWidth={1.5} />
+            <div className="min-w-0 flex-1">
+              <h3 className="text-[14px] font-bold text-[#1b5e45] leading-tight">
+                Panduan
+              </h3>
+              <p className="text-[11px] text-slate-800 leading-snug mt-0.5">
+                Pelajari Cara Menggunakan Aplikasi
+              </p>
+            </div>
+            <ArrowRight className="w-5 h-5 text-[#1b5e45] shrink-0" />
+          </button>
         </div>
       </main>
+
+      {isGuideOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-5 shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-[#1b5e45]/10 text-[#1b5e45] flex items-center justify-center">
+                  <BookOpen className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 leading-tight">
+                    Panduan Pelaporan
+                  </h3>
+                  <p className="text-[11px] text-slate-500">Langkah mudah melaporkan fasilitas</p>
+                </div>
+              </div>
+              {/* <button
+                type="button"
+                onClick={() => setIsGuideOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 hover:bg-slate-200 transition-colors"
+                aria-label="Tutup"
+              >
+                <X className="w-4 h-4" />
+              </button> */}
+            </div>
+
+            <div className="space-y-3 text-xs text-slate-700 leading-relaxed max-h-[60vh] overflow-y-auto pr-1">
+              <div className="flex items-start gap-3 p-2.5 rounded-xl bg-[#F6F5F0]">
+                <div className="w-6 h-6 rounded-full bg-[#1b5e45] text-white flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
+                  1
+                </div>
+                <div>
+                  <h4 className="font-bold text-slate-900 text-xs">Temukan Fasilitas Rusak</h4>
+                  <p className="text-[11px] text-slate-600 mt-0.5">
+                    Cari kode atau stiker QR Code yang tertera pada fasilitas taman yang membutuhkan perbaikan.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3 p-2.5 rounded-xl bg-[#F6F5F0]">
+                <div className="w-6 h-6 rounded-full bg-[#1b5e45] text-white flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
+                  2
+                </div>
+                <div>
+                  <h4 className="font-bold text-slate-900 text-xs">Pindai (Scan) QR Code</h4>
+                  <p className="text-[11px] text-slate-600 mt-0.5">
+                    Buka menu Scan QR Code di aplikasi, lalu arahkan kamera ke kode QR aset tersebut.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3 p-2.5 rounded-xl bg-[#F6F5F0]">
+                <div className="w-6 h-6 rounded-full bg-[#1b5e45] text-white flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
+                  3
+                </div>
+                <div>
+                  <h4 className="font-bold text-slate-900 text-xs">Isi Formulir Laporan</h4>
+                  <p className="text-[11px] text-slate-600 mt-0.5">
+                    Unggah foto bukti kerusakan, pilih jenis kerusakan, dan sertakan deskripsi singkat posisi atau detail kerusakan.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3 p-2.5 rounded-xl bg-[#F6F5F0]">
+                <div className="w-6 h-6 rounded-full bg-[#1b5e45] text-white flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
+                  4
+                </div>
+                <div>
+                  <h4 className="font-bold text-slate-900 text-xs">Kirim & Pantau Progres</h4>
+                  <p className="text-[11px] text-slate-600 mt-0.5">
+                    Kirim laporan Anda. Anda dapat memantau status pengerjaan oleh teknisi hingga selesai di halaman riwayat laporan.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setIsGuideOpen(false)}
+                className="w-full h-11 rounded-2xl bg-[#1b5e45] hover:bg-[#154a36] text-white font-semibold text-xs shadow-md transition-colors"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </MobileContainer>
   );
 }
