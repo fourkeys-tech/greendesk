@@ -109,15 +109,22 @@ export default async function LaporanPage({
                   (1000 * 60 * 60 * 24)
               )
             );
-            const hasReporterField = "reporter" in report && report.reporter;
+            const reporter =
+              "reporter" in report && report.reporter
+                ? (report.reporter as { name: string; email: string })
+                : null;
             const warrantyVendor =
               "underWarrantyOfVendor" in report
-                ? report.underWarrantyOfVendor
+                ? (report.underWarrantyOfVendor as { name: string } | null)
                 : null;
             const parentReport =
-              "parentReport" in report ? report.parentReport : null;
+              "parentReport" in report
+                ? (report.parentReport as { ticketNo: string; status: string } | null)
+                : null;
             const mergedChildren =
-              "mergedChildReports" in report ? report.mergedChildReports : [];
+              "mergedChildReports" in report
+                ? (report.mergedChildReports as Array<{ id: string; ticketNo: string; status: string }>)
+                : [];
 
             // Kandidat laporan induk untuk aset yang sama (saat Pengelola ingin menggabungkan laporan)
             const candidateParents = reports
@@ -235,10 +242,10 @@ export default async function LaporanPage({
 
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100 text-xs text-slate-600">
                   <div>
-                    {hasReporterField ? (
+                    {reporter ? (
                       <span>
-                        Pelapor: <strong>{report.reporter.name}</strong> (
-                        {report.reporter.email})
+                        Pelapor: <strong>{reporter.name}</strong> (
+                        {reporter.email})
                       </span>
                     ) : (
                       <span className="text-amber-800 font-medium">

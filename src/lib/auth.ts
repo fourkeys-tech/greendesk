@@ -26,6 +26,8 @@ export interface SessionUser {
   staffClusterId: string | null;
 }
 
+export type SessionPayload = SessionUser;
+
 export async function createSessionToken(user: SessionUser): Promise<string> {
   return new SignJWT({ ...user })
     .setProtectedHeader({ alg: "HS256" })
