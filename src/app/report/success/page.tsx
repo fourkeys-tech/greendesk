@@ -61,7 +61,7 @@ function SuccessContent() {
 
 export default function ReportSuccessPage() {
   return (
-    <MobileContainer className="bg-white p-6">
+    <MobileContainer className="bg-[#F6F5F0] p-6">
       <Suspense fallback={<div className="p-8 text-center text-xs text-slate-400">Memuat hasil...</div>}>
         <SuccessContent />
       </Suspense>

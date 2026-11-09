@@ -73,9 +73,9 @@ export default function MyReportsPage() {
 
   return (
     <MobileContainer>
-      <div className="bg-[#F5F3EC] min-h-screen flex flex-col">
+      <div className="bg-[#F6F5F0] min-h-screen flex flex-col">
         {/* Header */}
-        <header className="px-4 pt-5 pb-3 sticky top-0 z-30 bg-[#F5F3EC]">
+        <header className="px-4 pt-5 pb-3 sticky top-0 z-30 bg-[#F6F5F0]">
           <div className="flex items-center justify-between mb-4">
             <Link
               href="/beranda"
