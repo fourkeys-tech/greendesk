@@ -7,18 +7,18 @@ import { CircleUserRound, ScanQrCode, FileText } from "lucide-react";
 export function BottomNav() {
   const pathname = usePathname();
 
-  const isHome = pathname === "/beranda" || pathname === "/";
+  const isProfile = pathname === "/profile" || pathname === "/login";
   const isReports = pathname.startsWith("/reports");
 
   return (
-    <nav className="btm-nav relative z-20 h-[72px] rounded-t-3xl border-0 bg-white shadow-[0_-4px_16px_rgba(0,0,0,0.08)]">
+    <nav className="btm-nav relative z-20 h-[72px] rounded-t-3xl border-0 bg-white shadow-[0_-4px_16px_rgba(0,0,0,0.08)] px-6">
       <Link
-        href="/profile"
-        aria-current={isHome ? "page" : undefined}
-        className="flex flex-1 h-full flex-col items-center justify-center gap-1 text-slate-900"
+        href="/login"
+        aria-current={isProfile ? "page" : undefined}
+        className="flex flex-1 h-full flex-col items-center justify-center gap-1 text-slate-900 translate-x-2"
       >
         <CircleUserRound className="w-7 h-7" strokeWidth={2.2} />
-        <span className={`text-[10px] ${isHome ? "font-bold" : "font-semibold"}`}>
+        <span className={`text-[10px] ${isProfile ? "font-bold" : "font-semibold"}`}>
           Profile
         </span>
       </Link>
@@ -36,7 +36,7 @@ export function BottomNav() {
       <Link
         href="/reports"
         aria-current={isReports ? "page" : undefined}
-        className="flex flex-1 h-full flex-col items-center justify-center gap-1 text-slate-900"
+        className="flex flex-1 h-full flex-col items-center justify-center gap-1 text-slate-900 -translate-x-2"
       >
         <FileText className="w-7 h-7" strokeWidth={2.2} />
         <span className={`text-[10px] ${isReports ? "font-bold" : "font-semibold"}`}>
