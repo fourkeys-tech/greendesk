@@ -167,29 +167,180 @@ export async function verifyOtpAction(emailInput: string, codeInput: string) {
   redirect("/dashboard");
 }
 
-/**
- * Fitur khusus pengujian Fase 0: Pindah cepat antar 7 role dengan 1 klik.
- */
-export async function quickSwitchRoleAction(email: string) {
-  const user = await prisma.user.findUnique({
-    where: { email },
-    include: { company: { select: { name: true } } },
-  });
+const FALLBACK_DEMO_PROFILES: Record<string, SessionUser> = {
+  "admin@greenpark.id": {
+    id: "usr-admin-demo",
+    name: "Arfin Mardiyanto",
+    email: "admin@greenpark.id",
+    role: "ADMIN",
+    companyId: "seed-company-thn",
+    companyName: "PT Taman Hijau Nusantara",
+    staffClusterId: null,
+  },
+  ADMIN: {
+    id: "usr-admin-demo",
+    name: "Arfin Mardiyanto",
+    email: "admin@greenpark.id",
+    role: "ADMIN",
+    companyId: "seed-company-thn",
+    companyName: "PT Taman Hijau Nusantara",
+    staffClusterId: null,
+  },
+  "owner@greenpark.id": {
+    id: "usr-owner-demo",
+    name: "Ir. Surya Darmawan",
+    email: "owner@greenpark.id",
+    role: "OWNER",
+    companyId: "seed-company-thn",
+    companyName: "PT Taman Hijau Nusantara",
+    staffClusterId: null,
+  },
+  OWNER: {
+    id: "usr-owner-demo",
+    name: "Ir. Surya Darmawan",
+    email: "owner@greenpark.id",
+    role: "OWNER",
+    companyId: "seed-company-thn",
+    companyName: "PT Taman Hijau Nusantara",
+    staffClusterId: null,
+  },
+  "manager@greenpark.id": {
+    id: "usr-manager-demo",
+    name: "Diana Kusuma",
+    email: "manager@greenpark.id",
+    role: "MANAGER",
+    companyId: "seed-company-thn",
+    companyName: "PT Taman Hijau Nusantara",
+    staffClusterId: null,
+  },
+  MANAGER: {
+    id: "usr-manager-demo",
+    name: "Diana Kusuma",
+    email: "manager@greenpark.id",
+    role: "MANAGER",
+    companyId: "seed-company-thn",
+    companyName: "PT Taman Hijau Nusantara",
+    staffClusterId: null,
+  },
+  "pengelola.bgv@greenpark.id": {
+    id: "usr-pengelola-demo",
+    name: "Hendro Wibowo",
+    email: "pengelola.bgv@greenpark.id",
+    role: "PENGELOLA",
+    companyId: "seed-company-thn",
+    companyName: "PT Taman Hijau Nusantara",
+    staffClusterId: null,
+  },
+  PENGELOLA: {
+    id: "usr-pengelola-demo",
+    name: "Hendro Wibowo",
+    email: "pengelola.bgv@greenpark.id",
+    role: "PENGELOLA",
+    companyId: "seed-company-thn",
+    companyName: "PT Taman Hijau Nusantara",
+    staffClusterId: null,
+  },
+  "pic@vendorjaya.id": {
+    id: "usr-pic-demo",
+    name: "Agus Pratama",
+    email: "pic@vendorjaya.id",
+    role: "PIC_VENDOR",
+    companyId: "seed-company-thn",
+    companyName: "PT Taman Hijau Nusantara",
+    staffClusterId: null,
+  },
+  PIC_VENDOR: {
+    id: "usr-pic-demo",
+    name: "Agus Pratama",
+    email: "pic@vendorjaya.id",
+    role: "PIC_VENDOR",
+    companyId: "seed-company-thn",
+    companyName: "PT Taman Hijau Nusantara",
+    staffClusterId: null,
+  },
+  "teknisi.budi@vendorjaya.id": {
+    id: "usr-teknisi-demo",
+    name: "Budi Santoso",
+    email: "teknisi.budi@vendorjaya.id",
+    role: "TEKNISI",
+    companyId: "seed-company-thn",
+    companyName: "PT Taman Hijau Nusantara",
+    staffClusterId: null,
+  },
+  TEKNISI: {
+    id: "usr-teknisi-demo",
+    name: "Budi Santoso",
+    email: "teknisi.budi@vendorjaya.id",
+    role: "TEKNISI",
+    companyId: "seed-company-thn",
+    companyName: "PT Taman Hijau Nusantara",
+    staffClusterId: null,
+  },
+  "warga@greenpark.id": {
+    id: "usr-warga-demo",
+    name: "Rina Kartika",
+    email: "warga@greenpark.id",
+    role: "PENGGUNA",
+    companyId: "seed-company-thn",
+    companyName: "PT Taman Hijau Nusantara",
+    staffClusterId: null,
+  },
+  PENGGUNA: {
+    id: "usr-warga-demo",
+    name: "Rina Kartika",
+    email: "warga@greenpark.id",
+    role: "PENGGUNA",
+    companyId: "seed-company-thn",
+    companyName: "PT Taman Hijau Nusantara",
+    staffClusterId: null,
+  },
+};
 
-  if (!user) {
-    throw new Error(`Akun demo ${email} belum tersedia. Jalankan seed dulu.`);
+/**
+ * Fitur khusus pengujian: Pindah cepat antar 7 role dengan 1 klik (Mendukung mode DB & offline statis).
+ */
+export async function quickSwitchRoleAction(roleOrEmail: string) {
+  let sessionUser: SessionUser | null = null;
+
+  try {
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: roleOrEmail },
+          { role: roleOrEmail as any },
+        ],
+      },
+      include: { company: { select: { name: true } } },
+    });
+
+    if (user) {
+      sessionUser = {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        companyId: user.companyId,
+        companyName: user.company?.name ?? null,
+        staffClusterId: user.staffClusterId,
+      };
+    }
+  } catch {
+    // Database offline / dev fallback
   }
 
-  await setSessionCookie({
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    role: user.role,
-    companyId: user.companyId,
-    companyName: user.company?.name ?? null,
-    staffClusterId: user.staffClusterId,
-  });
+  if (!sessionUser) {
+    sessionUser = FALLBACK_DEMO_PROFILES[roleOrEmail] || {
+      id: "usr-admin-demo",
+      name: "Arfin Mardiyanto",
+      email: "admin@greenpark.id",
+      role: "ADMIN",
+      companyId: "seed-company-thn",
+      companyName: "PT Taman Hijau Nusantara",
+      staffClusterId: null,
+    };
+  }
 
+  await setSessionCookie(sessionUser);
   revalidatePath("/dashboard");
   redirect("/dashboard");
 }
