@@ -229,7 +229,7 @@ function SubmitTicketContent() {
 
 export default function SubmitTicketPage() {
   return (
-    <MobileContainer className="bg-slate-50">
+    <MobileContainer className="bg-[#F6F5F0]">
       <header className="sticky top-0 z-30 flex items-center justify-between p-4 bg-white/90 backdrop-blur-md border-b border-slate-100">
         <Link
           href="/scan"
