@@ -139,7 +139,8 @@ export async function createAssetAction(formData: FormData) {
   if (!session) return { error: "Silakan login terlebih dahulu." };
 
   try {
-    const code = (formData.get("code") as string) ?? "";
+    const rawCode = (formData.get("code") as string) ?? "";
+    const code = rawCode.trim() ? rawCode.trim() : undefined;
     const parkId = (formData.get("parkId") as string) ?? "";
     const categoryId = (formData.get("categoryId") as string) ?? "";
     const name = (formData.get("name") as string) ?? "";

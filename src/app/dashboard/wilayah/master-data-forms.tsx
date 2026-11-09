@@ -9,11 +9,17 @@ import {
   createParkAction,
   updateCategoryAction,
 } from "@/app/actions/phase1-actions";
+import { buildAssetPrefix } from "@/lib/asset-code";
 
 interface MasterDataFormsProps {
   complexes: Array<{ id: string; name: string }>;
   clusters: Array<{ id: string; name: string; complexName: string }>;
-  parks: Array<{ id: string; name: string; clusterName: string }>;
+  parks: Array<{
+    id: string;
+    name: string;
+    clusterName: string;
+    complexName?: string;
+  }>;
   categories: Array<{ id: string; name: string; damageTypes: string[] }>;
 }
 
@@ -29,10 +35,30 @@ export function MasterDataForms({
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(
     null
   );
+  const [selectedParkId, setSelectedParkId] = useState<string>(
+    parks[0]?.id || ""
+  );
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>(
+    categories[0]?.id || ""
+  );
   const [feedback, setFeedback] = useState<{
     type: "success" | "error";
     text: string;
   } | null>(null);
+
+  const selectedPark = parks.find((p) => p.id === selectedParkId) || parks[0];
+  const selectedCat =
+    categories.find((c) => c.id === selectedCategoryId) || categories[0];
+
+  const previewPrefix =
+    selectedPark && selectedCat
+      ? buildAssetPrefix(
+          selectedPark.complexName || "KMP",
+          selectedPark.clusterName || "CLS",
+          selectedPark.name || "TMN",
+          selectedCat.name || "AST"
+        )
+      : "KMP-CLS-TMN-AST";
   const [isPending, startTransition] = useTransition();
 
   function runAction(
@@ -449,30 +475,24 @@ export function MasterDataForms({
               Tambah Aset Taman Baru (Otomatis Membuat Tautan QR `/r/&#123;kodeAset&#125;`)
             </div>
 
-            <div>
-              <label className="block font-medium text-slate-700 mb-1">
-                Kode Aset Unik (Tercetak di Bawah QR)
-              </label>
-              <input
-                type="text"
-                name="code"
-                required
-                placeholder="Mis. AST-BGV-003"
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono uppercase"
-              />
-            </div>
-
-            <div>
-              <label className="block font-medium text-slate-700 mb-1">
-                Nama Aset
-              </label>
-              <input
-                type="text"
-                name="name"
-                required
-                placeholder="Mis. Perosotan Spiral Anak"
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
-              />
+            <div className="sm:col-span-2 lg:col-span-3 rounded-xl bg-emerald-50/80 border border-emerald-200 p-3.5 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-800">
+                    Otomatisasi Kode & QR Aset (Hierarki 5 Tingkat)
+                  </span>
+                  <span className="bg-emerald-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
+                    Auto-Generated
+                  </span>
+                </div>
+                <p className="text-slate-600 text-xs mt-0.5">
+                  Format: <code>[Komplek]-[Cluster]-[Taman]-[Kategori]-[Urut]</code>. Nomor urut otomatis dihitung oleh sistem.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-emerald-300 shadow-2xs font-mono text-xs font-bold text-emerald-900">
+                <span className="text-slate-400">Preview:</span>
+                <span>{previewPrefix}-###</span>
+              </div>
             </div>
 
             <div>
@@ -482,6 +502,8 @@ export function MasterDataForms({
               <select
                 name="parkId"
                 required
+                value={selectedParkId}
+                onChange={(e) => setSelectedParkId(e.target.value)}
                 disabled={parks.length === 0}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100"
               >
@@ -506,6 +528,8 @@ export function MasterDataForms({
               <select
                 name="categoryId"
                 required
+                value={selectedCategoryId}
+                onChange={(e) => setSelectedCategoryId(e.target.value)}
                 disabled={categories.length === 0}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100"
               >
@@ -521,6 +545,19 @@ export function MasterDataForms({
                   ))
                 )}
               </select>
+            </div>
+
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">
+                Nama Aset
+              </label>
+              <input
+                type="text"
+                name="name"
+                required
+                placeholder="Mis. Perosotan Spiral Anak"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+              />
             </div>
 
             <div>

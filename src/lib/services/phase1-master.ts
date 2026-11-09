@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "../prisma";
 import { assertPermission } from "../permissions";
 import { recordAuditLog } from "../audit";
+import { buildAssetPrefix } from "../asset-code";
 import type { SessionUser } from "../auth";
 
 function requireAdminWithCompany(actor: SessionUser): string {
@@ -265,12 +266,48 @@ export async function updateCategory(
 }
 
 /**
+ * Helper menghasilkan kode urut otomatis berdasarkan hierarki:
+ * [Kompleks]-[Klaster]-[Taman]-[Kategori]-[Seq] (misal: GPR-BGV-TMU-LMP-001)
+ */
+export async function generateNextAssetCode(
+  companyId: string,
+  complexName: string,
+  clusterName: string,
+  parkName: string,
+  categoryName: string
+): Promise<string> {
+  const prefix = buildAssetPrefix(complexName, clusterName, parkName, categoryName);
+
+  const existingAssets = await prisma.asset.findMany({
+    where: {
+      companyId,
+      code: { startsWith: `${prefix}-` },
+    },
+    select: { code: true },
+  });
+
+  let maxSeq = 0;
+  for (const a of existingAssets) {
+    const parts = a.code.split("-");
+    const lastPart = parts[parts.length - 1];
+    const num = parseInt(lastPart, 10);
+    if (!isNaN(num) && num > maxSeq) {
+      maxSeq = num;
+    }
+  }
+
+  const nextSeq = String(maxSeq + 1).padStart(3, "0");
+  return `${prefix}-${nextSeq}`;
+}
+
+/**
  * 5. Kelola Aset (Tingkat 5 Hierarki Wilayah – Wajib punya Taman & Kategori)
+ * Kode aset digenerate otomatis berdasarkan Kompleks > Klaster > Taman > Kategori
  */
 export async function createAsset(
   actor: SessionUser,
   input: {
-    code: string;
+    code?: string;
     parkId: string;
     categoryId: string;
     name: string;
@@ -281,22 +318,26 @@ export async function createAsset(
   }
 ) {
   const companyId = requireAdminWithCompany(actor);
-  const code = input.code.trim().toUpperCase();
   const name = input.name.trim();
 
-  if (!code || !name || !input.parkId || !input.categoryId) {
-    throw new Error("Kode aset, nama aset, taman, dan kategori wajib diisi.");
+  if (!name || !input.parkId || !input.categoryId) {
+    throw new Error("Nama aset, taman, dan kategori wajib diisi.");
   }
 
-  const [park, category, existingCode] = await Promise.all([
+  const [park, category] = await Promise.all([
     prisma.park.findFirst({
       where: { id: input.parkId, companyId },
-      include: { cluster: true },
+      include: {
+        cluster: {
+          include: {
+            complex: true,
+          },
+        },
+      },
     }),
     prisma.category.findFirst({
       where: { id: input.categoryId, companyId },
     }),
-    prisma.asset.findUnique({ where: { code } }),
   ]);
 
   if (!park) {
@@ -307,6 +348,25 @@ export async function createAsset(
   if (!category) {
     throw new Error("Kategori aset tidak ditemukan di perusahaan Anda.");
   }
+
+  // Tentukan kode aset: jika diinput manual (migrasi/test) gunakan itu, jika kosong generate otomatis
+  let code = input.code?.trim().toUpperCase();
+  if (!code) {
+    const complexName = park.cluster.complex?.name || "KMP";
+    const clusterName = park.cluster.name;
+    const parkName = park.name;
+    const categoryName = category.name;
+
+    code = await generateNextAssetCode(
+      companyId,
+      complexName,
+      clusterName,
+      parkName,
+      categoryName
+    );
+  }
+
+  const existingCode = await prisma.asset.findUnique({ where: { code } });
   if (existingCode) {
     throw new Error(`Kode aset ${code} sudah digunakan oleh aset lain.`);
   }

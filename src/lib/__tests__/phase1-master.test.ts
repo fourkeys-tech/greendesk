@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import { generateAssetQrDataUrl } from "../qr";
+import { buildAssetPrefix, abbreviateEntity } from "../asset-code";
 import {
   assignTemporaryManager,
   createAsset,
@@ -121,6 +122,56 @@ describe("Fase 1 – Data Master, Hierarki 5 Tingkat, QR & Akun Internal", () =>
       where: { companyId: admin.companyId!, entityName: "Category" },
     });
     expect(catCountAfter).toBe(catCountBefore + 1);
+  });
+
+  it("menghasilkan kode aset otomatis (5 tingkat) dan nomor urut sekuensial jika input code tidak diisi", async () => {
+    const admin = await prisma.user.findUniqueOrThrow({
+      where: { email: "admin@greenpark.id" },
+    });
+    const park = await prisma.park.findFirstOrThrow({
+      where: { name: "Taman Utama Bougenville" },
+      include: { cluster: { include: { complex: true } } },
+    });
+    const category = await prisma.category.findFirstOrThrow({
+      where: { name: "Penerangan & Lampu Taman" },
+    });
+
+    const actor = {
+      id: admin.id,
+      name: admin.name,
+      email: admin.email,
+      role: admin.role,
+      companyId: admin.companyId,
+      companyName: null,
+      staffClusterId: null,
+    };
+
+    const timestamp = Date.now().toString().slice(-4);
+    const asset1 = await createAsset(actor, {
+      name: `Lampu Sorot LED Otomatis 1 (${timestamp})`,
+      parkId: park.id,
+      categoryId: category.id,
+    });
+
+    // Kode harus berformat: [Kompleks]-[Cluster]-[Taman]-[Kategori]-[Seq]
+    const expectedPrefix = buildAssetPrefix(
+      park.cluster.complex.name,
+      park.cluster.name,
+      park.name,
+      category.name
+    );
+    expect(asset1.code).toMatch(/^[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+-\d{3}$/);
+    expect(asset1.code.startsWith(`${expectedPrefix}-`)).toBe(true);
+
+    const asset2 = await createAsset(actor, {
+      name: `Lampu Sorot LED Otomatis 2 (${timestamp})`,
+      parkId: park.id,
+      categoryId: category.id,
+    });
+
+    const seq1 = parseInt(asset1.code.split("-").pop()!, 10);
+    const seq2 = parseInt(asset2.code.split("-").pop()!, 10);
+    expect(seq2).toBe(seq1 + 1);
   });
 });
 

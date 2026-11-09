@@ -68,6 +68,7 @@ export default async function WilayahPage() {
         id: p.id,
         name: p.name,
         clusterName: cl.name,
+        complexName: comp.name,
       }))
     )
   );
