@@ -150,6 +150,7 @@ export function ManagerConfirmationPanel({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            suppressHydrationWarning
             disabled={isPending || beforePhotos.length === 0 || afterPhotos.length === 0}
             onClick={() => handleConfirm("SESUAI")}
             className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs transition disabled:opacity-50"
@@ -158,6 +159,7 @@ export function ManagerConfirmationPanel({
           </button>
           <button
             type="button"
+            suppressHydrationWarning
             onClick={() => setShowRevisionForm(true)}
             className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shadow-xs transition"
           >
@@ -171,6 +173,7 @@ export function ManagerConfirmationPanel({
           </div>
           <textarea
             rows={2}
+            suppressHydrationWarning
             value={revisionNote}
             onChange={(e) => setRevisionNote(e.target.value)}
             placeholder="Mis. Cat pelindung anti-karat belum merata pada tiang bawah. Mohon disempurnakan."
@@ -179,6 +182,7 @@ export function ManagerConfirmationPanel({
           <div className="flex items-center gap-2">
             <button
               type="button"
+              suppressHydrationWarning
               disabled={isPending}
               onClick={() => handleConfirm("BELUM_SESUAI")}
               className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs disabled:opacity-50"
@@ -187,6 +191,7 @@ export function ManagerConfirmationPanel({
             </button>
             <button
               type="button"
+              suppressHydrationWarning
               onClick={() => setShowRevisionForm(false)}
               className="px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold"
             >

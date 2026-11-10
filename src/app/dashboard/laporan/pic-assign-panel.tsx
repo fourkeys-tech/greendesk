@@ -151,6 +151,7 @@ export function PicAssignPanel({
           </div>
           <button
             type="button"
+            suppressHydrationWarning
             onClick={() => setShowReplaceForm(true)}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 text-xs font-bold transition"
           >
@@ -169,6 +170,7 @@ export function PicAssignPanel({
           <div className="flex flex-wrap items-center gap-2">
             <select
               value={selectedTechId}
+              suppressHydrationWarning
               onChange={(e) => setSelectedTechId(e.target.value)}
               className="text-xs rounded-lg border border-slate-300 px-3 py-2 bg-white flex-1 min-w-[200px]"
             >
@@ -182,6 +184,7 @@ export function PicAssignPanel({
             {currentTechnicianId ? (
               <button
                 type="button"
+                suppressHydrationWarning
                 disabled={isPending}
                 onClick={handleReplace}
                 className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shadow-xs disabled:opacity-50"
@@ -191,6 +194,7 @@ export function PicAssignPanel({
             ) : (
               <button
                 type="button"
+                suppressHydrationWarning
                 disabled={isPending}
                 onClick={handleAssign}
                 className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs disabled:opacity-50"
@@ -202,6 +206,7 @@ export function PicAssignPanel({
             {currentTechnicianId && (
               <button
                 type="button"
+                suppressHydrationWarning
                 onClick={() => setShowReplaceForm(false)}
                 className="px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold"
               >
@@ -214,6 +219,7 @@ export function PicAssignPanel({
             <div>
               <input
                 type="text"
+                suppressHydrationWarning
                 value={replaceReason}
                 onChange={(e) => setReplaceReason(e.target.value)}
                 placeholder="Alasan penggantian teknisi (opsional, misal: teknisi berhalangan sakit)..."

@@ -102,11 +102,12 @@ export function AppSidebar({
             </div>
           </Link>
 
-          <form action={logoutAction} className="shrink-0">
+          <form action={logoutAction} className="shrink-0" suppressHydrationWarning>
             <button
               type="submit"
               title="Keluar"
               aria-label="Keluar"
+              suppressHydrationWarning
               className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
             >
               <LogOut className="w-4 h-4" />

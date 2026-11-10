@@ -126,7 +126,7 @@ export function TechnicianSubmitPanel({
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-3 bg-white p-4 rounded-xl border border-orange-200 shadow-2xs">
+      <form onSubmit={handleSubmit} suppressHydrationWarning className="space-y-3 bg-white p-4 rounded-xl border border-orange-200 shadow-2xs">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Foto Sebelum */}
           <div className="space-y-2 p-3 rounded-xl bg-slate-50 border border-slate-200">
@@ -146,6 +146,7 @@ export function TechnicianSubmitPanel({
               type="file"
               accept="image/*"
               capture="environment"
+              suppressHydrationWarning
               onChange={(e) => setBeforeFile(e.target.files?.[0] || null)}
               className="w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-orange-100 file:text-orange-800 hover:file:bg-orange-200 border border-slate-200 rounded-lg p-1 bg-white"
             />
@@ -154,6 +155,7 @@ export function TechnicianSubmitPanel({
             <input
               type="text"
               value={beforeUrl}
+              suppressHydrationWarning
               onChange={(e) => setBeforeUrl(e.target.value)}
               placeholder="https://..."
               className="w-full text-xs rounded-lg border border-slate-200 px-2.5 py-1.5 bg-white"
@@ -178,6 +180,7 @@ export function TechnicianSubmitPanel({
               type="file"
               accept="image/*"
               capture="environment"
+              suppressHydrationWarning
               onChange={(e) => setAfterFile(e.target.files?.[0] || null)}
               className="w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-emerald-100 file:text-emerald-800 hover:file:bg-emerald-200 border border-slate-200 rounded-lg p-1 bg-white"
             />
@@ -186,6 +189,7 @@ export function TechnicianSubmitPanel({
             <input
               type="text"
               value={afterUrl}
+              suppressHydrationWarning
               onChange={(e) => setAfterUrl(e.target.value)}
               placeholder="https://..."
               className="w-full text-xs rounded-lg border border-slate-200 px-2.5 py-1.5 bg-white"
@@ -200,6 +204,7 @@ export function TechnicianSubmitPanel({
           <input
             type="text"
             value={notes}
+            suppressHydrationWarning
             onChange={(e) => setNotes(e.target.value)}
             placeholder="Mis. Komponen engsel dan baut telah diganti baru serta dicat anti karat."
             className="w-full text-xs rounded-lg border border-slate-300 px-3 py-2"
@@ -212,6 +217,7 @@ export function TechnicianSubmitPanel({
           </div>
           <button
             type="submit"
+            suppressHydrationWarning
             disabled={isPending || !canSubmit}
             className="px-5 py-2.5 rounded-xl bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs shadow-sm disabled:opacity-40 disabled:cursor-not-allowed transition flex items-center gap-2"
           >
