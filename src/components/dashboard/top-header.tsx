@@ -91,7 +91,7 @@ export function NotificationBellPopover({
         suppressHydrationWarning
         onClick={() => setIsOpen((prev) => !prev)}
         aria-label="Buka Notifikasi"
-        className={`relative p-2 rounded-xl transition cursor-pointer border ${
+        className={`relative z-40 p-2 rounded-xl transition cursor-pointer border ${
           isOpen
             ? "text-emerald-700 bg-emerald-50 border-emerald-200 ring-2 ring-emerald-500/20 shadow-xs"
             : "text-slate-600 hover:text-slate-900 hover:bg-slate-100 border-slate-200/80 bg-white"
@@ -105,9 +105,9 @@ export function NotificationBellPopover({
 
       {isOpen && (
         <>
-          {/* Backdrop */}
+          {/* Backdrop transparan untuk click-outside tanpa menggelapkan atau memberi efek hover pada header */}
           <div
-            className="fixed inset-0 bg-slate-900/5 z-30"
+            className="fixed inset-0 z-30"
             onClick={() => setIsOpen(false)}
           />
 

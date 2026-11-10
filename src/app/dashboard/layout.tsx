@@ -22,7 +22,11 @@ export default async function DashboardLayout({
     redirect("/login");
   }
 
-  const navItems = getNavigationForRole(session.role);
+  // Cek peran ganda PIC Vendor dan Teknisi langsung dari session yang ter-cache (hemat 2 query per render)
+  const navItems = getNavigationForRole(session.role, {
+    isDualRoleTechnician: session.technicianApprovalStatus === "APPROVED",
+    isDualRolePic: Boolean(session.isDualRolePic),
+  });
   const roleMeta = ROLE_METADATA[session.role];
 
   // Ambil notifikasi terbaru & info klaster untuk header dan badge sidebar
@@ -30,8 +34,16 @@ export default async function DashboardLayout({
     await Promise.all([
       prisma.notification.findMany({
         where: { recipientId: session.id },
+        select: {
+          id: true,
+          title: true,
+          message: true,
+          linkUrl: true,
+          isRead: true,
+          createdAt: true,
+        },
         orderBy: { createdAt: "desc" },
-        take: 12,
+        take: 8,
       }),
       session.staffClusterId
         ? prisma.cluster.findUnique({
@@ -42,7 +54,7 @@ export default async function DashboardLayout({
       session.role === "MANAGER"
         ? prisma.clusterManagerAssignment.findMany({
             where: { userId: session.id },
-            include: { cluster: { select: { name: true } } },
+            select: { cluster: { select: { name: true } } },
           })
         : Promise.resolve([]),
       session.role === "PENGELOLA" && session.staffClusterId

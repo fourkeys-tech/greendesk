@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentSession } from "@/lib/auth";
+import { saveUploadedDocument } from "@/lib/storage";
 import {
   decideManagerReport,
   getEligibleVendorsForCluster,
@@ -19,6 +20,20 @@ export async function decideManagerReportAction(formData: FormData) {
     const vendorId = (formData.get("vendorId") as string) ?? undefined;
     const notes = (formData.get("notes") as string) ?? undefined;
 
+    let spkFileUrl = (formData.get("spkFileUrl") as string) || undefined;
+    let spkFileName = (formData.get("spkFileName") as string) || undefined;
+    let spkFileSize: number | undefined = undefined;
+    let spkFileMime: string | undefined = undefined;
+
+    const file = formData.get("spkFile") as File | null;
+    if (file && file.size > 0) {
+      const uploaded = await saveUploadedDocument(file, "spk");
+      spkFileUrl = uploaded.url;
+      spkFileName = uploaded.fileName;
+      spkFileSize = uploaded.sizeBytes;
+      spkFileMime = uploaded.mimeType;
+    }
+
     const result = await decideManagerReport(session, {
       reportId,
       decision,
@@ -27,6 +42,10 @@ export async function decideManagerReportAction(formData: FormData) {
         ? {
             vendorId,
             notes,
+            spkFileUrl,
+            spkFileName,
+            spkFileSize,
+            spkFileMime,
           }
         : undefined,
     });

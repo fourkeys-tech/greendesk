@@ -178,7 +178,7 @@ export async function getScopedReportsForUser(
     });
     if (!vendor) return [];
 
-    return prisma.report.findMany({
+    const reports = await prisma.report.findMany({
       where: {
         companyId: user.companyId,
         archivedAt: archivedFilter,
@@ -189,6 +189,18 @@ export async function getScopedReportsForUser(
       include: commonInclude,
       orderBy: { createdAt: "desc" },
     });
+
+    // PRD v0.2 Keputusan 11 & Bagian 3.5: PIC tidak melihat identitas pelapor
+    return reports.map((r) => ({
+      ...r,
+      reporter: {
+        id: "ANONYMOUS",
+        name: "Warga / Pelapor",
+        email: "rahasia@greenpark.internal",
+        reporterStatus: null,
+        blockHouseNo: null,
+      },
+    }));
   }
 
   // ADMIN dan OWNER: melihat semua laporan di perusahaannya (companyId)

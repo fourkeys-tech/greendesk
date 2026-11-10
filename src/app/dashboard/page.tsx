@@ -23,20 +23,37 @@ export default async function DashboardHomePage() {
     visibleReports = [];
   }
 
-  // Ambil metrik umum master data dari database
+  // Ambil metrik master data dari database HANYA sesuai kebutuhan role pengguna saat ini
   let assetCount = 0;
   let auditCount = 0;
   let vendorCount = 0;
   let technicianCount = 0;
 
   if (session.companyId) {
+    const companyId = session.companyId;
     try {
-      [assetCount, auditCount, vendorCount, technicianCount] = await Promise.all([
-        prisma.asset.count({ where: { companyId: session.companyId } }),
-        prisma.auditLog.count({ where: { companyId: session.companyId } }),
-        prisma.vendor.count({ where: { companyId: session.companyId } }),
-        prisma.technician.count({ where: { companyId: session.companyId } }),
-      ]);
+      if (session.role === "ADMIN") {
+        [assetCount, auditCount, vendorCount, technicianCount] =
+          await Promise.all([
+            prisma.asset.count({ where: { companyId } }),
+            prisma.auditLog.count({ where: { companyId } }),
+            prisma.vendor.count({ where: { companyId } }),
+            prisma.technician.count({ where: { companyId } }),
+          ]);
+      } else if (session.role === "PENGELOLA") {
+        assetCount = await prisma.asset.count({ where: { companyId } });
+      } else if (session.role === "MANAGER") {
+        vendorCount = await prisma.vendor.count({ where: { companyId } });
+      } else if (session.role === "OWNER") {
+        [assetCount, vendorCount] = await Promise.all([
+          prisma.asset.count({ where: { companyId } }),
+          prisma.vendor.count({ where: { companyId } }),
+        ]);
+      } else if (session.role === "PIC_VENDOR") {
+        technicianCount = await prisma.technician.count({
+          where: { companyId },
+        });
+      }
     } catch {
       // Fallback statis dev/testing
     }
@@ -65,14 +82,26 @@ export default async function DashboardHomePage() {
         />
       );
 
-    case "PIC_VENDOR":
+    case "PIC_VENDOR": {
+      const vendorRecord = await prisma.vendor.findUnique({
+        where: { picUserId: session.id },
+        select: { lastTechnicianConfirmedAt: true },
+      });
+      const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      const needsConfirmation =
+        !vendorRecord?.lastTechnicianConfirmedAt ||
+        vendorRecord.lastTechnicianConfirmedAt < ninetyDaysAgo;
+
       return (
         <VendorDashboard
           session={session}
           reports={visibleReports}
           technicianCount={technicianCount}
+          needsConfirmation={needsConfirmation}
+          lastConfirmedAt={vendorRecord?.lastTechnicianConfirmedAt?.toISOString() ?? null}
         />
       );
+    }
 
     case "TEKNISI":
       return (

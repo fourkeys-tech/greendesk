@@ -2,8 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentSession } from "@/lib/auth";
+import { saveUploadedPhoto } from "@/lib/storage";
 import {
   assignTechnicianToWorkOrder,
+  replaceTechnicianForWorkOrder,
   submitWorkResultByTechnician,
   confirmWorkResultByManager,
 } from "@/lib/services/phase6-execution";
@@ -36,6 +38,31 @@ export async function assignTechnicianAction(formData: FormData) {
   }
 }
 
+export async function replaceTechnicianAction(formData: FormData) {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+
+  try {
+    const workOrderId = (formData.get("workOrderId") as string) ?? "";
+    const newTechnicianId = (formData.get("newTechnicianId") as string) ?? "";
+    const reason = (formData.get("reason") as string) ?? undefined;
+
+    const result = await replaceTechnicianForWorkOrder(session, {
+      workOrderId,
+      newTechnicianId,
+      reason,
+    });
+
+    revalidatePath("/dashboard/laporan");
+    revalidatePath("/dashboard/spk");
+    revalidatePath("/dashboard");
+
+    return { success: true, result };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Gagal mengganti teknisi." };
+  }
+}
+
 export async function submitWorkResultAction(formData: FormData) {
   const session = await getCurrentSession();
   if (!session) return { error: "Silakan login terlebih dahulu." };
@@ -46,6 +73,23 @@ export async function submitWorkResultAction(formData: FormData) {
     const beforeUrls = (formData.getAll("beforePhotoUrls") as string[]).filter(Boolean);
     const afterUrls = (formData.getAll("afterPhotoUrls") as string[]).filter(Boolean);
 
+    // Support direct file uploads
+    const beforeFiles = formData.getAll("beforeFiles") as File[];
+    for (const file of beforeFiles) {
+      if (file && typeof file.size === "number" && file.size > 0) {
+        const uploaded = await saveUploadedPhoto(file, "workorders");
+        beforeUrls.push(uploaded.url);
+      }
+    }
+
+    const afterFiles = formData.getAll("afterFiles") as File[];
+    for (const file of afterFiles) {
+      if (file && typeof file.size === "number" && file.size > 0) {
+        const uploaded = await saveUploadedPhoto(file, "workorders");
+        afterUrls.push(uploaded.url);
+      }
+    }
+
     const result = await submitWorkResultByTechnician(session, {
       workOrderId,
       beforePhotoUrls: beforeUrls,
@@ -54,6 +98,7 @@ export async function submitWorkResultAction(formData: FormData) {
     });
 
     revalidatePath("/dashboard/laporan");
+    revalidatePath("/dashboard/spk");
     revalidatePath("/dashboard");
 
     return { success: true, result };

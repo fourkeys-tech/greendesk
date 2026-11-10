@@ -273,6 +273,10 @@ export async function registerTechnicianByPic(
 
 /**
  * 3. PIC Vendor mengelola status teknisinya (ACTIVE / ON_LEAVE / INACTIVE)
+ * Mengikuti aturan PRD v0.2 Bagian 5:
+ * - Cuti tidak dihitung dalam batas 60 hari.
+ * - Nonaktif manual oleh PIC dapat diaktifkan kembali langsung oleh PIC tanpa Admin.
+ * - Nonaktif otomatis sistem (60 hari) memerlukan pengajuan aktif kembali ke Admin.
  */
 export async function updateTechnicianStatusByPic(
   actor: SessionUser,
@@ -298,10 +302,32 @@ export async function updateTechnicianStatusByPic(
     throw new Error("Teknisi tidak ditemukan di vendor Anda.");
   }
 
+  // PRD 5.3: Aktif kembali dibedakan menurut penyebab nonaktif
+  if (newStatus === "ACTIVE" && tech.status === "INACTIVE") {
+    if (tech.deactivationReason === "AUTO_60_DAYS") {
+      throw new Error(
+        "Teknisi dinonaktifkan otomatis oleh sistem (60 hari). PIC harus mengajukan aktif kembali ke Admin untuk disetujui ulang (PRD Bagian 5.3)."
+      );
+    }
+    if (tech.deactivationReason === "MANUAL_BY_ADMIN") {
+      throw new Error(
+        "Teknisi dinonaktifkan oleh Admin dan hanya dapat diaktifkan kembali oleh Admin."
+      );
+    }
+  }
+
+  const deactivationReason =
+    newStatus === "INACTIVE" ? "MANUAL_BY_PIC" : null;
+
   const updated = await prisma.technician.update({
     where: { id: tech.id },
     data: {
       status: newStatus,
+      deactivationReason:
+        newStatus === "ACTIVE" || newStatus === "ON_LEAVE"
+          ? null
+          : deactivationReason,
+      reactivationRequested: false,
       lastActiveAt: newStatus === "ACTIVE" ? new Date() : tech.lastActiveAt,
     },
   });
@@ -316,9 +342,85 @@ export async function updateTechnicianStatusByPic(
     entityName: "Technician",
     entityId: tech.id,
     action: "UPDATE",
-    summary: `Mengubah status kehadiran teknisi ${tech.fullName} menjadi ${newStatus}`,
-    oldValues: { status: tech.status },
-    newValues: { status: updated.status },
+    summary: `PIC mengubah status teknisi ${tech.fullName} menjadi ${newStatus}${
+      newStatus === "INACTIVE" ? " (Manual oleh PIC)" : ""
+    }`,
+    oldValues: { status: tech.status, deactivationReason: tech.deactivationReason },
+    newValues: { status: updated.status, deactivationReason: updated.deactivationReason },
+  });
+
+  return updated;
+}
+
+/**
+ * 3b. PIC mengajukan pengaktifan kembali teknisi yang dinonaktifkan otomatis (60 hari).
+ * Menunggu persetujuan ulang Admin (PRD 5.3).
+ */
+export async function requestTechnicianReactivationByPic(
+  actor: SessionUser,
+  technicianId: string,
+  note?: string
+) {
+  assertPermission(actor.role, "MANAGE_OWN_TECHNICIANS");
+  if (!actor.companyId) {
+    throw new Error("Akun PIC tidak terhubung ke perusahaan.");
+  }
+
+  const vendor = await prisma.vendor.findUnique({
+    where: { picUserId: actor.id },
+  });
+  if (!vendor) {
+    throw new Error("Vendor tidak ditemukan.");
+  }
+
+  const tech = await prisma.technician.findFirst({
+    where: { id: technicianId, vendorId: vendor.id },
+  });
+  if (!tech) {
+    throw new Error("Teknisi tidak ditemukan di vendor Anda.");
+  }
+
+  const updated = await prisma.technician.update({
+    where: { id: tech.id },
+    data: {
+      reactivationRequested: true,
+      reactivationNote: note?.trim() || "Pengajuan aktif kembali oleh PIC Vendor",
+    },
+  });
+
+  // Notifikasi ke seluruh Admin di perusahaan (PRD 7.1)
+  const admins = await prisma.user.findMany({
+    where: { companyId: actor.companyId, role: "ADMIN", isActive: true },
+    select: { id: true },
+  });
+
+  if (admins.length > 0) {
+    await prisma.notification.createMany({
+      data: admins.map((adm) => ({
+        companyId: actor.companyId!,
+        recipientId: adm.id,
+        title: "Pengajuan Aktif Kembali Teknisi",
+        message: `PIC Vendor ${vendor.name} mengajukan pengaktifan kembali teknisi ${tech.fullName} yang dinonaktifkan sistem. Catatan: ${
+          note?.trim() || "-"
+        }`,
+        linkUrl: "/dashboard/vendor",
+      })),
+    });
+  }
+
+  await recordAuditLog({
+    actor: {
+      id: actor.id,
+      name: actor.name,
+      role: actor.role,
+      companyId: actor.companyId,
+    },
+    entityName: "Technician",
+    entityId: tech.id,
+    action: "UPDATE",
+    summary: `PIC mengajukan aktif kembali teknisi ${tech.fullName} ke Admin`,
+    oldValues: { reactivationRequested: false },
+    newValues: { reactivationRequested: true, reactivationNote: note },
   });
 
   return updated;
@@ -385,6 +487,74 @@ export async function approveOrRejectTechnicianByAdmin(
 }
 
 /**
+ * 4b. Admin menyetujui pengaktifan kembali teknisi yang dinonaktifkan otomatis.
+ */
+export async function approveTechnicianReactivationByAdmin(
+  actor: SessionUser,
+  technicianId: string
+) {
+  assertPermission(actor.role, "APPROVE_TECHNICIANS");
+  if (!actor.companyId) {
+    throw new Error("Akun Admin tidak terhubung ke perusahaan.");
+  }
+
+  const tech = await prisma.technician.findFirst({
+    where: { id: technicianId, companyId: actor.companyId },
+    include: { vendor: true },
+  });
+  if (!tech) {
+    throw new Error("Data teknisi tidak ditemukan.");
+  }
+
+  const updated = await prisma.technician.update({
+    where: { id: tech.id },
+    data: {
+      status: "ACTIVE",
+      approvalStatus: "APPROVED",
+      reactivationRequested: false,
+      reactivationNote: null,
+      deactivationReason: null,
+      lastActiveAt: new Date(),
+    },
+  });
+
+  await prisma.user.update({
+    where: { id: tech.userId },
+    data: { isActive: true },
+  });
+
+  // Notifikasi Web ke PIC Vendor (PRD 7.1)
+  if (tech.vendor.picUserId) {
+    await prisma.notification.create({
+      data: {
+        companyId: actor.companyId,
+        recipientId: tech.vendor.picUserId,
+        title: "Pengaktifan Kembali Teknisi Disetujui",
+        message: `Admin ${actor.name} menyetujui pengaktifan kembali teknisi ${tech.fullName}. Teknisi kini aktif dan dapat ditugaskan kembali.`,
+        linkUrl: "/dashboard/teknisi",
+      },
+    });
+  }
+
+  await recordAuditLog({
+    actor: {
+      id: actor.id,
+      name: actor.name,
+      role: actor.role,
+      companyId: actor.companyId,
+    },
+    entityName: "Technician",
+    entityId: tech.id,
+    action: "UPDATE",
+    summary: `Admin ${actor.name} menyetujui pengaktifan kembali teknisi ${tech.fullName}`,
+    oldValues: { status: tech.status, reactivationRequested: true },
+    newValues: { status: "ACTIVE", reactivationRequested: false },
+  });
+
+  return updated;
+}
+
+/**
  * 5. PIC Vendor mengonfirmasi daftar teknisinya (Permintaan tiap 3 bulan).
  */
 export async function confirmTechnicianRosterByPic(actor: SessionUser) {
@@ -434,28 +604,61 @@ export async function runPhase2MaintenanceJob(companyId: string) {
   const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
   const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
 
-  // Cari teknisi ACTIVE yang lastActiveAt < 60 hari lalu
+  // PRD 5.2: Cari teknisi ACTIVE yang lastActiveAt < 60 hari lalu (status ON_LEAVE tidak dihitung)
   const staleTechnicians = await prisma.technician.findMany({
     where: {
       companyId,
       status: "ACTIVE",
       lastActiveAt: { lt: sixtyDaysAgo },
     },
+    include: {
+      vendor: true,
+      workOrders: {
+        where: {
+          report: {
+            status: { in: ["DIKERJAKAN", "MENUNGGU_KONFIRMASI"] },
+          },
+        },
+      },
+    },
   });
 
   let deactivatedCount = 0;
   for (const tech of staleTechnicians) {
+    // Keputusan 7: Sistem TIDAK menonaktifkan teknisi yang masih memegang SPK aktif
+    if (tech.workOrders && tech.workOrders.length > 0) {
+      continue;
+    }
+
     const recentWorkOrder = await prisma.workOrder.findFirst({
       where: {
         technicianId: tech.id,
         assignedAt: { gte: sixtyDaysAgo },
       },
     });
+
     if (!recentWorkOrder) {
       await prisma.technician.update({
         where: { id: tech.id },
-        data: { status: "INACTIVE" },
+        data: {
+          status: "INACTIVE",
+          deactivationReason: "AUTO_60_DAYS",
+        },
       });
+
+      // Kirim pemberitahuan ke PIC Vendor
+      if (tech.vendor.picUserId) {
+        await prisma.notification.create({
+          data: {
+            companyId,
+            recipientId: tech.vendor.picUserId,
+            title: "Teknisi Dinonaktifkan Otomatis (60 Hari)",
+            message: `Teknisi ${tech.fullName} dinonaktifkan otomatis oleh sistem karena tidak aktif atau tidak menerima tugas selama 60 hari. Anda dapat mengajukan aktif kembali ke Admin melalui menu Teknisi Saya.`,
+            linkUrl: "/dashboard/teknisi",
+          },
+        });
+      }
+
       deactivatedCount++;
     }
   }

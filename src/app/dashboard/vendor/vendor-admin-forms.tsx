@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import {
   approveOrRejectTechnicianAction,
+  approveTechnicianReactivationAction,
   createVendorAction,
   runPhase2MaintenanceCronAction,
 } from "@/app/actions/phase2-actions";
@@ -18,11 +19,19 @@ interface VendorAdminFormsProps {
     vendorName: string;
     createdAt: string;
   }>;
+  reactivationRequests?: Array<{
+    id: string;
+    fullName: string;
+    email: string;
+    vendorName: string;
+    reactivationNote?: string | null;
+  }>;
 }
 
 export function VendorAdminForms({
   clusters,
   pendingTechnicians,
+  reactivationRequests = [],
 }: VendorAdminFormsProps) {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [feedback, setFeedback] = useState<{
@@ -48,6 +57,18 @@ export function VendorAdminForms({
     setFeedback(null);
     startTransition(async () => {
       const res = await approveOrRejectTechnicianAction(techId, decision);
+      if (res.error) {
+        setFeedback({ type: "error", text: res.error });
+      } else if (res.message) {
+        setFeedback({ type: "success", text: res.message });
+      }
+    });
+  }
+
+  function handleApproveReactivation(techId: string) {
+    setFeedback(null);
+    startTransition(async () => {
+      const res = await approveTechnicianReactivationAction(techId);
       if (res.error) {
         setFeedback({ type: "error", text: res.error });
       } else if (res.message) {
@@ -134,6 +155,56 @@ export function VendorAdminForms({
                     className="px-3.5 py-1.5 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-800 font-semibold cursor-pointer"
                   >
                     ✕ Tolak
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Antrean Pengajuan Aktif Kembali Teknisi (PRD 5.3) */}
+      {reactivationRequests.length > 0 && (
+        <div className="bg-sky-50 border-2 border-sky-300 rounded-2xl p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-xs font-extrabold uppercase text-sky-900">
+                🔄 {reactivationRequests.length} Pengajuan Aktif Kembali Teknisi (Nonaktif 60 Hari)
+              </span>
+              <p className="text-xs text-sky-800 mt-0.5">
+                Sesuai PRD v0.2 Bagian 5.3, teknisi yang dinonaktifkan otomatis oleh sistem memerlukan persetujuan ulang Admin setelah diajukan oleh PIC Vendor.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {reactivationRequests.map((t) => (
+              <div
+                key={t.id}
+                className="bg-white rounded-xl p-4 border border-sky-200 flex flex-col justify-between gap-3 text-xs"
+              >
+                <div>
+                  <div className="font-bold text-sm text-slate-900">
+                    {t.fullName}
+                  </div>
+                  <div className="text-slate-600">
+                    Vendor: <strong>{t.vendorName}</strong>
+                  </div>
+                  <div className="text-slate-500 font-mono">{t.email}</div>
+                  {t.reactivationNote && (
+                    <div className="text-slate-700 bg-slate-50 p-2 rounded-lg border border-slate-200 mt-1">
+                      Catatan PIC: &quot;{t.reactivationNote}&quot;
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={() => handleApproveReactivation(t.id)}
+                    className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold cursor-pointer"
+                  >
+                    ✓ Setujui Aktif Kembali
                   </button>
                 </div>
               </div>

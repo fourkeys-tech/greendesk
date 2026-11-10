@@ -6,9 +6,11 @@ import { getCurrentSession } from "@/lib/auth";
 import { saveUploadedPhoto } from "@/lib/storage";
 import {
   approveOrRejectTechnicianByAdmin,
+  approveTechnicianReactivationByAdmin,
   confirmTechnicianRosterByPic,
   createVendorWithPic,
   registerTechnicianByPic,
+  requestTechnicianReactivationByPic,
   runPhase2MaintenanceJob,
   updateTechnicianStatusByPic,
 } from "@/lib/services/phase2-vendor";
@@ -131,6 +133,60 @@ export async function updateTechnicianStatusAction(
     return {
       error:
         err instanceof Error ? err.message : "Gagal mengubah status teknisi.",
+    };
+  }
+}
+
+export async function requestTechnicianReactivationAction(
+  technicianId: string,
+  note?: string
+) {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+
+  try {
+    const updated = await requestTechnicianReactivationByPic(
+      session,
+      technicianId,
+      note
+    );
+    revalidateVendorPaths();
+    return {
+      success: true,
+      message: `Pengajuan aktif kembali untuk teknisi ${updated.fullName} berhasil dikirim ke Admin.`,
+    };
+  } catch (err) {
+    return {
+      error:
+        err instanceof Error
+          ? err.message
+          : "Gagal mengajukan aktif kembali teknisi.",
+    };
+  }
+}
+
+export async function approveTechnicianReactivationAction(
+  technicianId: string
+) {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+
+  try {
+    const updated = await approveTechnicianReactivationByAdmin(
+      session,
+      technicianId
+    );
+    revalidateVendorPaths();
+    return {
+      success: true,
+      message: `Pengaktifan kembali teknisi ${updated.fullName} berhasil disetujui.`,
+    };
+  } catch (err) {
+    return {
+      error:
+        err instanceof Error
+          ? err.message
+          : "Gagal memproses pengaktifan kembali teknisi.",
     };
   }
 }

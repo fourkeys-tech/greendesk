@@ -181,6 +181,10 @@ export async function decideManagerReport(
       vendorId: string;
       assignedDate?: Date;
       notes?: string;
+      spkFileUrl?: string;
+      spkFileName?: string;
+      spkFileSize?: number;
+      spkFileMime?: string;
     };
   }
 ) {
@@ -291,8 +295,13 @@ export async function decideManagerReport(
     if (!input.spkInput?.vendorId) {
       throw new Error("Pilihan vendor wajib diisi saat menyetujui perbaikan.");
     }
+    if (!input.spkInput?.spkFileUrl) {
+      throw new Error(
+        "File Surat Perintah Kerja (SPK) wajib dilampirkan sebelum menerbitkan SPK (PRD v0.2 Keputusan 14)."
+      );
+    }
 
-    const { vendorId, assignedDate, notes } = input.spkInput;
+    const { vendorId, assignedDate, notes, spkFileUrl, spkFileName, spkFileSize, spkFileMime } = input.spkInput;
 
     // Verifikasi vendor melayani cluster laporan ini
     const vendor = await prisma.vendor.findFirst({
@@ -328,53 +337,62 @@ export async function decideManagerReport(
 
     const spkNo = await generateNextSpkNumber(actor.companyId);
 
-    const result = await prisma.$transaction(async (tx) => {
-      // 1. Buat WorkOrder (SPK) dengan teknisi kosong
-      const workOrder = await tx.workOrder.create({
-        data: {
-          companyId: actor.companyId!,
-          spkNo,
-          reportId: report.id,
-          vendorId: vendor.id,
-          technicianId: null, // Dikosongkan sesuai PRD v0.2 untuk ditunjuk PIC Vendor
-          assignedAt: assignedDate || new Date(),
-        },
-      });
-
-      // 2. Perbarui status laporan ke DISETUJUI
-      const rep = await tx.report.update({
-        where: { id: report.id },
-        data: {
-          status: "DISETUJUI",
-          stageEnteredAt: new Date(),
-          statusLogs: {
-            create: {
-              fromStatus: report.status,
-              toStatus: "DISETUJUI",
-              changedById: actor.id,
-              note: `Perbaikan disetujui oleh Manager. Diterbitkan ${spkNo} kepada vendor ${vendor.name}.${
-                notes ? ` Catatan: ${notes}` : ""
-              }`,
-            },
-          },
-        },
-      });
-
-      // 3. Notifikasi Web ke PIC Vendor
-      if (vendor.picUserId) {
-        await tx.notification.create({
+    const result = await prisma.$transaction(
+      async (tx) => {
+        // 1. Buat WorkOrder (SPK) dengan teknisi kosong
+        const workOrder = await tx.workOrder.create({
           data: {
-            companyId: actor.companyId,
-            recipientId: vendor.picUserId,
-            title: `SPK Baru Diterbitkan (${spkNo})`,
-            message: `Manager ${actor.name} telah menerbitkan ${spkNo} untuk perbaikan aset ${report.asset.name}. Silakan tunjuk teknisi pelaksana.`,
-            linkUrl: `/dashboard/laporan`,
+            companyId: actor.companyId!,
+            spkNo,
+            reportId: report.id,
+            vendorId: vendor.id,
+            technicianId: null, // Dikosongkan sesuai PRD v0.2 untuk ditunjuk PIC Vendor
+            assignedAt: assignedDate || new Date(),
+            spkFileUrl,
+            spkFileName: spkFileName || `${spkNo}.pdf`,
+            spkFileSize: spkFileSize || null,
+            spkFileMime: spkFileMime || "application/pdf",
+            spkFileUploadedAt: new Date(),
+            spkFileUploadedById: actor.id,
           },
         });
-      }
 
-      return { workOrder, report: rep };
-    });
+        // 2. Perbarui status laporan ke DISETUJUI
+        const rep = await tx.report.update({
+          where: { id: report.id },
+          data: {
+            status: "DISETUJUI",
+            stageEnteredAt: new Date(),
+            statusLogs: {
+              create: {
+                fromStatus: report.status,
+                toStatus: "DISETUJUI",
+                changedById: actor.id,
+                note: `Perbaikan disetujui oleh Manager. Diterbitkan ${spkNo} kepada vendor ${vendor.name}.${
+                  notes ? ` Catatan: ${notes}` : ""
+                }`,
+              },
+            },
+          },
+        });
+
+        // 3. Notifikasi Web ke PIC Vendor
+        if (vendor.picUserId) {
+          await tx.notification.create({
+            data: {
+              companyId: actor.companyId,
+              recipientId: vendor.picUserId,
+              title: `SPK Baru Diterbitkan (${spkNo})`,
+              message: `Manager ${actor.name} telah menerbitkan ${spkNo} untuk perbaikan aset ${report.asset.name}. Silakan tunjuk teknisi pelaksana.`,
+              linkUrl: `/dashboard/laporan`,
+            },
+          });
+        }
+
+        return { workOrder, report: rep };
+      },
+      { maxWait: 10000, timeout: 30000 }
+    );
 
     // 4. Catat AuditLog
     await recordAuditLog({

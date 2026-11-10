@@ -2,10 +2,15 @@ import { describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import {
   approveOrRejectTechnicianByAdmin,
+  approveTechnicianReactivationByAdmin,
+  confirmTechnicianRosterByPic,
   createVendorWithPic,
   registerTechnicianByPic,
+  requestTechnicianReactivationByPic,
   runPhase2MaintenanceJob,
+  updateTechnicianStatusByPic,
 } from "../services/phase2-vendor";
+import type { SessionUser } from "../auth";
 
 describe("Fase 2 – Onboarding Vendor, Persetujuan Teknisi & Job Terjadwal", () => {
   it("memungkinkan Admin membuat Vendor + Akun PIC dan mengirim email undangan", async () => {
@@ -128,6 +133,101 @@ describe("Fase 2 – Onboarding Vendor, Persetujuan Teknisi & Job Terjadwal", ()
 
     const res = await runPhase2MaintenanceJob(admin.companyId!);
     expect(res.reminderSentCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it("mengelola siklus status teknisi (Cuti, Nonaktif Manual, Nonaktif Otomatis 60 Hari & Persetujuan Ulang Admin)", async () => {
+    const admin = await prisma.user.findUniqueOrThrow({
+      where: { email: "admin@greenpark.id" },
+    });
+    const pic = await prisma.user.findUniqueOrThrow({
+      where: { email: "pic@vendorjaya.id" },
+    });
+
+    const picActor: SessionUser = {
+      id: pic.id,
+      name: pic.name,
+      email: pic.email,
+      role: "PIC_VENDOR",
+      companyId: pic.companyId,
+      companyName: null,
+      staffClusterId: null,
+    };
+
+    const adminActor: SessionUser = {
+      id: admin.id,
+      name: admin.name,
+      email: admin.email,
+      role: "ADMIN",
+      companyId: admin.companyId,
+      companyName: null,
+      staffClusterId: null,
+    };
+
+    const suffix = Date.now().toString().slice(-5);
+    const tech = await registerTechnicianByPic(picActor, {
+      fullName: `Teknisi Uji ${suffix}`,
+      whatsapp: "081999888777",
+      email: `uji.teknisi.${suffix}@vendorjaya.id`,
+      skills: ["Sipil"],
+    });
+
+    // Admin approve
+    await approveOrRejectTechnicianByAdmin(adminActor, tech.id, "APPROVED");
+
+    // 1. PIC set CUTI (ON_LEAVE)
+    const cutiTech = await updateTechnicianStatusByPic(picActor, tech.id, "ON_LEAVE");
+    expect(cutiTech.status).toBe("ON_LEAVE");
+
+    // 2. PIC set aktif kembali dari cuti (langsung aktif)
+    const activeAgain = await updateTechnicianStatusByPic(picActor, tech.id, "ACTIVE");
+    expect(activeAgain.status).toBe("ACTIVE");
+
+    // 3. PIC set Nonaktif manual (deactivationReason: MANUAL_BY_PIC)
+    const manualInactive = await updateTechnicianStatusByPic(picActor, tech.id, "INACTIVE");
+    expect(manualInactive.status).toBe("INACTIVE");
+    expect(manualInactive.deactivationReason).toBe("MANUAL_BY_PIC");
+
+    // 4. PIC aktifkan kembali dari nonaktif manual (tidak perlu admin approval)
+    const reactivatedManual = await updateTechnicianStatusByPic(picActor, tech.id, "ACTIVE");
+    expect(reactivatedManual.status).toBe("ACTIVE");
+
+    // 5. Simulasikan nonaktif otomatis 60 hari oleh cron
+    await prisma.technician.update({
+      where: { id: tech.id },
+      data: {
+        status: "ACTIVE",
+        lastActiveAt: new Date(Date.now() - 70 * 24 * 60 * 60 * 1000),
+      },
+    });
+    await runPhase2MaintenanceJob(admin.companyId!);
+
+    const autoInactive = await prisma.technician.findUniqueOrThrow({
+      where: { id: tech.id },
+    });
+    expect(autoInactive.status).toBe("INACTIVE");
+    expect(autoInactive.deactivationReason).toBe("AUTO_60_DAYS");
+
+    // 6. PIC mencoba aktifkan langsung tanpa admin -> harus ditolak
+    await expect(
+      updateTechnicianStatusByPic(picActor, tech.id, "ACTIVE")
+    ).rejects.toThrow(/harus mengajukan aktif kembali ke Admin/i);
+
+    // 7. PIC mengajukan aktif kembali
+    const requested = await requestTechnicianReactivationByPic(
+      picActor,
+      tech.id,
+      "Teknisi sudah aktif kembali dan sehat."
+    );
+    expect(requested.reactivationRequested).toBe(true);
+
+    // 8. Admin menyetujui aktif kembali
+    const adminApproved = await approveTechnicianReactivationByAdmin(
+      adminActor,
+      tech.id
+    );
+    expect(adminApproved.status).toBe("ACTIVE");
+    expect(adminApproved.reactivationRequested).toBe(false);
+    expect(adminApproved.deactivationReason).toBeNull();
   });
 });
 

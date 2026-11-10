@@ -9,6 +9,7 @@ import {
 import {
   assignTechnicianToWorkOrder,
   confirmWorkResultByManager,
+  replaceTechnicianForWorkOrder,
   submitWorkResultByTechnician,
 } from "../services/phase6-execution";
 import {
@@ -21,7 +22,9 @@ import {
 import type { SessionUser } from "../auth";
 
 describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi Hasil & Pengajuan Ganti Vendor", () => {
-  it("menjalankan siklus lengkap Keputusan Manager (Tolak & Setuju+SPK), Eksekusi Teknisi, Revisi, Selesai, serta Rapor Vendor", async () => {
+  it(
+    "menjalankan siklus lengkap Keputusan Manager (Tolak & Setuju+SPK), Eksekusi Teknisi, Revisi, Selesai, serta Rapor Vendor",
+    async () => {
     const [pengelolaUser, managerUser, picUser, teknisiUser, adminUser] =
       await Promise.all([
         prisma.user.findUniqueOrThrow({
@@ -165,18 +168,32 @@ describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi H
     });
     expect(rejectedRes.status).toBe("DITOLAK");
 
-    // 5. Manager menyetujui rep2 & menerbitkan SPK ke Vendor Jaya
+    // 5. Manager menyetujui rep2 & menerbitkan SPK ke Vendor Jaya (Wajib lampiran file SPK per Keputusan 14)
+    await expect(
+      decideManagerReport(managerActor, {
+        reportId: rep2.id,
+        decision: "SETUJU",
+        spkInput: {
+          vendorId: vendorJaya.id,
+          notes: "Tanpa file SPK harus ditolak.",
+        },
+      })
+    ).rejects.toThrow(/File Surat Perintah Kerja \(SPK\) wajib dilampirkan/i);
+
     const approvedRes = await decideManagerReport(managerActor, {
       reportId: rep2.id,
       decision: "SETUJU",
       spkInput: {
         vendorId: vendorJaya.id,
         notes: "Ganti rangkaian LED utama.",
+        spkFileUrl: "/uploads/spk/sample-spk.pdf",
+        spkFileName: "Surat_Perintah_Kerja_001.pdf",
       },
     });
     expect(approvedRes.status).toBe("DISETUJUI");
     expect(approvedRes.spkNo).toMatch(/^SPK-\d{6}-\d{4}$/);
     expect(approvedRes.workOrder?.technicianId).toBeNull();
+    expect(approvedRes.workOrder?.spkFileUrl).toBe("/uploads/spk/sample-spk.pdf");
 
     const woId = approvedRes.workOrder!.id;
 
@@ -212,12 +229,53 @@ describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi H
     });
     expect(revRes.report.status).toBe("DIKERJAKAN");
 
-    // 9. Teknisi mengunggah ulang foto perbaikan -> MENUNGGU_KONFIRMASI
-    await submitWorkResultByTechnician(teknisiActor, {
+    // 8b. PIC Vendor mengganti teknisi pelaksana saat SPK berjalan (Keputusan 4 & 5)
+    const suffix2 = Date.now().toString().slice(-4);
+    const userTech2 = await prisma.user.create({
+      data: {
+        companyId: adminUser.companyId!,
+        name: `Teknisi Pengganti ${suffix2}`,
+        email: `pengganti.${suffix2}@vendorjaya.id`,
+        role: "TEKNISI",
+      },
+    });
+    const tech2 = await prisma.technician.create({
+      data: {
+        companyId: adminUser.companyId!,
+        vendorId: vendorJaya.id,
+        userId: userTech2.id,
+        fullName: `Teknisi Pengganti ${suffix2}`,
+        whatsapp: "081233445566",
+        email: `pengganti.${suffix2}@vendorjaya.id`,
+        skills: ["Lampu", "Kelistrikan"],
+        status: "ACTIVE",
+        approvalStatus: "APPROVED",
+      },
+    });
+
+    const replaceRes = await replaceTechnicianForWorkOrder(picActor, {
       workOrderId: woId,
-      beforePhotoUrls: ["/uploads/before-2.jpg"],
+      newTechnicianId: tech2.id,
+      reason: "Teknisi Budi dialihkan ke pekerjaan darurat.",
+    });
+    expect(replaceRes.workOrder.technicianId).toBe(tech2.id);
+
+    const tech2Actor: SessionUser = {
+      id: userTech2.id,
+      name: userTech2.name,
+      email: userTech2.email,
+      role: "TEKNISI",
+      companyId: userTech2.companyId,
+      companyName: "PT GreenPark",
+      staffClusterId: null,
+    };
+
+    // 9. Teknisi baru melanjutkan pengerjaan: Foto sebelum yang lama tetap melekat, unggah foto sesudah baru -> MENUNGGU_KONFIRMASI
+    await submitWorkResultByTechnician(tech2Actor, {
+      workOrderId: woId,
+      beforePhotoUrls: [], // Foto sebelum lama tetap tersimpan dan dipakai
       afterPhotoUrls: ["/uploads/after-2.jpg"],
-      notes: "Tutup pelindung sudah dirapatkan.",
+      notes: "Tutup pelindung sudah dirapatkan oleh teknisi pengganti.",
     });
 
     // 10. Manager mengonfirmasi SESUAI -> status SELESAI & SPK ditutup
@@ -235,9 +293,11 @@ describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi H
     );
     expect(scorecard.metrics.totalJobs).toBeGreaterThanOrEqual(1);
     expect(scorecard.metrics.revisionCount).toBeGreaterThanOrEqual(1);
-  });
+  }, 30000);
 
-  it("menjalankan alur Pengajuan Ganti Vendor (Bagian 7 PRD v0.2): Pengelola -> Manager -> Admin -> Owner", async () => {
+  it(
+    "menjalankan alur Pengajuan Ganti Vendor (Bagian 7 PRD v0.2): Pengelola -> Manager -> Admin -> Owner",
+    async () => {
     const [pengelolaUser, managerUser, adminUser, ownerUser, picUser] =
       await Promise.all([
         prisma.user.findUniqueOrThrow({
@@ -356,5 +416,5 @@ describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi H
       submitReq.request.id
     );
     expect(ownerViewed.ownerViewedAt).not.toBeNull();
-  });
+  }, 30000);
 });
