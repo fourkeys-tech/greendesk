@@ -80,51 +80,54 @@ export async function assignTechnicianToWorkOrder(
     throw new Error(check.error);
   }
 
-  const result = await prisma.$transaction(async (tx) => {
-    // 1. Update WorkOrder
-    const updatedWo = await tx.workOrder.update({
-      where: { id: workOrder.id },
-      data: {
-        technicianId: technician.id,
-        assignedAt: new Date(),
-      },
-    });
+  const result = await prisma.$transaction(
+    async (tx) => {
+      // 1. Update WorkOrder
+      const updatedWo = await tx.workOrder.update({
+        where: { id: workOrder.id },
+        data: {
+          technicianId: technician.id,
+          assignedAt: new Date(),
+        },
+      });
 
-    await tx.technician.update({
-      where: { id: technician.id },
-      data: { lastActiveAt: new Date() },
-    });
+      await tx.technician.update({
+        where: { id: technician.id },
+        data: { lastActiveAt: new Date() },
+      });
 
-    // 2. Update status Laporan ke DIKERJAKAN
-    const updatedRep = await tx.report.update({
-      where: { id: workOrder.report.id },
-      data: {
-        status: "DIKERJAKAN",
-        stageEnteredAt: new Date(),
-        statusLogs: {
-          create: {
-            fromStatus: workOrder.report.status,
-            toStatus: "DIKERJAKAN",
-            changedById: actor.id,
-            note: `Teknisi ${technician.fullName} ditugaskan oleh PIC Vendor ${vendor.name}`,
+      // 2. Update status Laporan ke DIKERJAKAN
+      const updatedRep = await tx.report.update({
+        where: { id: workOrder.report.id },
+        data: {
+          status: "DIKERJAKAN",
+          stageEnteredAt: new Date(),
+          statusLogs: {
+            create: {
+              fromStatus: workOrder.report.status,
+              toStatus: "DIKERJAKAN",
+              changedById: actor.id,
+              note: `Teknisi ${technician.fullName} ditugaskan oleh PIC Vendor ${vendor.name}`,
+            },
           },
         },
-      },
-    });
+      });
 
-    // 3. Notifikasi Web ke Teknisi
-    await tx.notification.create({
-      data: {
-        companyId: actor.companyId,
-        recipientId: technician.userId,
-        title: `Tugas Baru: ${workOrder.spkNo}`,
-        message: `Anda ditugaskan oleh PIC untuk perbaikan aset ${workOrder.report.asset.name}.`,
-        linkUrl: `/dashboard/laporan`,
-      },
-    });
+      // 3. Notifikasi Web ke Teknisi
+      await tx.notification.create({
+        data: {
+          companyId: actor.companyId,
+          recipientId: technician.userId,
+          title: `Tugas Baru: ${workOrder.spkNo}`,
+          message: `Anda ditugaskan oleh PIC untuk perbaikan aset ${workOrder.report.asset.name}.`,
+          linkUrl: `/dashboard/laporan`,
+        },
+      });
 
-    return { workOrder: updatedWo, report: updatedRep };
-  });
+      return { workOrder: updatedWo, report: updatedRep };
+    },
+    { maxWait: 10000, timeout: 30000 }
+  );
 
   // 4. Catat riwayat audit
   await recordAuditLog({
@@ -225,47 +228,50 @@ export async function replaceTechnicianForWorkOrder(
 
   const oldTechName = workOrder.technician?.fullName || "Belum ada teknisi";
 
-  const result = await prisma.$transaction(async (tx) => {
-    // 1. Update WorkOrder ke teknisi baru (foto sebelum/sesudah yang ada tetap melekat)
-    const updatedWo = await tx.workOrder.update({
-      where: { id: workOrder.id },
-      data: {
-        technicianId: newTechnician.id,
-        assignedAt: new Date(),
-      },
-    });
+  const result = await prisma.$transaction(
+    async (tx) => {
+      // 1. Update WorkOrder ke teknisi baru (foto sebelum/sesudah yang ada tetap melekat)
+      const updatedWo = await tx.workOrder.update({
+        where: { id: workOrder.id },
+        data: {
+          technicianId: newTechnician.id,
+          assignedAt: new Date(),
+        },
+      });
 
-    await tx.technician.update({
-      where: { id: newTechnician.id },
-      data: { lastActiveAt: new Date() },
-    });
+      await tx.technician.update({
+        where: { id: newTechnician.id },
+        data: { lastActiveAt: new Date() },
+      });
 
-    // 2. Tambah catatan log pergantian teknisi
-    await tx.reportStatusLog.create({
-      data: {
-        reportId: workOrder.report.id,
-        fromStatus: workOrder.report.status,
-        toStatus: workOrder.report.status,
-        changedById: actor.id,
-        note: `PIC Vendor mengganti teknisi dari ${oldTechName} ke ${newTechnician.fullName}.${
-          input.reason ? ` Alasan: ${input.reason}` : ""
-        } Foto sebelum yang ada tetap melekat pada SPK.`,
-      },
-    });
+      // 2. Tambah catatan log pergantian teknisi
+      await tx.reportStatusLog.create({
+        data: {
+          reportId: workOrder.report.id,
+          fromStatus: workOrder.report.status,
+          toStatus: workOrder.report.status,
+          changedById: actor.id,
+          note: `PIC Vendor mengganti teknisi dari ${oldTechName} ke ${newTechnician.fullName}.${
+            input.reason ? ` Alasan: ${input.reason}` : ""
+          } Foto sebelum yang ada tetap melekat pada SPK.`,
+        },
+      });
 
-    // 3. Notifikasi Web ke Teknisi baru
-    await tx.notification.create({
-      data: {
-        companyId: actor.companyId,
-        recipientId: newTechnician.userId,
-        title: `Penugasan SPK Pengganti (${workOrder.spkNo})`,
-        message: `Anda ditugaskan oleh PIC menggantikan ${oldTechName} untuk perbaikan aset ${workOrder.report.asset.name}.`,
-        linkUrl: `/dashboard/laporan`,
-      },
-    });
+      // 3. Notifikasi Web ke Teknisi baru
+      await tx.notification.create({
+        data: {
+          companyId: actor.companyId,
+          recipientId: newTechnician.userId,
+          title: `Penugasan SPK Pengganti (${workOrder.spkNo})`,
+          message: `Anda ditugaskan oleh PIC menggantikan ${oldTechName} untuk perbaikan aset ${workOrder.report.asset.name}.`,
+          linkUrl: `/dashboard/laporan`,
+        },
+      });
 
-    return updatedWo;
-  });
+      return updatedWo;
+    },
+    { maxWait: 10000, timeout: 30000 }
+  );
 
   // 4. Catat AuditLog
   await recordAuditLog({
@@ -359,82 +365,85 @@ export async function submitWorkResultByTechnician(
 
   const clusterId = workOrder.report.asset.park.clusterId;
 
-  const result = await prisma.$transaction(async (tx) => {
-    // 0. Update lastActiveAt teknisi
-    await tx.technician.update({
-      where: { id: technician.id },
-      data: { lastActiveAt: new Date() },
-    });
+  const result = await prisma.$transaction(
+    async (tx) => {
+      // 0. Update lastActiveAt teknisi
+      await tx.technician.update({
+        where: { id: technician.id },
+        data: { lastActiveAt: new Date() },
+      });
 
-    // 1. Simpan foto-foto pekerjaan
-    if (input.beforePhotoUrls) {
-      for (const url of input.beforePhotoUrls) {
-        await tx.workPhoto.create({
-          data: {
-            workOrderId: workOrder.id,
-            type: "BEFORE",
-            url,
-            uploadedById: actor.id,
-          },
-        });
-      }
-    }
-
-    for (const url of input.afterPhotoUrls) {
-      await tx.workPhoto.create({
-        data: {
+      // 1. Simpan foto-foto pekerjaan (batch insert createMany untuk efisiensi tinggi)
+      const photosToCreate = [
+        ...(input.beforePhotoUrls || []).map((url) => ({
           workOrderId: workOrder.id,
-          type: "AFTER",
+          type: "BEFORE" as const,
           url,
           uploadedById: actor.id,
-        },
-      });
-    }
+        })),
+        ...(input.afterPhotoUrls || []).map((url) => ({
+          workOrderId: workOrder.id,
+          type: "AFTER" as const,
+          url,
+          uploadedById: actor.id,
+        })),
+      ];
 
-    // 2. Update status laporan ke MENUNGGU_KONFIRMASI
-    const updatedRep = await tx.report.update({
-      where: { id: workOrder.report.id },
-      data: {
-        status: "MENUNGGU_KONFIRMASI",
-        stageEnteredAt: new Date(),
-        statusLogs: {
-          create: {
-            fromStatus: workOrder.report.status,
-            toStatus: "MENUNGGU_KONFIRMASI",
-            changedById: actor.id,
-            note:
-              input.notes?.trim() ||
-              `Teknisi ${technician.fullName} telah merampungkan perbaikan dan mengunggah foto sebelum/sesudah.`,
+      if (photosToCreate.length > 0) {
+        await tx.workPhoto.createMany({
+          data: photosToCreate,
+        });
+      }
+
+      // 2. Update status laporan ke MENUNGGU_KONFIRMASI
+      const updatedRep = await tx.report.update({
+        where: { id: workOrder.report.id },
+        data: {
+          status: "MENUNGGU_KONFIRMASI",
+          stageEnteredAt: new Date(),
+          statusLogs: {
+            create: {
+              fromStatus: workOrder.report.status,
+              toStatus: "MENUNGGU_KONFIRMASI",
+              changedById: actor.id,
+              note:
+                input.notes?.trim() ||
+                `Teknisi ${technician.fullName} telah merampungkan perbaikan dan mengunggah foto sebelum/sesudah.`,
+            },
           },
         },
-      },
-    });
-
-    // 3. Notifikasi Web ke seluruh Manager yang bertugas di cluster ini
-    const now = new Date();
-    const managerAssignments = await tx.clusterManagerAssignment.findMany({
-      where: {
-        clusterId,
-        validFrom: { lte: now },
-        OR: [{ validUntil: null }, { validUntil: { gte: now } }],
-      },
-      select: { userId: true },
-    });
-
-    for (const ma of managerAssignments) {
-      await tx.notification.create({
-        data: {
-          companyId: actor.companyId,
-          recipientId: ma.userId,
-          title: `Hasil Perbaikan Menunggu Konfirmasi (${workOrder.spkNo})`,
-          message: `Teknisi ${technician.fullName} telah menyelesaikan perbaikan pada aset ${workOrder.report.asset.name}. Silakan tinjau foto sebelum dan sesudah.`,
-          linkUrl: `/dashboard/laporan`,
-        },
       });
-    }
 
-    return { report: updatedRep };
-  });
+      // 3. Notifikasi Web ke seluruh Manager yang bertugas di cluster ini
+      const now = new Date();
+      const managerAssignments = await tx.clusterManagerAssignment.findMany({
+        where: {
+          clusterId,
+          validFrom: { lte: now },
+          OR: [{ validUntil: null }, { validUntil: { gte: now } }],
+        },
+        select: { userId: true },
+      });
+
+      if (managerAssignments.length > 0) {
+        await tx.notification.createMany({
+          data: managerAssignments.map((ma) => ({
+            companyId: actor.companyId!,
+            recipientId: ma.userId,
+            title: `Hasil Perbaikan Menunggu Konfirmasi (${workOrder.spkNo})`,
+            message: `Teknisi ${technician.fullName} telah menyelesaikan perbaikan pada aset ${workOrder.report.asset.name}. Silakan tinjau foto sebelum dan sesudah.`,
+            linkUrl: `/dashboard/laporan`,
+          })),
+        });
+      }
+
+      return { report: updatedRep };
+    },
+    {
+      maxWait: 10000,
+      timeout: 30000,
+    }
+  );
 
   // 4. Catat riwayat audit
   await recordAuditLog({
@@ -551,48 +560,51 @@ export async function confirmWorkResultByManager(
       throw new Error(check.error);
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      // 1. Tambah RevisionNote
-      await tx.revisionNote.create({
-        data: {
-          workOrderId: workOrder.id,
-          note: revisionNote,
-          createdById: actor.id,
-        },
-      });
-
-      // 2. Kembalikan status ke DIKERJAKAN
-      const rep = await tx.report.update({
-        where: { id: workOrder.report.id },
-        data: {
-          status: "DIKERJAKAN",
-          stageEnteredAt: new Date(),
-          statusLogs: {
-            create: {
-              fromStatus: "MENUNGGU_KONFIRMASI",
-              toStatus: "DIKERJAKAN",
-              changedById: actor.id,
-              note: `Manager menyatakan hasil belum sesuai. Catatan perbaikan: ${revisionNote}`,
-            },
-          },
-        },
-      });
-
-      // 3. Notifikasi Web ke Teknisi
-      if (workOrder.technician?.userId) {
-        await tx.notification.create({
+    const result = await prisma.$transaction(
+      async (tx) => {
+        // 1. Tambah RevisionNote
+        await tx.revisionNote.create({
           data: {
-            companyId: actor.companyId,
-            recipientId: workOrder.technician.userId,
-            title: `Perbaikan Perlu Revisi (${workOrder.spkNo})`,
-            message: `Manager ${actor.name} meminta perbaikan ulang untuk ${workOrder.report.asset.name}. Catatan: ${revisionNote}`,
-            linkUrl: `/dashboard/laporan`,
+            workOrderId: workOrder.id,
+            note: revisionNote,
+            createdById: actor.id,
           },
         });
-      }
 
-      return rep;
-    });
+        // 2. Kembalikan status ke DIKERJAKAN
+        const rep = await tx.report.update({
+          where: { id: workOrder.report.id },
+          data: {
+            status: "DIKERJAKAN",
+            stageEnteredAt: new Date(),
+            statusLogs: {
+              create: {
+                fromStatus: "MENUNGGU_KONFIRMASI",
+                toStatus: "DIKERJAKAN",
+                changedById: actor.id,
+                note: `Manager menyatakan hasil belum sesuai. Catatan perbaikan: ${revisionNote}`,
+              },
+            },
+          },
+        });
+
+        // 3. Notifikasi Web ke Teknisi
+        if (workOrder.technician?.userId) {
+          await tx.notification.create({
+            data: {
+              companyId: actor.companyId,
+              recipientId: workOrder.technician.userId,
+              title: `Perbaikan Perlu Revisi (${workOrder.spkNo})`,
+              message: `Manager ${actor.name} meminta perbaikan ulang untuk ${workOrder.report.asset.name}. Catatan: ${revisionNote}`,
+              linkUrl: `/dashboard/laporan`,
+            },
+          });
+        }
+
+        return rep;
+      },
+      { maxWait: 10000, timeout: 30000 }
+    );
 
     // 4. Catat AuditLog
     await recordAuditLog({
@@ -626,35 +638,38 @@ export async function confirmWorkResultByManager(
 
     const now = new Date();
 
-    const result = await prisma.$transaction(async (tx) => {
-      // 1. Tutup WorkOrder
-      const updatedWo = await tx.workOrder.update({
-        where: { id: workOrder.id },
-        data: {
-          completedAt: now,
-          confirmedAt: now,
-        },
-      });
+    const result = await prisma.$transaction(
+      async (tx) => {
+        // 1. Tutup WorkOrder
+        const updatedWo = await tx.workOrder.update({
+          where: { id: workOrder.id },
+          data: {
+            completedAt: now,
+            confirmedAt: now,
+          },
+        });
 
-      // 2. Ubah status laporan ke SELESAI
-      const updatedRep = await tx.report.update({
-        where: { id: workOrder.report.id },
-        data: {
-          status: "SELESAI",
-          stageEnteredAt: now,
-          statusLogs: {
-            create: {
-              fromStatus: "MENUNGGU_KONFIRMASI",
-              toStatus: "SELESAI",
-              changedById: actor.id,
-              note: `Manager ${actor.name} telah mengonfirmasi bahwa hasil perbaikan telah sesuai.`,
+        // 2. Ubah status laporan ke SELESAI
+        const updatedRep = await tx.report.update({
+          where: { id: workOrder.report.id },
+          data: {
+            status: "SELESAI",
+            stageEnteredAt: now,
+            statusLogs: {
+              create: {
+                fromStatus: "MENUNGGU_KONFIRMASI",
+                toStatus: "SELESAI",
+                changedById: actor.id,
+                note: `Manager ${actor.name} telah mengonfirmasi bahwa hasil perbaikan telah sesuai.`,
+              },
             },
           },
-        },
-      });
+        });
 
-      return { workOrder: updatedWo, report: updatedRep };
-    });
+        return { workOrder: updatedWo, report: updatedRep };
+      },
+      { maxWait: 10000, timeout: 30000 }
+    );
 
     // 3. Catat riwayat audit
     await recordAuditLog({

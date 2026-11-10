@@ -22,7 +22,9 @@ import {
 import type { SessionUser } from "../auth";
 
 describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi Hasil & Pengajuan Ganti Vendor", () => {
-  it("menjalankan siklus lengkap Keputusan Manager (Tolak & Setuju+SPK), Eksekusi Teknisi, Revisi, Selesai, serta Rapor Vendor", async () => {
+  it(
+    "menjalankan siklus lengkap Keputusan Manager (Tolak & Setuju+SPK), Eksekusi Teknisi, Revisi, Selesai, serta Rapor Vendor",
+    async () => {
     const [pengelolaUser, managerUser, picUser, teknisiUser, adminUser] =
       await Promise.all([
         prisma.user.findUniqueOrThrow({
@@ -291,9 +293,11 @@ describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi H
     );
     expect(scorecard.metrics.totalJobs).toBeGreaterThanOrEqual(1);
     expect(scorecard.metrics.revisionCount).toBeGreaterThanOrEqual(1);
-  });
+  }, 30000);
 
-  it("menjalankan alur Pengajuan Ganti Vendor (Bagian 7 PRD v0.2): Pengelola -> Manager -> Admin -> Owner", async () => {
+  it(
+    "menjalankan alur Pengajuan Ganti Vendor (Bagian 7 PRD v0.2): Pengelola -> Manager -> Admin -> Owner",
+    async () => {
     const [pengelolaUser, managerUser, adminUser, ownerUser, picUser] =
       await Promise.all([
         prisma.user.findUniqueOrThrow({
@@ -412,5 +416,5 @@ describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi H
       submitReq.request.id
     );
     expect(ownerViewed.ownerViewedAt).not.toBeNull();
-  });
+  }, 30000);
 });

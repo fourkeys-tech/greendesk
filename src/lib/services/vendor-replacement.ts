@@ -129,46 +129,49 @@ export async function submitVendorReplacementRequest(
 
   const requestNo = await generateNextReplacementRequestNo(actor.companyId);
 
-  const request = await prisma.$transaction(async (tx) => {
-    const created = await tx.vendorReplacementRequest.create({
-      data: {
-        companyId: actor.companyId!,
-        requestNo,
-        clusterId: asset.park.clusterId,
-        assetId: asset.id,
-        vendorId: vendor.id,
-        basisReportIds: input.basisReportIds,
-        reason,
-        status: "DIAJUKAN",
-        submittedById: actor.id,
-      },
-    });
-
-    // Kirim notifikasi web ke seluruh Manager yang bertugas di cluster ini
-    const now = new Date();
-    const managerAssignments = await tx.clusterManagerAssignment.findMany({
-      where: {
-        clusterId: asset.park.clusterId,
-        validFrom: { lte: now },
-        OR: [{ validUntil: null }, { validUntil: { gte: now } }],
-      },
-      select: { userId: true },
-    });
-
-    for (const ma of managerAssignments) {
-      await tx.notification.create({
+  const request = await prisma.$transaction(
+    async (tx) => {
+      const created = await tx.vendorReplacementRequest.create({
         data: {
-          companyId: actor.companyId,
-          recipientId: ma.userId,
-          title: `Pengajuan Ganti Vendor (${requestNo})`,
-          message: `Pengelola ${actor.name} mengajukan pergantian vendor ${vendor.name} untuk aset ${asset.name}. Silakan tinjau dan putuskan.`,
-          linkUrl: `/dashboard/pengajuan-ganti-vendor`,
+          companyId: actor.companyId!,
+          requestNo,
+          clusterId: asset.park.clusterId,
+          assetId: asset.id,
+          vendorId: vendor.id,
+          basisReportIds: input.basisReportIds,
+          reason,
+          status: "DIAJUKAN",
+          submittedById: actor.id,
         },
       });
-    }
 
-    return created;
-  });
+      // Kirim notifikasi web ke seluruh Manager yang bertugas di cluster ini
+      const now = new Date();
+      const managerAssignments = await tx.clusterManagerAssignment.findMany({
+        where: {
+          clusterId: asset.park.clusterId,
+          validFrom: { lte: now },
+          OR: [{ validUntil: null }, { validUntil: { gte: now } }],
+        },
+        select: { userId: true },
+      });
+
+      for (const ma of managerAssignments) {
+        await tx.notification.create({
+          data: {
+            companyId: actor.companyId,
+            recipientId: ma.userId,
+            title: `Pengajuan Ganti Vendor (${requestNo})`,
+            message: `Pengelola ${actor.name} mengajukan pergantian vendor ${vendor.name} untuk aset ${asset.name}. Silakan tinjau dan putuskan.`,
+            linkUrl: `/dashboard/pengajuan-ganti-vendor`,
+          },
+        });
+      }
+
+      return created;
+    },
+    { maxWait: 10000, timeout: 30000 }
+  );
 
   // Catat AuditLog
   await recordAuditLog({
@@ -253,30 +256,33 @@ export async function decideVendorReplacementByManager(
       );
     }
 
-    const updated = await prisma.$transaction(async (tx) => {
-      const res = await tx.vendorReplacementRequest.update({
-        where: { id: request.id },
-        data: {
-          status: "DITOLAK",
-          managerDecisionNote: note,
-          managerDecidedById: actor.id,
-          managerDecidedAt: now,
-        },
-      });
+    const updated = await prisma.$transaction(
+      async (tx) => {
+        const res = await tx.vendorReplacementRequest.update({
+          where: { id: request.id },
+          data: {
+            status: "DITOLAK",
+            managerDecisionNote: note,
+            managerDecidedById: actor.id,
+            managerDecidedAt: now,
+          },
+        });
 
-      // Notifikasi Web ke Pengelola pengaju
-      await tx.notification.create({
-        data: {
-          companyId: actor.companyId,
-          recipientId: request.submittedById,
-          title: `Pengajuan Ganti Vendor Ditolak (${request.requestNo})`,
-          message: `Manager ${actor.name} menolak pengajuan ganti vendor untuk aset ${request.asset.name}. Alasan: ${note}`,
-          linkUrl: `/dashboard/pengajuan-ganti-vendor`,
-        },
-      });
+        // Notifikasi Web ke Pengelola pengaju
+        await tx.notification.create({
+          data: {
+            companyId: actor.companyId,
+            recipientId: request.submittedById,
+            title: `Pengajuan Ganti Vendor Ditolak (${request.requestNo})`,
+            message: `Manager ${actor.name} menolak pengajuan ganti vendor untuk aset ${request.asset.name}. Alasan: ${note}`,
+            linkUrl: `/dashboard/pengajuan-ganti-vendor`,
+          },
+        });
 
-      return res;
-    });
+        return res;
+      },
+      { maxWait: 10000, timeout: 30000 }
+    );
 
     // Catat AuditLog
     await recordAuditLog({
@@ -297,41 +303,44 @@ export async function decideVendorReplacementByManager(
   if (input.decision === "SETUJU") {
     const note = input.decisionNote?.trim() || null;
 
-    const updated = await prisma.$transaction(async (tx) => {
-      const res = await tx.vendorReplacementRequest.update({
-        where: { id: request.id },
-        data: {
-          status: "DISETUJUI",
-          managerDecisionNote: note,
-          managerDecidedById: actor.id,
-          managerDecidedAt: now,
-        },
-      });
-
-      // Kirim Notifikasi Web ke Admin Perusahaan (untuk diteruskan ke Owner)
-      const admins = await tx.user.findMany({
-        where: {
-          companyId: actor.companyId,
-          role: "ADMIN",
-          isActive: true,
-        },
-        select: { id: true },
-      });
-
-      for (const adm of admins) {
-        await tx.notification.create({
+    const updated = await prisma.$transaction(
+      async (tx) => {
+        const res = await tx.vendorReplacementRequest.update({
+          where: { id: request.id },
           data: {
-            companyId: actor.companyId,
-            recipientId: adm.id,
-            title: `Pengajuan Ganti Vendor Disetujui (${request.requestNo})`,
-            message: `Manager ${actor.name} menyetujui pergantian vendor ${request.vendor.name} untuk aset ${request.asset.name}. Silakan teruskan ke Owner.`,
-            linkUrl: `/dashboard/pengajuan-ganti-vendor`,
+            status: "DISETUJUI",
+            managerDecisionNote: note,
+            managerDecidedById: actor.id,
+            managerDecidedAt: now,
           },
         });
-      }
 
-      return res;
-    });
+        // Kirim Notifikasi Web ke Admin Perusahaan (untuk diteruskan ke Owner)
+        const admins = await tx.user.findMany({
+          where: {
+            companyId: actor.companyId,
+            role: "ADMIN",
+            isActive: true,
+          },
+          select: { id: true },
+        });
+
+        for (const adm of admins) {
+          await tx.notification.create({
+            data: {
+              companyId: actor.companyId,
+              recipientId: adm.id,
+              title: `Pengajuan Ganti Vendor Disetujui (${request.requestNo})`,
+              message: `Manager ${actor.name} menyetujui pergantian vendor ${request.vendor.name} untuk aset ${request.asset.name}. Silakan teruskan ke Owner.`,
+              linkUrl: `/dashboard/pengajuan-ganti-vendor`,
+            },
+          });
+        }
+
+        return res;
+      },
+      { maxWait: 10000, timeout: 30000 }
+    );
 
     // Catat AuditLog
     await recordAuditLog({
@@ -392,41 +401,44 @@ export async function forwardVendorReplacementByAdmin(
   const now = new Date();
   const forwardNote = input.forwardNote?.trim() || null;
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const res = await tx.vendorReplacementRequest.update({
-      where: { id: request.id },
-      data: {
-        status: "DITERUSKAN_KE_OWNER",
-        adminForwardedById: actor.id,
-        adminForwardedAt: now,
-        adminForwardedNote: forwardNote,
-      },
-    });
-
-    // Notifikasi Web ke Owner / Direksi
-    const owners = await tx.user.findMany({
-      where: {
-        companyId: actor.companyId,
-        role: "OWNER",
-        isActive: true,
-      },
-      select: { id: true },
-    });
-
-    for (const own of owners) {
-      await tx.notification.create({
+  const updated = await prisma.$transaction(
+    async (tx) => {
+      const res = await tx.vendorReplacementRequest.update({
+        where: { id: request.id },
         data: {
-          companyId: actor.companyId,
-          recipientId: own.id,
-          title: `Eskalasi Pergantian Vendor Diterima (${request.requestNo})`,
-          message: `Admin ${actor.name} meneruskan pengajuan pergantian vendor ${request.vendor.name} untuk aset ${request.asset.name}.`,
-          linkUrl: `/dashboard/pengajuan-ganti-vendor`,
+          status: "DITERUSKAN_KE_OWNER",
+          adminForwardedById: actor.id,
+          adminForwardedAt: now,
+          adminForwardedNote: forwardNote,
         },
       });
-    }
 
-    return res;
-  });
+      // Notifikasi Web ke Owner / Direksi
+      const owners = await tx.user.findMany({
+        where: {
+          companyId: actor.companyId,
+          role: "OWNER",
+          isActive: true,
+        },
+        select: { id: true },
+      });
+
+      for (const own of owners) {
+        await tx.notification.create({
+          data: {
+            companyId: actor.companyId,
+            recipientId: own.id,
+            title: `Eskalasi Pergantian Vendor Diterima (${request.requestNo})`,
+            message: `Admin ${actor.name} meneruskan pengajuan pergantian vendor ${request.vendor.name} untuk aset ${request.asset.name}.`,
+            linkUrl: `/dashboard/pengajuan-ganti-vendor`,
+          },
+        });
+      }
+
+      return res;
+    },
+    { maxWait: 10000, timeout: 30000 }
+  );
 
   // Catat AuditLog
   await recordAuditLog({
