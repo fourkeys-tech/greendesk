@@ -63,6 +63,7 @@ export default async function VendorReplacementPage({
             },
           },
           orderBy: { createdAt: "desc" },
+          take: 10,
         },
       },
       orderBy: { name: "asc" },

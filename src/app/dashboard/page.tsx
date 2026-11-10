@@ -18,18 +18,39 @@ export default async function DashboardHomePage() {
   // Ambil laporan terfilter sesuai cakupan role pengguna
   const visibleReports = await getScopedReportsForUser(session);
 
-  // Ambil metrik master data dari database
-  const [assetCount, auditCount, vendorCount, technicianCount] =
-    session.companyId
-      ? await Promise.all([
-          prisma.asset.count({ where: { companyId: session.companyId } }),
-          prisma.auditLog.count({ where: { companyId: session.companyId } }),
-          prisma.vendor.count({ where: { companyId: session.companyId } }),
-          prisma.technician.count({
-            where: { companyId: session.companyId },
-          }),
-        ])
-      : [0, 0, 0, 0];
+  // Ambil metrik master data dari database HANYA sesuai kebutuhan role pengguna saat ini
+  let assetCount = 0;
+  let auditCount = 0;
+  let vendorCount = 0;
+  let technicianCount = 0;
+
+  if (session.companyId) {
+    if (session.role === "ADMIN") {
+      [assetCount, auditCount, vendorCount, technicianCount] = await Promise.all([
+        prisma.asset.count({ where: { companyId: session.companyId } }),
+        prisma.auditLog.count({ where: { companyId: session.companyId } }),
+        prisma.vendor.count({ where: { companyId: session.companyId } }),
+        prisma.technician.count({ where: { companyId: session.companyId } }),
+      ]);
+    } else if (session.role === "PENGELOLA") {
+      assetCount = await prisma.asset.count({
+        where: { companyId: session.companyId },
+      });
+    } else if (session.role === "MANAGER") {
+      vendorCount = await prisma.vendor.count({
+        where: { companyId: session.companyId },
+      });
+    } else if (session.role === "OWNER") {
+      [assetCount, vendorCount] = await Promise.all([
+        prisma.asset.count({ where: { companyId: session.companyId } }),
+        prisma.vendor.count({ where: { companyId: session.companyId } }),
+      ]);
+    } else if (session.role === "PIC_VENDOR") {
+      technicianCount = await prisma.technician.count({
+        where: { companyId: session.companyId },
+      });
+    }
+  }
 
   // Render halaman khusus yang presisi sesuai hak akses & fungsi role
   switch (session.role) {

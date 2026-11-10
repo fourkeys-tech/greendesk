@@ -22,25 +22,10 @@ export default async function DashboardLayout({
     redirect("/login");
   }
 
-  // Cek peran ganda PIC Vendor dan Teknisi (PRD v0.2 Keputusan 3 & Bagian 3.2)
-  const [userTechProfile, userManagedVendor] = await Promise.all([
-    session.role === "PIC_VENDOR"
-      ? prisma.technician.findUnique({
-          where: { userId: session.id },
-          select: { id: true, approvalStatus: true },
-        })
-      : Promise.resolve(null),
-    session.role === "TEKNISI"
-      ? prisma.vendor.findUnique({
-          where: { picUserId: session.id },
-          select: { id: true },
-        })
-      : Promise.resolve(null),
-  ]);
-
+  // Cek peran ganda PIC Vendor dan Teknisi langsung dari session yang ter-cache (hemat 2 query per render)
   const navItems = getNavigationForRole(session.role, {
-    isDualRoleTechnician: userTechProfile?.approvalStatus === "APPROVED",
-    isDualRolePic: Boolean(userManagedVendor),
+    isDualRoleTechnician: session.technicianApprovalStatus === "APPROVED",
+    isDualRolePic: Boolean(session.isDualRolePic),
   });
   const roleMeta = ROLE_METADATA[session.role];
 
@@ -49,8 +34,16 @@ export default async function DashboardLayout({
     await Promise.all([
       prisma.notification.findMany({
         where: { recipientId: session.id },
+        select: {
+          id: true,
+          title: true,
+          message: true,
+          linkUrl: true,
+          isRead: true,
+          createdAt: true,
+        },
         orderBy: { createdAt: "desc" },
-        take: 12,
+        take: 8,
       }),
       session.staffClusterId
         ? prisma.cluster.findUnique({
@@ -61,7 +54,7 @@ export default async function DashboardLayout({
       session.role === "MANAGER"
         ? prisma.clusterManagerAssignment.findMany({
             where: { userId: session.id },
-            include: { cluster: { select: { name: true } } },
+            select: { cluster: { select: { name: true } } },
           })
         : Promise.resolve([]),
       session.role === "PENGELOLA" && session.staffClusterId

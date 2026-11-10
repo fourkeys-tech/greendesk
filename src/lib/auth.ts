@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import type { Role } from "@prisma/client";
@@ -24,6 +25,8 @@ export interface SessionUser {
   companyId: string | null;
   companyName: string | null;
   staffClusterId: string | null;
+  technicianApprovalStatus?: string | null;
+  isDualRolePic?: boolean;
 }
 
 export type SessionPayload = SessionUser;
@@ -76,8 +79,9 @@ export async function clearSessionCookie() {
 
 /**
  * Mengambil sesi pengguna saat ini dan memvalidasi status aktif/blokir dari database.
+ * Di-memoize per-request menggunakan React cache() untuk mencegah duplikasi query dalam satu siklus render.
  */
-export async function getCurrentSession(): Promise<SessionUser | null> {
+export const getCurrentSession = cache(async (): Promise<SessionUser | null> => {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
   if (!token) return null;
@@ -87,9 +91,18 @@ export async function getCurrentSession(): Promise<SessionUser | null> {
 
   const dbUser = await prisma.user.findUnique({
     where: { id: decoded.id },
-    include: {
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+      companyId: true,
+      staffClusterId: true,
+      isActive: true,
+      isBlocked: true,
       company: { select: { name: true } },
       technicianProfile: { select: { approvalStatus: true, status: true } },
+      managedVendor: { select: { id: true } },
     },
   });
 
@@ -114,6 +127,8 @@ export async function getCurrentSession(): Promise<SessionUser | null> {
     companyId: dbUser.companyId,
     companyName: dbUser.company?.name ?? null,
     staffClusterId: dbUser.staffClusterId,
+    technicianApprovalStatus: dbUser.technicianProfile?.approvalStatus ?? null,
+    isDualRolePic: Boolean(dbUser.managedVendor),
   };
-}
+});
 
