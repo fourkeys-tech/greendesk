@@ -80,7 +80,7 @@ export async function sendReportStatusEmail(params: {
     afterPhotoUrls,
   } = params;
 
-  const statusUrl = `/dashboard/laporan?tiket=${encodeURIComponent(ticketNo)}`;
+  const statusUrl = `/status/${encodeURIComponent(ticketNo)}`;
 
   const templates: Record<
     Exclude<EmailTriggerType, "OTP_LOGIN" | "VENDOR_INVITE">,

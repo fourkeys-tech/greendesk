@@ -222,6 +222,12 @@ export function getNavigationForRole(role: Role): NavItem[] {
         label: "Laporan Saya",
         description: "Pantau status laporan dan batalkan jika masih Baru",
         iconName: "FileText",
+      },
+      {
+        href: "/dashboard/profil",
+        label: "Profil Saya",
+        description: "Status pelapor, rekam jejak, dan persetujuan data",
+        iconName: "User",
       }
     );
   }
@@ -235,10 +241,22 @@ export function getNavigationForRole(role: Role): NavItem[] {
         iconName: "ClipboardCheck",
       },
       {
+        href: "/dashboard/pengajuan-ganti-vendor",
+        label: "Pengajuan Ganti Vendor",
+        description: "Ajukan pergantian vendor untuk aset yang rusak berulang",
+        iconName: "RotateCcw",
+      },
+      {
         href: "/dashboard/wilayah",
         label: "Data Wilayah & Aset (Lihat)",
         description: "Lihat struktur cluster, taman, dan aset aktif",
         iconName: "MapPin",
+      },
+      {
+        href: "/dashboard/profil",
+        label: "Profil Saya",
+        description: "Identitas akun dan cluster penugasan",
+        iconName: "User",
       }
     );
   }
@@ -252,16 +270,34 @@ export function getNavigationForRole(role: Role): NavItem[] {
         iconName: "CheckSquare",
       },
       {
+        href: "/dashboard/spk",
+        label: "Daftar SPK",
+        description: "Pantau seluruh penugasan SPK dan pengerjaan",
+        iconName: "FileSpreadsheet",
+      },
+      {
+        href: "/dashboard/pengajuan-ganti-vendor",
+        label: "Pengajuan Ganti Vendor",
+        description: "Putuskan pengajuan pergantian vendor dari Pengelola",
+        iconName: "RotateCcw",
+      },
+      {
+        href: "/dashboard/vendor",
+        label: "Vendor & Rapor Kinerja",
+        description: "Daftar vendor, rapor SPK, dan daftar teknisi",
+        iconName: "Building2",
+      },
+      {
         href: "/dashboard/wilayah",
         label: "Wilayah & Aset (Lihat)",
         description: "Lihat daftar taman, aset, dan QR di cluster tertaut",
         iconName: "MapPin",
       },
       {
-        href: "/dashboard/vendor",
-        label: "Vendor & Teknisi (Lihat)",
-        description: "Lihat daftar vendor, teknisi, dan rapor kinerja vendor",
-        iconName: "Building2",
+        href: "/dashboard/profil",
+        label: "Profil Saya",
+        description: "Identitas dan cluster wewenang manajer",
+        iconName: "User",
       }
     );
   }
@@ -337,6 +373,18 @@ export function getNavigationForRole(role: Role): NavItem[] {
         label: "Riwayat Perubahan Data",
         description: "Jejak audit perubahan data master (siapa, apa, kapan, nilai lama & baru)",
         iconName: "History",
+      },
+      {
+        href: "/dashboard/pengajuan-ganti-vendor",
+        label: "Pengajuan Ganti Vendor",
+        description: "Teruskan pengajuan ganti vendor yang disetujui Manager ke Owner",
+        iconName: "RotateCcw",
+      },
+      {
+        href: "/dashboard/profil",
+        label: "Profil Saya",
+        description: "Identitas akun Admin",
+        iconName: "User",
       }
     );
   }
@@ -362,10 +410,22 @@ export function getNavigationForRole(role: Role): NavItem[] {
         iconName: "Building2",
       },
       {
+        href: "/dashboard/pengajuan-ganti-vendor",
+        label: "Eskalasi Ganti Vendor",
+        description: "Daftar eskalasi pergantian vendor dari Admin",
+        iconName: "RotateCcw",
+      },
+      {
         href: "/dashboard/audit",
         label: "Riwayat Perubahan Data",
         description: "Audit seluruh perubahan data master di perusahaan",
         iconName: "History",
+      },
+      {
+        href: "/dashboard/profil",
+        label: "Profil Saya",
+        description: "Identitas akun Owner",
+        iconName: "User",
       }
     );
   }
@@ -380,6 +440,65 @@ export function getNavigationForRole(role: Role): NavItem[] {
 
   return items;
 }
+
+/**
+ * Metadata Tampilan 10 Status Laporan (Bagian 7 PRD)
+ */
+export const STATUS_METADATA: Record<
+  ReportStatus,
+  { label: string; badgeColor: string; description: string }
+> = {
+  BARU: {
+    label: "Baru",
+    badgeColor: "bg-sky-100 text-sky-800 border-sky-300",
+    description: "Laporan baru masuk dan menunggu verifikasi Pengelola cluster.",
+  },
+  DIBATALKAN: {
+    label: "Dibatalkan",
+    badgeColor: "bg-slate-100 text-slate-600 border-slate-300",
+    description: "Laporan dibatalkan sendiri oleh pelapor sebelum diverifikasi.",
+  },
+  DIGABUNG: {
+    label: "Digabung",
+    badgeColor: "bg-purple-100 text-purple-800 border-purple-300",
+    description: "Laporan ganda digabungkan ke laporan utama pada aset yang sama.",
+  },
+  TIDAK_VALID: {
+    label: "Tidak Valid",
+    badgeColor: "bg-rose-100 text-rose-800 border-rose-300",
+    description: "Laporan dinyatakan tidak valid oleh Pengelola beserta alasannya.",
+  },
+  MENUNGGU_KEPUTUSAN: {
+    label: "Menunggu Keputusan",
+    badgeColor: "bg-amber-100 text-amber-800 border-amber-300",
+    description: "Laporan valid telah diteruskan Pengelola ke Manager untuk keputusan perbaikan.",
+  },
+  DITOLAK: {
+    label: "Ditolak",
+    badgeColor: "bg-rose-100 text-rose-800 border-rose-300",
+    description: "Perbaikan ditolak oleh Manager beserta alasan penolakannya.",
+  },
+  DISETUJUI: {
+    label: "Disetujui (SPK Terbit)",
+    badgeColor: "bg-indigo-100 text-indigo-800 border-indigo-300",
+    description: "Perbaikan disetujui Manager, SPK telah diterbitkan ke Vendor untuk penunjukan teknisi.",
+  },
+  DIKERJAKAN: {
+    label: "Dikerjakan Teknisi",
+    badgeColor: "bg-orange-100 text-orange-800 border-orange-300",
+    description: "Teknisi vendor telah ditugaskan dan sedang mengerjakan perbaikan di lapangan.",
+  },
+  MENUNGGU_KONFIRMASI: {
+    label: "Menunggu Konfirmasi",
+    badgeColor: "bg-teal-100 text-teal-800 border-teal-300",
+    description: "Teknisi telah mengunggah foto hasil perbaikan dan menunggu pemeriksaan Manager.",
+  },
+  SELESAI: {
+    label: "Selesai",
+    badgeColor: "bg-emerald-100 text-emerald-800 border-emerald-300",
+    description: "Hasil perbaikan telah dikonfirmasi sesuai oleh Manager dan laporan ditutup.",
+  },
+};
 
 /**
  * Aturan Transisi Status Laporan (Bagian 7 PRD)

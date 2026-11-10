@@ -62,6 +62,9 @@ export async function getScopedReportsForUser(
             assignedAt: true,
             completedAt: true,
             vendor: { select: { name: true } },
+            technician: { select: { id: true, fullName: true } },
+            photos: true,
+            revisionNotes: true,
           },
         },
       },
@@ -96,6 +99,8 @@ export async function getScopedReportsForUser(
       include: {
         vendor: true,
         technician: true,
+        photos: true,
+        revisionNotes: true,
       },
     },
     photos: true,

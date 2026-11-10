@@ -28,6 +28,7 @@ export function ArchiveReportButton({
   return (
     <button
       type="button"
+      suppressHydrationWarning
       disabled={isPending}
       onClick={handleClick}
       className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${

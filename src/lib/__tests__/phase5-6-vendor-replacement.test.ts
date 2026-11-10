@@ -1,0 +1,360 @@
+import { describe, expect, it } from "vitest";
+import { prisma } from "../prisma";
+import { submitCitizenReport } from "../services/phase3-reporting";
+import { verifyReportAsValid } from "../services/phase4-verification";
+import {
+  decideManagerReport,
+  getPendingManagerReports,
+} from "../services/phase5-decision";
+import {
+  assignTechnicianToWorkOrder,
+  confirmWorkResultByManager,
+  submitWorkResultByTechnician,
+} from "../services/phase6-execution";
+import {
+  decideVendorReplacementByManager,
+  forwardVendorReplacementByAdmin,
+  getVendorReportCard,
+  markVendorReplacementViewedByOwner,
+  submitVendorReplacementRequest,
+} from "../services/vendor-replacement";
+import type { SessionUser } from "../auth";
+
+describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi Hasil & Pengajuan Ganti Vendor", () => {
+  it("menjalankan siklus lengkap Keputusan Manager (Tolak & Setuju+SPK), Eksekusi Teknisi, Revisi, Selesai, serta Rapor Vendor", async () => {
+    const [pengelolaUser, managerUser, picUser, teknisiUser, adminUser] =
+      await Promise.all([
+        prisma.user.findUniqueOrThrow({
+          where: { email: "pengelola.bgv@greenpark.id" },
+        }),
+        prisma.user.findUniqueOrThrow({
+          where: { email: "manager@greenpark.id" },
+        }),
+        prisma.user.findUniqueOrThrow({
+          where: { email: "pic@vendorjaya.id" },
+        }),
+        prisma.user.findUniqueOrThrow({
+          where: { email: "teknisi.budi@vendorjaya.id" },
+        }),
+        prisma.user.findUniqueOrThrow({
+          where: { email: "admin@greenpark.id" },
+        }),
+      ]);
+
+    const assetBgv = await prisma.asset.findUniqueOrThrow({
+      where: { code: "AST-BGV-001" },
+      include: { park: true },
+    });
+
+    const vendorJaya = await prisma.vendor.findFirstOrThrow({
+      where: { picUserId: picUser.id },
+    });
+
+    const techProfile = await prisma.technician.findUniqueOrThrow({
+      where: { userId: teknisiUser.id },
+    });
+
+    const pengelolaActor: SessionUser = {
+      id: pengelolaUser.id,
+      name: pengelolaUser.name,
+      email: pengelolaUser.email,
+      role: "PENGELOLA",
+      companyId: pengelolaUser.companyId,
+      companyName: "PT GreenPark",
+      staffClusterId: pengelolaUser.staffClusterId,
+    };
+
+    const managerActor: SessionUser = {
+      id: managerUser.id,
+      name: managerUser.name,
+      email: managerUser.email,
+      role: "MANAGER",
+      companyId: managerUser.companyId,
+      companyName: "PT GreenPark",
+      staffClusterId: null,
+    };
+
+    const picActor: SessionUser = {
+      id: picUser.id,
+      name: picUser.name,
+      email: picUser.email,
+      role: "PIC_VENDOR",
+      companyId: picUser.companyId,
+      companyName: "PT GreenPark",
+      staffClusterId: null,
+    };
+
+    const teknisiActor: SessionUser = {
+      id: teknisiUser.id,
+      name: teknisiUser.name,
+      email: teknisiUser.email,
+      role: "TEKNISI",
+      companyId: teknisiUser.companyId,
+      companyName: "PT GreenPark",
+      staffClusterId: null,
+    };
+
+    const suffix = Date.now();
+
+    const pelapor = await prisma.user.create({
+      data: {
+        companyId: adminUser.companyId,
+        name: "Warga Penguji Fase 5",
+        email: `warga.f5.${suffix}@greenpark.id`,
+        role: "PENGGUNA",
+        dataConsentAt: new Date(),
+      },
+    });
+
+    const pelaporActor: SessionUser = {
+      id: pelapor.id,
+      name: pelapor.name,
+      email: pelapor.email,
+      role: "PENGGUNA",
+      companyId: pelapor.companyId,
+      companyName: null,
+      staffClusterId: null,
+    };
+
+    // 1. Buat 2 laporan baru dari warga pada AST-BGV-001
+    const rep1 = await submitCitizenReport(pelaporActor, {
+      assetCode: assetBgv.code,
+      channel: "QR",
+      description: `Kerusakan tiang lampu #1 (${suffix})`,
+      photoUrls: ["/uploads/f5-1.jpg"],
+    });
+
+    const rep2 = await submitCitizenReport(pelaporActor, {
+      assetCode: assetBgv.code,
+      channel: "QR",
+      description: `Kerusakan kabel lampu #2 (${suffix})`,
+      photoUrls: ["/uploads/f5-2.jpg"],
+    });
+
+    // 2. Pengelola memverifikasi keduanya Valid (rep1: RENDAH, rep2: TINGGI)
+    await verifyReportAsValid(pengelolaActor, {
+      reportId: rep1.id,
+      priority: "RENDAH",
+    });
+
+    await verifyReportAsValid(pengelolaActor, {
+      reportId: rep2.id,
+      priority: "TINGGI",
+    });
+
+    // 3. Antrean Manager harus mengurutkan prioritas TINGGI (rep2) di atas RENDAH (rep1)
+    const queue = await getPendingManagerReports(managerActor);
+    const idxRep2 = queue.findIndex((q) => q.id === rep2.id);
+    const idxRep1 = queue.findIndex((q) => q.id === rep1.id);
+    expect(idxRep2).toBeGreaterThanOrEqual(0);
+    expect(idxRep1).toBeGreaterThan(idxRep2);
+
+    // 4. Manager menolak rep1: tanpa alasan harus gagal, dengan alasan harus berhasil -> DITOLAK
+    await expect(
+      decideManagerReport(managerActor, {
+        reportId: rep1.id,
+        decision: "TOLAK",
+        rejectionReason: "   ",
+      })
+    ).rejects.toThrow(/wajib mencantumkan alasan/i);
+
+    const rejectedRes = await decideManagerReport(managerActor, {
+      reportId: rep1.id,
+      decision: "TOLAK",
+      rejectionReason: "Menunggu anggaran kuartal depan.",
+    });
+    expect(rejectedRes.status).toBe("DITOLAK");
+
+    // 5. Manager menyetujui rep2 & menerbitkan SPK ke Vendor Jaya
+    const approvedRes = await decideManagerReport(managerActor, {
+      reportId: rep2.id,
+      decision: "SETUJU",
+      spkInput: {
+        vendorId: vendorJaya.id,
+        notes: "Ganti rangkaian LED utama.",
+      },
+    });
+    expect(approvedRes.status).toBe("DISETUJUI");
+    expect(approvedRes.spkNo).toMatch(/^SPK-\d{6}-\d{4}$/);
+    expect(approvedRes.workOrder?.technicianId).toBeNull();
+
+    const woId = approvedRes.workOrder!.id;
+
+    // 6. PIC Vendor menugaskan Teknisi Budi -> status menjadi DIKERJAKAN
+    const assignRes = await assignTechnicianToWorkOrder(picActor, {
+      workOrderId: woId,
+      technicianId: techProfile.id,
+    });
+    expect(assignRes.report.status).toBe("DIKERJAKAN");
+
+    // 7. Teknisi mengunggah foto sebelum & sesudah -> status menjadi MENUNGGU_KONFIRMASI
+    const submitRes1 = await submitWorkResultByTechnician(teknisiActor, {
+      workOrderId: woId,
+      beforePhotoUrls: ["/uploads/before-1.jpg"],
+      afterPhotoUrls: ["/uploads/after-1.jpg"],
+      notes: "Sudah diperbaiki tahap pertama.",
+    });
+    expect(submitRes1.report.status).toBe("MENUNGGU_KONFIRMASI");
+
+    // 8. Manager mengecek hasil: Belum Sesuai tanpa catatan ditolak; dengan catatan -> kembali ke DIKERJAKAN
+    await expect(
+      confirmWorkResultByManager(managerActor, {
+        workOrderId: woId,
+        decision: "BELUM_SESUAI",
+        revisionNote: "",
+      })
+    ).rejects.toThrow(/wajib menyertakan catatan perbaikan ulang/i);
+
+    const revRes = await confirmWorkResultByManager(managerActor, {
+      workOrderId: woId,
+      decision: "BELUM_SESUAI",
+      revisionNote: "Tutup pelindung lampu belum rapat.",
+    });
+    expect(revRes.report.status).toBe("DIKERJAKAN");
+
+    // 9. Teknisi mengunggah ulang foto perbaikan -> MENUNGGU_KONFIRMASI
+    await submitWorkResultByTechnician(teknisiActor, {
+      workOrderId: woId,
+      beforePhotoUrls: ["/uploads/before-2.jpg"],
+      afterPhotoUrls: ["/uploads/after-2.jpg"],
+      notes: "Tutup pelindung sudah dirapatkan.",
+    });
+
+    // 10. Manager mengonfirmasi SESUAI -> status SELESAI & SPK ditutup
+    const finalConfirm = await confirmWorkResultByManager(managerActor, {
+      workOrderId: woId,
+      decision: "SESUAI",
+    });
+    expect(finalConfirm.report.status).toBe("SELESAI");
+    expect(finalConfirm.workOrder?.completedAt).not.toBeNull();
+
+    // 11. Cek Rapor Vendor (MGR-M7)
+    const scorecard = await getVendorReportCard(
+      adminUser.companyId!,
+      vendorJaya.id
+    );
+    expect(scorecard.metrics.totalJobs).toBeGreaterThanOrEqual(1);
+    expect(scorecard.metrics.revisionCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it("menjalankan alur Pengajuan Ganti Vendor (Bagian 7 PRD v0.2): Pengelola -> Manager -> Admin -> Owner", async () => {
+    const [pengelolaUser, managerUser, adminUser, ownerUser, picUser] =
+      await Promise.all([
+        prisma.user.findUniqueOrThrow({
+          where: { email: "pengelola.bgv@greenpark.id" },
+        }),
+        prisma.user.findUniqueOrThrow({
+          where: { email: "manager@greenpark.id" },
+        }),
+        prisma.user.findUniqueOrThrow({
+          where: { email: "admin@greenpark.id" },
+        }),
+        prisma.user.findUniqueOrThrow({
+          where: { email: "owner@greenpark.id" },
+        }),
+        prisma.user.findUniqueOrThrow({
+          where: { email: "pic@vendorjaya.id" },
+        }),
+      ]);
+
+    const assetBgv = await prisma.asset.findUniqueOrThrow({
+      where: { code: "AST-BGV-001" },
+    });
+
+    const vendorJaya = await prisma.vendor.findFirstOrThrow({
+      where: { picUserId: picUser.id },
+    });
+
+    const pengelolaActor: SessionUser = {
+      id: pengelolaUser.id,
+      name: pengelolaUser.name,
+      email: pengelolaUser.email,
+      role: "PENGELOLA",
+      companyId: pengelolaUser.companyId,
+      companyName: "PT GreenPark",
+      staffClusterId: pengelolaUser.staffClusterId,
+    };
+
+    const managerActor: SessionUser = {
+      id: managerUser.id,
+      name: managerUser.name,
+      email: managerUser.email,
+      role: "MANAGER",
+      companyId: managerUser.companyId,
+      companyName: "PT GreenPark",
+      staffClusterId: null,
+    };
+
+    const adminActor: SessionUser = {
+      id: adminUser.id,
+      name: adminUser.name,
+      email: adminUser.email,
+      role: "ADMIN",
+      companyId: adminUser.companyId,
+      companyName: "PT GreenPark",
+      staffClusterId: null,
+    };
+
+    const ownerActor: SessionUser = {
+      id: ownerUser.id,
+      name: ownerUser.name,
+      email: ownerUser.email,
+      role: "OWNER",
+      companyId: ownerUser.companyId,
+      companyName: "PT GreenPark",
+      staffClusterId: null,
+    };
+
+    // Ambil 2 laporan pada AST-BGV-001 sebagai bukti kerusakan berulang
+    const assetReports = await prisma.report.findMany({
+      where: {
+        assetId: assetBgv.id,
+        status: { notIn: ["DIBATALKAN", "TIDAK_VALID"] },
+      },
+      take: 2,
+    });
+    expect(assetReports.length).toBeGreaterThanOrEqual(2);
+
+    // 1. Menolak jika kurang dari 2 laporan bukti
+    await expect(
+      submitVendorReplacementRequest(pengelolaActor, {
+        assetId: assetBgv.id,
+        vendorId: vendorJaya.id,
+        basisReportIds: [assetReports[0].id],
+        reason: "Rusak terus",
+      })
+    ).rejects.toThrow(/minimal 2 laporan berulang/i);
+
+    // 2. Pengelola mengajukan pergantian vendor dengan 2 laporan bukti -> DIAJUKAN
+    const submitReq = await submitVendorReplacementRequest(pengelolaActor, {
+      assetId: assetBgv.id,
+      vendorId: vendorJaya.id,
+      basisReportIds: assetReports.map((r) => r.id),
+      reason: "Unit lampu rusak kembali 2x setelah diperbaiki vendor yang sama.",
+    });
+    expect(submitReq.request.status).toBe("DIAJUKAN");
+    expect(submitReq.request.requestNo).toMatch(/^PGV-\d{6}-\d{4}$/);
+
+    // 3. Manager menyetujui pengajuan -> DISETUJUI (menunggu Admin)
+    const mgrDecide = await decideVendorReplacementByManager(managerActor, {
+      requestId: submitReq.request.id,
+      decision: "SETUJU",
+      decisionNote: "Disetujui untuk dievaluasi ganti vendor.",
+    });
+    expect(mgrDecide.request.status).toBe("DISETUJUI");
+
+    // 4. Admin meneruskan ke Owner -> DITERUSKAN_KE_OWNER
+    const admForward = await forwardVendorReplacementByAdmin(adminActor, {
+      requestId: submitReq.request.id,
+      forwardNote: "Diteruskan kepada Direksi untuk peninjauan kontrak vendor.",
+    });
+    expect(admForward.request.status).toBe("DITERUSKAN_KE_OWNER");
+
+    // 5. Owner melihat eskalasi -> ownerViewedAt terisi
+    const ownerViewed = await markVendorReplacementViewedByOwner(
+      ownerActor,
+      submitReq.request.id
+    );
+    expect(ownerViewed.ownerViewedAt).not.toBeNull();
+  });
+});
