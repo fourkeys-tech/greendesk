@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getCurrentSession } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
+import { getVendorReportCard } from "@/lib/services/vendor-replacement";
 import { VendorAdminForms } from "./vendor-admin-forms";
 
 export default async function VendorPage() {
@@ -22,8 +23,9 @@ export default async function VendorPage() {
 
   const canManage = hasPermission(session.role, "MANAGE_VENDORS");
   const canApproveTech = hasPermission(session.role, "APPROVE_TECHNICIANS");
+  const isManager = session.role === "MANAGER";
 
-  const [vendors, clusters, pendingTechs, unreadNotifications] =
+  const [rawVendors, clusters, pendingTechs, unreadNotifications] =
     session.companyId
       ? await Promise.all([
           prisma.vendor.findMany({
@@ -62,6 +64,23 @@ export default async function VendorPage() {
           }),
         ])
       : [[], [], [], []];
+
+  // Hitung Rapor Vendor (MGR-M7) untuk setiap vendor
+  const vendors = await Promise.all(
+    rawVendors.map(async (v) => {
+      let reportCard = null;
+      if (session.companyId) {
+        try {
+          const rc = await getVendorReportCard(session.companyId, v.id);
+          reportCard = rc.metrics;
+        } catch {}
+      }
+      return {
+        ...v,
+        reportCard,
+      };
+    })
+  );
 
   return (
     <div className="space-y-6">
@@ -189,6 +208,49 @@ export default async function VendorPage() {
                 </div>
               </div>
             </div>
+
+            {/* Rapor Vendor (MGR-M7) */}
+            {v.reportCard && (
+              <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 space-y-2">
+                <div className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center justify-between">
+                  <span>📊 Rapor Kinerja Vendor (Otomatis dari Riwayat SPK)</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                  <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                    <div className="text-lg font-black text-slate-900">
+                      {v.reportCard.totalJobs}
+                    </div>
+                    <div className="text-[10px] font-semibold text-slate-500 uppercase">
+                      Total Pekerjaan SPK
+                    </div>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                    <div className="text-lg font-black text-slate-900">
+                      {v.reportCard.avgDurationHours} jam
+                    </div>
+                    <div className="text-[10px] font-semibold text-slate-500 uppercase">
+                      Rata-rata Durasi
+                    </div>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                    <div className="text-lg font-black text-amber-700">
+                      {v.reportCard.revisionCount}
+                    </div>
+                    <div className="text-[10px] font-semibold text-slate-500 uppercase">
+                      Perbaikan Ulang (Revisi)
+                    </div>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                    <div className="text-lg font-black text-rose-700">
+                      {v.reportCard.warrantyDefectsCount}
+                    </div>
+                    <div className="text-[10px] font-semibold text-slate-500 uppercase">
+                      Rusak Lagi dlm Garansi
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Daftar Teknisi di Vendor Ini */}
             {v.technicians.length > 0 && (
