@@ -4,20 +4,36 @@ import { revalidatePath } from "next/cache";
 import type { ApprovalStatus, TechnicianStatus, VendorType } from "@prisma/client";
 import { getCurrentSession } from "@/lib/auth";
 import { saveUploadedPhoto } from "@/lib/storage";
+import { parseWibDateEnd, parseWibDateStart } from "@/lib/dates";
 import {
   approveOrRejectTechnicianByAdmin,
+  approveTechnicianReactivationByAdmin,
   confirmTechnicianRosterByPic,
   createVendorWithPic,
+  deactivateTechnicianByAdmin,
   registerTechnicianByPic,
-  runPhase2MaintenanceJob,
+  rejectTechnicianReactivationByAdmin,
+  requestTechnicianReactivationByPic,
+  runPhase2MaintenanceJobAsAdmin,
+  setVendorActive,
   updateTechnicianStatusByPic,
+  updateVendor,
 } from "@/lib/services/phase2-vendor";
+
+const TECHNICIAN_STATUS_LABEL: Record<TechnicianStatus, string> = {
+  ACTIVE: "Aktif",
+  ON_LEAVE: "Cuti",
+  INACTIVE: "Nonaktif",
+};
+
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error ? err.message : fallback;
+}
 
 function revalidateVendorPaths() {
   revalidatePath("/dashboard/vendor");
   revalidatePath("/dashboard/teknisi");
   revalidatePath("/dashboard/audit");
-  revalidatePath("/dashboard/fondasi");
   revalidatePath("/dashboard");
 }
 
@@ -46,8 +62,8 @@ export async function createVendorAction(formData: FormData) {
       type,
       skills: skillsRaw.split(","),
       cooperationScheme,
-      contractStart: contractStartRaw ? new Date(contractStartRaw) : null,
-      contractEnd: contractEndRaw ? new Date(contractEndRaw) : null,
+      contractStart: parseWibDateStart(contractStartRaw),
+      contractEnd: parseWibDateEnd(contractEndRaw),
       warrantyDays,
       address,
       npwp,
@@ -60,7 +76,7 @@ export async function createVendorAction(formData: FormData) {
     revalidateVendorPaths();
     return {
       success: true,
-      message: `Vendor "${vendor.name}" beserta akun PIC (${picEmail}) berhasil dibuat dan email undangan telah dikirim!`,
+      message: `Vendor "${vendor.name}" beserta akun PIC (${picEmail}) berhasil dibuat. Email undangan sudah dikirim.`,
     };
   } catch (err) {
     return {
@@ -99,7 +115,7 @@ export async function registerTechnicianAction(formData: FormData) {
     revalidateVendorPaths();
     return {
       success: true,
-      message: `Teknisi "${tech.fullName}" berhasil didaftarkan (Status: PENDING). Notifikasi persetujuan telah dikirim ke Admin.`,
+      message: `Teknisi "${tech.fullName}" berhasil didaftarkan dan menunggu persetujuan Admin.`,
     };
   } catch (err) {
     return {
@@ -125,7 +141,7 @@ export async function updateTechnicianStatusAction(
     revalidateVendorPaths();
     return {
       success: true,
-      message: `Status teknisi ${updated.fullName} diubah menjadi ${updated.status}.`,
+      message: `Status teknisi ${updated.fullName} diubah menjadi ${TECHNICIAN_STATUS_LABEL[updated.status]}.`,
     };
   } catch (err) {
     return {
@@ -135,9 +151,64 @@ export async function updateTechnicianStatusAction(
   }
 }
 
+export async function requestTechnicianReactivationAction(
+  technicianId: string,
+  note?: string
+) {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+
+  try {
+    const updated = await requestTechnicianReactivationByPic(
+      session,
+      technicianId,
+      note
+    );
+    revalidateVendorPaths();
+    return {
+      success: true,
+      message: `Pengajuan aktif kembali untuk teknisi ${updated.fullName} berhasil dikirim ke Admin.`,
+    };
+  } catch (err) {
+    return {
+      error:
+        err instanceof Error
+          ? err.message
+          : "Gagal mengajukan aktif kembali teknisi.",
+    };
+  }
+}
+
+export async function approveTechnicianReactivationAction(
+  technicianId: string
+) {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+
+  try {
+    const updated = await approveTechnicianReactivationByAdmin(
+      session,
+      technicianId
+    );
+    revalidateVendorPaths();
+    return {
+      success: true,
+      message: `Pengaktifan kembali teknisi ${updated.fullName} berhasil disetujui.`,
+    };
+  } catch (err) {
+    return {
+      error:
+        err instanceof Error
+          ? err.message
+          : "Gagal memproses pengaktifan kembali teknisi.",
+    };
+  }
+}
+
 export async function approveOrRejectTechnicianAction(
   technicianId: string,
-  decision: Extract<ApprovalStatus, "APPROVED" | "REJECTED">
+  decision: Extract<ApprovalStatus, "APPROVED" | "REJECTED">,
+  reason?: string
 ) {
   const session = await getCurrentSession();
   if (!session) return { error: "Silakan login terlebih dahulu." };
@@ -146,12 +217,16 @@ export async function approveOrRejectTechnicianAction(
     const updated = await approveOrRejectTechnicianByAdmin(
       session,
       technicianId,
-      decision
+      decision,
+      reason
     );
     revalidateVendorPaths();
     return {
       success: true,
-      message: `Status persetujuan teknisi ${updated.fullName} berhasil diubah menjadi ${updated.approvalStatus}.`,
+      message:
+        decision === "APPROVED"
+          ? `Teknisi ${updated.fullName} disetujui dan kini bisa menerima SPK.`
+          : `Pendaftaran teknisi ${updated.fullName} ditolak. PIC Vendor sudah diberi tahu.`,
     };
   } catch (err) {
     return {
@@ -187,16 +262,14 @@ export async function confirmTechnicianRosterAction() {
 
 export async function runPhase2MaintenanceCronAction() {
   const session = await getCurrentSession();
-  if (!session || !session.companyId) {
-    return { error: "Silakan login terlebih dahulu." };
-  }
+  if (!session) return { error: "Silakan login terlebih dahulu." };
 
   try {
-    const res = await runPhase2MaintenanceJob(session.companyId);
+    const res = await runPhase2MaintenanceJobAsAdmin(session);
     revalidateVendorPaths();
     return {
       success: true,
-      message: `Job Pemeliharaan Selesai: ${res.deactivatedCount} teknisi tidak aktif (60 hari) dinonaktifkan, dan ${res.reminderSentCount} pengingat konfirmasi 3 bulanan dikirim ke PIC Vendor.`,
+      message: `Pemeriksaan selesai: ${res.deactivatedCount} teknisi yang tidak aktif 60 hari dinonaktifkan, ${res.reminderSentCount} pengingat konfirmasi 3 bulanan dikirim ke PIC Vendor.`,
     };
   } catch (err) {
     return {
@@ -208,3 +281,78 @@ export async function runPhase2MaintenanceCronAction() {
   }
 }
 
+
+export async function rejectTechnicianReactivationAction(
+  technicianId: string,
+  note: string
+) {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+  try {
+    const updated = await rejectTechnicianReactivationByAdmin(session, technicianId, note);
+    revalidateVendorPaths();
+    return {
+      success: true,
+      message: `Pengajuan aktif kembali teknisi ${updated.fullName} ditolak. PIC Vendor sudah diberi tahu.`,
+    };
+  } catch (err) {
+    return { error: errorMessage(err, "Gagal menolak pengajuan aktif kembali.") };
+  }
+}
+
+export async function deactivateTechnicianByAdminAction(
+  technicianId: string,
+  reason: string
+) {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+  try {
+    const updated = await deactivateTechnicianByAdmin(session, technicianId, reason);
+    revalidateVendorPaths();
+    return {
+      success: true,
+      message: `Teknisi ${updated.fullName} dinonaktifkan. Hanya Admin yang bisa mengaktifkannya kembali.`,
+    };
+  } catch (err) {
+    return { error: errorMessage(err, "Gagal menonaktifkan teknisi.") };
+  }
+}
+
+export async function updateVendorAction(formData: FormData) {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+  try {
+    const vendorId = (formData.get("vendorId") as string) ?? "";
+    const updated = await updateVendor(session, vendorId, {
+      name: (formData.get("name") as string) ?? "",
+      type: ((formData.get("type") as string) || "EXTERNAL") as VendorType,
+      skills: ((formData.get("skills") as string) ?? "").split(","),
+      cooperationScheme: (formData.get("cooperationScheme") as string) ?? null,
+      contractStart: parseWibDateStart(formData.get("contractStart") as string | null),
+      contractEnd: parseWibDateEnd(formData.get("contractEnd") as string | null),
+      warrantyDays: Number(formData.get("warrantyDays") ?? 30),
+      address: (formData.get("address") as string) ?? null,
+      npwp: (formData.get("npwp") as string) ?? null,
+      clusterIds: formData.getAll("clusterIds") as string[],
+    });
+    revalidateVendorPaths();
+    return { success: true, message: `Data vendor "${updated.name}" berhasil diperbarui.` };
+  } catch (err) {
+    return { error: errorMessage(err, "Gagal memperbarui vendor.") };
+  }
+}
+
+export async function setVendorActiveAction(vendorId: string, isActive: boolean) {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+  try {
+    const updated = await setVendorActive(session, vendorId, isActive);
+    revalidateVendorPaths();
+    return {
+      success: true,
+      message: `Vendor "${updated.name}" berhasil ${isActive ? "diaktifkan" : "dinonaktifkan"}.`,
+    };
+  } catch (err) {
+    return { error: errorMessage(err, "Gagal mengubah status vendor.") };
+  }
+}

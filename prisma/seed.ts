@@ -222,38 +222,19 @@ async function main() {
     },
   });
 
-  // Tautkan Manager ke Cluster Bougenville & Edelweiss
-  await prisma.clusterManagerAssignment.upsert({
-    where: {
-      userId_clusterId_isTemporary: {
-        userId: userManager.id,
-        clusterId: clusterBougenville.id,
-        isTemporary: false,
-      },
-    },
-    update: {},
-    create: {
-      userId: userManager.id,
-      clusterId: clusterBougenville.id,
-      isTemporary: false,
-    },
-  });
+  // Tautkan Manager ke Cluster Bougenville & Edelweiss (penugasan permanen, idempoten)
+  async function ensurePermanentAssignment(userId: string, clusterId: string) {
+    const existing = await prisma.clusterManagerAssignment.findFirst({
+      where: { userId, clusterId, isTemporary: false },
+    });
+    if (existing) return existing;
+    return prisma.clusterManagerAssignment.create({
+      data: { userId, clusterId, isTemporary: false },
+    });
+  }
 
-  await prisma.clusterManagerAssignment.upsert({
-    where: {
-      userId_clusterId_isTemporary: {
-        userId: userManager.id,
-        clusterId: clusterEdelweiss.id,
-        isTemporary: false,
-      },
-    },
-    update: {},
-    create: {
-      userId: userManager.id,
-      clusterId: clusterEdelweiss.id,
-      isTemporary: false,
-    },
-  });
+  await ensurePermanentAssignment(userManager.id, clusterBougenville.id);
+  await ensurePermanentAssignment(userManager.id, clusterEdelweiss.id);
 
   const userPicVendor = await prisma.user.upsert({
     where: { email: "pic@vendorjaya.id" },

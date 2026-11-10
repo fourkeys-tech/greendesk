@@ -125,6 +125,8 @@ export default async function TeknisiManagementPage() {
                 <TechnicianStatusSelect
                   technicianId={t.id}
                   currentStatus={t.status}
+                  deactivationReason={t.deactivationReason}
+                  reactivationRequested={t.reactivationRequested}
                 />
               ) : (
                 <span className="font-bold text-slate-800">{t.status}</span>

@@ -62,6 +62,7 @@ export function PengelolaVerificationPanel({
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
+            suppressHydrationWarning
             onClick={() => setMode(mode === "valid" ? null : "valid")}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
               mode === "valid"
@@ -74,6 +75,7 @@ export function PengelolaVerificationPanel({
 
           <button
             type="button"
+            suppressHydrationWarning
             onClick={() => setMode(mode === "invalid" ? null : "invalid")}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
               mode === "invalid"
@@ -86,6 +88,7 @@ export function PengelolaVerificationPanel({
 
           <button
             type="button"
+            suppressHydrationWarning
             onClick={() => setMode(mode === "merge" ? null : "merge")}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
               mode === "merge"
@@ -150,6 +153,7 @@ export function PengelolaVerificationPanel({
           <div className="flex gap-2">
             <button
               type="submit"
+              suppressHydrationWarning
               disabled={isPending}
               className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold cursor-pointer"
             >
@@ -159,6 +163,7 @@ export function PengelolaVerificationPanel({
             </button>
             <button
               type="button"
+              suppressHydrationWarning
               onClick={() => setMode(null)}
               className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-700 cursor-pointer"
             >
@@ -194,6 +199,7 @@ export function PengelolaVerificationPanel({
           <div className="flex gap-2">
             <button
               type="submit"
+              suppressHydrationWarning
               disabled={isPending}
               className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-semibold cursor-pointer"
             >
@@ -203,6 +209,7 @@ export function PengelolaVerificationPanel({
             </button>
             <button
               type="button"
+              suppressHydrationWarning
               onClick={() => setMode(null)}
               className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-700 cursor-pointer"
             >
@@ -250,6 +257,7 @@ export function PengelolaVerificationPanel({
               <div className="flex gap-2">
                 <button
                   type="submit"
+                  suppressHydrationWarning
                   disabled={isPending}
                   className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold cursor-pointer"
                 >
@@ -259,6 +267,7 @@ export function PengelolaVerificationPanel({
                 </button>
                 <button
                   type="button"
+                  suppressHydrationWarning
                   onClick={() => setMode(null)}
                   className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-700 cursor-pointer"
                 >

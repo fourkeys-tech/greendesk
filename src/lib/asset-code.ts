@@ -29,6 +29,16 @@ export function abbreviateEntity(rawName: string, length = 3): string {
 
   // Jika terdiri dari 2 kata atau lebih
   if (words.length >= 2) {
+    // Jika kata terakhir TAMAN dan ada kata sebelumnya (misal: "Lampu Taman" -> "LMP")
+    if (words.length === 2 && words[1] === "TAMAN") {
+      return abbreviateSingleWord(words[0], length);
+    }
+
+    // Penanganan singkatan umum yang sudah ditentukan
+    const joined = words.join(" ");
+    if (joined === "TAMAN UTAMA") return "TMU";
+    if (joined === "PLAYGROUND ANAK") return "PGA";
+
     // Abaikan awalan umum seperti "CLUSTER" atau "KLASTER" jika masih ada kata lainnya
     const filteredWords = words.filter(
       (w) => w !== "CLUSTER" && w !== "KLASTER"

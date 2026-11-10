@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import {
   clearSessionCookie,
+  getCurrentSession,
   setSessionCookie,
   type SessionUser,
 } from "@/lib/auth";
@@ -348,5 +349,46 @@ export async function quickSwitchRoleAction(roleOrEmail: string) {
 export async function logoutAction() {
   await clearSessionCookie();
   redirect("/login");
+}
+
+export async function updateUserProfileAction(formData: FormData) {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+
+  try {
+    const name = (formData.get("name") as string)?.trim();
+    const reporterStatus = (formData.get("reporterStatus") as string)?.trim();
+    const blockHouseNo = (formData.get("blockHouseNo") as string)?.trim() || null;
+    const dataConsent = formData.get("dataConsent") === "on";
+
+    if (!name) {
+      return { error: "Nama lengkap tidak boleh kosong." };
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: session.id },
+      data: {
+        name,
+        reporterStatus: reporterStatus ? reporterStatus : null,
+        blockHouseNo,
+        ...(dataConsent ? { dataConsentAt: new Date() } : {}),
+      },
+    });
+
+    // Perbarui session cookie jika nama berubah
+    if (session.name !== updated.name) {
+      await setSessionCookie({
+        ...session,
+        name: updated.name,
+      });
+    }
+
+    revalidatePath("/dashboard/profil");
+    revalidatePath("/dashboard");
+
+    return { success: true };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Gagal memperbarui profil." };
+  }
 }
 

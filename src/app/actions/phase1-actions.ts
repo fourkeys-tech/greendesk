@@ -3,17 +3,36 @@
 import { revalidatePath } from "next/cache";
 import { getCurrentSession } from "@/lib/auth";
 import { saveUploadedPhoto } from "@/lib/storage";
+import { parseWibDateEnd, parseWibDateStart } from "@/lib/dates";
 import {
   assignTemporaryManager,
+  cancelTemporaryManagerAssignment,
   createAsset,
   createCategory,
-  createClientAdminOrOwnerByPlatform,
   createCluster,
   createComplex,
   createInternalStaffAccount,
   createPark,
+  setInternalAccountActive,
+  setUserBlockStatus,
   updateCategory,
+  updateCluster,
+  updateComplex,
+  updateInternalAccount,
+  updatePark,
 } from "@/lib/services/phase1-master";
+
+type ActionResult = { success: true; message: string } | { error: string };
+
+function errorMessage(err: unknown, fallback: string) {
+  return err instanceof Error ? err.message : fallback;
+}
+
+function parseActiveFlag(formData: FormData): boolean | undefined {
+  const raw = formData.get("isActive");
+  if (raw === null) return undefined;
+  return raw === "true";
+}
 
 function revalidateMasterPaths() {
   revalidatePath("/dashboard/wilayah");
@@ -34,7 +53,7 @@ export async function createComplexAction(formData: FormData) {
     revalidateMasterPaths();
     return {
       success: true,
-      message: `Komplek "${created.name}" berhasil ditambahkan dan tercatat di AuditLog.`,
+      message: `Komplek "${created.name}" berhasil ditambahkan dan tercatat di Riwayat Perubahan Data.`,
     };
   } catch (err) {
     return {
@@ -54,7 +73,7 @@ export async function createClusterAction(formData: FormData) {
     revalidateMasterPaths();
     return {
       success: true,
-      message: `Cluster "${created.name}" berhasil ditambahkan dan tercatat di AuditLog.`,
+      message: `Cluster "${created.name}" berhasil ditambahkan dan tercatat di Riwayat Perubahan Data.`,
     };
   } catch (err) {
     return {
@@ -79,7 +98,7 @@ export async function createParkAction(formData: FormData) {
     revalidateMasterPaths();
     return {
       success: true,
-      message: `Taman "${created.name}" berhasil ditambahkan dan tercatat di AuditLog.`,
+      message: `Taman "${created.name}" berhasil ditambahkan dan tercatat di Riwayat Perubahan Data.`,
     };
   } catch (err) {
     return {
@@ -100,7 +119,7 @@ export async function createCategoryAction(formData: FormData) {
     revalidateMasterPaths();
     return {
       success: true,
-      message: `Kategori "${created.name}" berhasil ditambahkan dan tercatat di AuditLog.`,
+      message: `Kategori "${created.name}" berhasil ditambahkan dan tercatat di Riwayat Perubahan Data.`,
     };
   } catch (err) {
     return {
@@ -121,11 +140,12 @@ export async function updateCategoryAction(formData: FormData) {
     const updated = await updateCategory(session, categoryId, {
       name,
       damageTypes,
+      isActive: parseActiveFlag(formData),
     });
     revalidateMasterPaths();
     return {
       success: true,
-      message: `Kategori "${updated.name}" berhasil diperbarui dan tercatat di AuditLog.`,
+      message: `Kategori "${updated.name}" berhasil diperbarui dan tercatat di Riwayat Perubahan Data.`,
     };
   } catch (err) {
     return {
@@ -162,7 +182,7 @@ export async function createAssetAction(formData: FormData) {
       name,
       locationNote,
       photoUrl,
-      installedAt: installedAtRaw ? new Date(installedAtRaw) : new Date(),
+      installedAt: parseWibDateStart(installedAtRaw) ?? new Date(),
       isActive,
     });
 
@@ -223,7 +243,9 @@ export async function assignTemporaryManagerAction(formData: FormData) {
     const validFromRaw = (formData.get("validFrom") as string) ?? "";
     const validUntilRaw = (formData.get("validUntil") as string) ?? "";
 
-    if (!validFromRaw || !validUntilRaw) {
+    const validFrom = parseWibDateStart(validFromRaw);
+    const validUntil = parseWibDateEnd(validUntilRaw);
+    if (!validFrom || !validUntil) {
       return { error: "Tanggal mulai dan selesai wajib diisi." };
     }
 
@@ -231,15 +253,15 @@ export async function assignTemporaryManagerAction(formData: FormData) {
       substituteManagerId,
       replacedManagerId,
       clusterId,
-      validFrom: new Date(validFromRaw),
-      validUntil: new Date(validUntilRaw),
+      validFrom,
+      validUntil,
     });
 
     revalidateMasterPaths();
     return {
       success: true,
       message:
-        "Penunjukan Manager Pengganti Sementara berhasil disimpan dan tercatat di Riwayat Perubahan Data (AuditLog).",
+        "Penunjukan Manager pengganti sementara berhasil disimpan dan tercatat di Riwayat Perubahan Data.",
     };
   } catch (err) {
     return {
@@ -251,35 +273,156 @@ export async function assignTemporaryManagerAction(formData: FormData) {
   }
 }
 
-export async function createClientAdminOrOwnerAction(formData: FormData) {
+export async function cancelTemporaryManagerAction(
+  assignmentId: string
+): Promise<ActionResult> {
   const session = await getCurrentSession();
   if (!session) return { error: "Silakan login terlebih dahulu." };
-
   try {
-    const name = (formData.get("name") as string) ?? "";
-    const email = (formData.get("email") as string) ?? "";
-    const role = (formData.get("role") as "ADMIN" | "OWNER") ?? "OWNER";
-    const password = (formData.get("password") as string) ?? "";
-
-    const created = await createClientAdminOrOwnerByPlatform(session, {
-      name,
-      email,
-      role,
-      password,
-    });
-
+    await cancelTemporaryManagerAssignment(session, assignmentId);
     revalidateMasterPaths();
-    return {
-      success: true,
-      message: `Akun ${created.role} (${created.name}) berhasil dibuat atas permintaan resmi perusahaan klien.`,
-    };
+    return { success: true, message: "Delegasi Manager berhasil dibatalkan." };
   } catch (err) {
-    return {
-      error:
-        err instanceof Error
-          ? err.message
-          : "Gagal membuat akun Admin/Owner.",
-    };
+    return { error: errorMessage(err, "Gagal membatalkan delegasi.") };
   }
 }
 
+export async function updateComplexAction(
+  formData: FormData
+): Promise<ActionResult> {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+  try {
+    const id = (formData.get("id") as string) ?? "";
+    const name = formData.get("name") as string | null;
+    const address = formData.get("address") as string | null;
+    const updated = await updateComplex(session, id, {
+      name: name ?? undefined,
+      address: address ?? undefined,
+      isActive: parseActiveFlag(formData),
+    });
+    revalidateMasterPaths();
+    return {
+      success: true,
+      message: `Komplek "${updated.name}" berhasil diperbarui.`,
+    };
+  } catch (err) {
+    return { error: errorMessage(err, "Gagal memperbarui komplek.") };
+  }
+}
+
+export async function updateClusterAction(
+  formData: FormData
+): Promise<ActionResult> {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+  try {
+    const id = (formData.get("id") as string) ?? "";
+    const name = formData.get("name") as string | null;
+    const updated = await updateCluster(session, id, {
+      name: name ?? undefined,
+      isActive: parseActiveFlag(formData),
+    });
+    revalidateMasterPaths();
+    return {
+      success: true,
+      message: `Cluster "${updated.name}" berhasil diperbarui.`,
+    };
+  } catch (err) {
+    return { error: errorMessage(err, "Gagal memperbarui cluster.") };
+  }
+}
+
+export async function updateParkAction(
+  formData: FormData
+): Promise<ActionResult> {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+  try {
+    const id = (formData.get("id") as string) ?? "";
+    const name = formData.get("name") as string | null;
+    const locationNote = formData.get("locationNote") as string | null;
+    const updated = await updatePark(session, id, {
+      name: name ?? undefined,
+      locationNote: locationNote ?? undefined,
+      isActive: parseActiveFlag(formData),
+    });
+    revalidateMasterPaths();
+    return {
+      success: true,
+      message: `Taman "${updated.name}" berhasil diperbarui.`,
+    };
+  } catch (err) {
+    return { error: errorMessage(err, "Gagal memperbarui taman.") };
+  }
+}
+
+export async function updateInternalAccountAction(
+  formData: FormData
+): Promise<ActionResult> {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+  try {
+    const userId = (formData.get("userId") as string) ?? "";
+    const name = (formData.get("name") as string | null) ?? undefined;
+    const clusterIds = formData.getAll("clusterIds") as string[];
+    const updated = await updateInternalAccount(session, userId, {
+      name,
+      clusterIds: clusterIds.length > 0 ? clusterIds : undefined,
+    });
+    revalidateMasterPaths();
+    return {
+      success: true,
+      message: `Akun ${updated.name} berhasil diperbarui.`,
+    };
+  } catch (err) {
+    return { error: errorMessage(err, "Gagal memperbarui akun.") };
+  }
+}
+
+export async function setInternalAccountActiveAction(
+  userId: string,
+  isActive: boolean
+): Promise<ActionResult> {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+  try {
+    const res = await setInternalAccountActive(session, userId, isActive);
+    revalidateMasterPaths();
+    const extra = [
+      res.cancelledDelegations > 0
+        ? `${res.cancelledDelegations} delegasi ikut dibatalkan.`
+        : "",
+      ...res.warnings.map((w) => `Perhatian: ${w}`),
+    ]
+      .filter(Boolean)
+      .join(" ");
+    return {
+      success: true,
+      message: `Akun ${res.user.name} berhasil ${isActive ? "diaktifkan" : "dinonaktifkan"}.${extra ? ` ${extra}` : ""}`,
+    };
+  } catch (err) {
+    return { error: errorMessage(err, "Gagal mengubah status akun.") };
+  }
+}
+
+export async function setUserBlockStatusAction(
+  userId: string,
+  block: boolean,
+  reason?: string
+): Promise<ActionResult> {
+  const session = await getCurrentSession();
+  if (!session) return { error: "Silakan login terlebih dahulu." };
+  try {
+    const updated = await setUserBlockStatus(session, userId, block, reason);
+    revalidateMasterPaths();
+    return {
+      success: true,
+      message: block
+        ? `Akun ${updated.name} diblokir dan langsung keluar dari sesi aktifnya.`
+        : `Blokir akun ${updated.name} dibuka.`,
+    };
+  } catch (err) {
+    return { error: errorMessage(err, "Gagal mengubah status blokir.") };
+  }
+}

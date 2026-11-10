@@ -8,12 +8,16 @@ interface VendorDashboardProps {
   session: SessionPayload;
   reports: any[];
   technicianCount: number;
+  needsConfirmation?: boolean;
+  lastConfirmedAt?: string | null;
 }
 
 export function VendorDashboard({
   session,
   reports,
   technicianCount,
+  needsConfirmation = false,
+  lastConfirmedAt,
 }: VendorDashboardProps) {
   // SPK Baru butuh alokasi teknisi
   const unassignedReports = reports.filter(
@@ -56,6 +60,31 @@ export function VendorDashboard({
           </Link>
         </div>
       </div>
+
+      {/* 1b. Pengingat 3 Bulanan Konfirmasi Daftar Teknisi (PRD 3.2 PIC-M1 & Keputusan 10) */}
+      {needsConfirmation && (
+        <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-black uppercase text-amber-900 bg-amber-200/80 px-2 py-0.5 rounded">
+                🔔 Pengingat Berkala (Tiap 3 Bulan)
+              </span>
+              <span className="text-xs font-bold text-amber-800">
+                Konfirmasi Daftar Teknisi Aktif
+              </span>
+            </div>
+            <p className="text-xs text-amber-900">
+              Mohon periksa dan konfirmasi bahwa susunan teknisi vendor Anda masih sesuai dan aktif bertugas di lapangan.
+            </p>
+          </div>
+          <Link
+            href="/dashboard/teknisi"
+            className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shrink-0 self-start sm:self-center transition shadow-xs"
+          >
+            Konfirmasi Daftar Teknisi Sekarang →
+          </Link>
+        </div>
+      )}
 
       {/* 2. Kartu Metrik KPI */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

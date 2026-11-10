@@ -1,6 +1,7 @@
 import { prisma } from "../prisma";
 import { assertPermission } from "../permissions";
 import { recordAuditLog } from "../audit";
+import { activeAssignmentWhere } from "../scopes";
 import type { SessionUser } from "../auth";
 
 /**
@@ -9,11 +10,12 @@ import type { SessionUser } from "../auth";
  */
 export async function getScopedReportsForUser(
   user: SessionUser,
-  options?: { includeArchived?: boolean }
+  options?: { includeArchived?: boolean; throwOnError?: boolean }
 ) {
-  const archivedFilter = options?.includeArchived
-    ? { not: null }
-    : null;
+  try {
+    const archivedFilter = options?.includeArchived
+      ? { not: null }
+      : null;
 
   if (user.role === "TEKNISI") {
     const tech = await prisma.technician.findUnique({
@@ -22,7 +24,7 @@ export async function getScopedReportsForUser(
     if (!tech) return [];
 
     // Teknisi TIDAK BOLEH meng-select field reporter sama sekali (PRD 14.5)
-    return prisma.report.findMany({
+    return await prisma.report.findMany({
       where: {
         companyId: tech.companyId,
         archivedAt: archivedFilter,
@@ -62,6 +64,9 @@ export async function getScopedReportsForUser(
             assignedAt: true,
             completedAt: true,
             vendor: { select: { name: true } },
+            technician: { select: { id: true, fullName: true } },
+            photos: true,
+            revisionNotes: true,
           },
         },
       },
@@ -96,6 +101,8 @@ export async function getScopedReportsForUser(
       include: {
         vendor: true,
         technician: true,
+        photos: true,
+        revisionNotes: true,
       },
     },
     photos: true,
@@ -111,7 +118,7 @@ export async function getScopedReportsForUser(
   };
 
   if (user.role === "PENGGUNA") {
-    return prisma.report.findMany({
+    return await prisma.report.findMany({
       where: {
         reporterId: user.id,
         archivedAt: archivedFilter,
@@ -125,7 +132,7 @@ export async function getScopedReportsForUser(
 
   if (user.role === "PENGELOLA") {
     if (!user.staffClusterId) return [];
-    return prisma.report.findMany({
+    return await prisma.report.findMany({
       where: {
         companyId: user.companyId,
         archivedAt: archivedFilter,
@@ -141,18 +148,14 @@ export async function getScopedReportsForUser(
   }
 
   if (user.role === "MANAGER") {
-    const now = new Date();
     const assignments = await prisma.clusterManagerAssignment.findMany({
-      where: {
-        userId: user.id,
-        OR: [{ validUntil: null }, { validUntil: { gte: now } }],
-      },
+      where: { userId: user.id, ...activeAssignmentWhere(new Date()) },
       select: { clusterId: true },
     });
     const clusterIds = assignments.map((a) => a.clusterId);
     if (clusterIds.length === 0) return [];
 
-    return prisma.report.findMany({
+    return await prisma.report.findMany({
       where: {
         companyId: user.companyId,
         archivedAt: archivedFilter,
@@ -173,7 +176,7 @@ export async function getScopedReportsForUser(
     });
     if (!vendor) return [];
 
-    return prisma.report.findMany({
+    const reports = await prisma.report.findMany({
       where: {
         companyId: user.companyId,
         archivedAt: archivedFilter,
@@ -184,17 +187,34 @@ export async function getScopedReportsForUser(
       include: commonInclude,
       orderBy: { createdAt: "desc" },
     });
+
+    // PRD v0.2 Keputusan 11 & Bagian 3.5: PIC tidak melihat identitas pelapor
+    return reports.map((r) => ({
+      ...r,
+      reporter: {
+        id: "ANONYMOUS",
+        name: "Warga / Pelapor",
+        email: "rahasia@greenpark.internal",
+        reporterStatus: null,
+        blockHouseNo: null,
+      },
+    }));
   }
 
-  // ADMIN dan OWNER: melihat semua laporan di perusahaannya (companyId)
-  return prisma.report.findMany({
-    where: {
-      companyId: user.companyId,
-      archivedAt: archivedFilter,
-    },
-    include: commonInclude,
-    orderBy: { createdAt: "desc" },
-  });
+    // ADMIN dan OWNER: melihat semua laporan di perusahaannya (companyId)
+    return await prisma.report.findMany({
+      where: {
+        companyId: user.companyId,
+        archivedAt: archivedFilter,
+      },
+      include: commonInclude,
+      orderBy: { createdAt: "desc" },
+    });
+  } catch (error) {
+    console.error("[getScopedReportsForUser] Database query error:", error);
+    if (options?.throwOnError) throw error;
+    return [];
+  }
 }
 
 /**
@@ -282,6 +302,7 @@ export async function archiveReportById(actor: SessionUser, reportId: string) {
     where: {
       id: reportId,
       companyId: actor.companyId,
+      archivedAt: null,
     },
   });
 
@@ -312,5 +333,53 @@ export async function archiveReportById(actor: SessionUser, reportId: string) {
   });
 
   return archived;
+}
+
+/**
+ * Memulihkan laporan dari arsip. Dibatasi perusahaan aktor & tercatat di AuditLog.
+ */
+export async function restoreArchivedReportById(
+  actor: SessionUser,
+  reportId: string
+) {
+  assertPermission(actor.role, "ARCHIVE_REPORT");
+
+  if (!actor.companyId) {
+    throw new Error("Akun tidak terhubung ke perusahaan.");
+  }
+
+  const existing = await prisma.report.findFirst({
+    where: {
+      id: reportId,
+      companyId: actor.companyId,
+      archivedAt: { not: null },
+    },
+  });
+
+  if (!existing) {
+    throw new Error("Laporan arsip tidak ditemukan di perusahaan Anda.");
+  }
+
+  const restored = await prisma.report.update({
+    where: { id: existing.id },
+    data: { archivedAt: null },
+  });
+
+  await recordAuditLog({
+    actor: {
+      id: actor.id,
+      name: actor.name,
+      role: actor.role,
+      companyId: actor.companyId,
+    },
+    entityName: "Report",
+    entityId: existing.id,
+    action: "UPDATE",
+    summary: `Memulihkan laporan tiket ${existing.ticketNo} dari arsip`,
+    oldValues: { archivedAt: existing.archivedAt?.toISOString() ?? null },
+    newValues: { archivedAt: null },
+  });
+
+  return restored;
 }
 

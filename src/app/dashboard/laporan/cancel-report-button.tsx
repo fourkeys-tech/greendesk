@@ -21,6 +21,7 @@ export function CancelReportButton({ reportId }: { reportId: string }) {
     <div className="inline-flex flex-col items-end">
       <button
         type="button"
+        suppressHydrationWarning
         disabled={isPending}
         onClick={handleCancel}
         className="px-3 py-1.5 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-800 border border-rose-300 text-xs font-semibold transition cursor-pointer"

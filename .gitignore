@@ -7,3 +7,9 @@ public/uploads/*
 !public/uploads/.gitkeep
 *.tsbuildinfo
 next-env.d.ts
+
+# Excluded per user instruction
+PRD – Platform Manajemen Aset Taman Role Pengguna, Pengelola, dan Manager.md
+stitch_ui_redesign_and_fixes/
+.vscode/
+NUL

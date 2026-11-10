@@ -2,6 +2,7 @@ import crypto from "crypto";
 import type { Channel } from "@prisma/client";
 import { prisma } from "../prisma";
 import { validateStatusTransition } from "../permissions";
+import { assetUnreportableReason } from "../scopes";
 import { sendReportStatusEmail } from "../email";
 import type { SessionUser } from "../auth";
 
@@ -87,9 +88,10 @@ export async function submitCitizenReport(
   const asset = await prisma.asset.findUnique({
     where: { code: input.assetCode.trim().toUpperCase() },
     include: {
+      category: true,
       park: {
         include: {
-          cluster: true,
+          cluster: { include: { complex: true } },
         },
       },
     },
@@ -98,9 +100,10 @@ export async function submitCitizenReport(
   if (!asset) {
     throw new Error("Aset tidak ditemukan.");
   }
-  if (!asset.isActive) {
+  const unreportableReason = assetUnreportableReason(asset);
+  if (unreportableReason) {
     throw new Error(
-      `Aset ${asset.code} sedang berstatus Nonaktif dan tidak dapat dilaporkan.`
+      `Aset ${asset.code} tidak dapat dilaporkan saat ini. ${unreportableReason}`
     );
   }
 

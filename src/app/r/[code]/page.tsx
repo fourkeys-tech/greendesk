@@ -2,7 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { getCurrentSession } from "@/lib/auth";
-import { TERMINAL_REPORT_STATUSES } from "@/lib/permissions";
+import { STATUS_METADATA, TERMINAL_REPORT_STATUSES } from "@/lib/permissions";
+import { assetUnreportableReason } from "@/lib/scopes";
 import { QrReportClientForm } from "./qr-report-client";
 
 export default async function QrAssetShortlinkPage({
@@ -42,6 +43,8 @@ export default async function QrAssetShortlinkPage({
     notFound();
   }
 
+  const unreportableReason = assetUnreportableReason(asset);
+
   const activeReports = asset.reports.filter(
     (r) => !TERMINAL_REPORT_STATUSES.includes(r.status)
   );
@@ -60,7 +63,7 @@ export default async function QrAssetShortlinkPage({
         <div className="bg-emerald-950 text-white rounded-2xl p-5 shadow-sm">
           <div className="flex items-center justify-between gap-2 mb-2">
             <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-400/30 text-emerald-300">
-              Fase 3 – Pelaporan QR Tanpa Login Awal
+              Lapor Kerusakan Fasilitas
             </span>
             <span className="font-mono text-xs font-bold bg-white/10 px-2.5 py-0.5 rounded">
               {asset.code}
@@ -77,23 +80,26 @@ export default async function QrAssetShortlinkPage({
           </p>
         </div>
 
-        {/* Kriteria Penerimaan Fase 1 & 3: Aset Nonaktif Tidak Bisa Dilaporkan */}
-        {!asset.isActive ? (
-          <div className="bg-rose-50 border-2 border-rose-300 rounded-2xl p-6 text-rose-900 space-y-2">
+        {/* Aset (atau induknya) nonaktif tidak bisa menerima laporan baru */}
+        {unreportableReason ? (
+          <div
+            role="alert"
+            className="bg-rose-50 border-2 border-rose-300 rounded-2xl p-6 text-rose-900 space-y-2"
+          >
             <div className="text-sm font-extrabold uppercase tracking-wide text-rose-700">
-              ⚠️ Aset Sedang Nonaktif
+              Belum Bisa Menerima Laporan
             </div>
             <p className="text-sm leading-relaxed">
-              Aset <strong>{asset.name}</strong> ({asset.code}) saat ini
-              berstatus <strong>Nonaktif</strong> di dalam sistem dan tidak
-              dapat menerima laporan kerusakan baru.
+              {unreportableReason} Aset <strong>{asset.name}</strong> (
+              {asset.code}) untuk sementara tidak dapat menerima laporan
+              kerusakan baru. Laporan yang sudah masuk tetap diproses.
             </p>
             <div className="pt-2">
               <Link
-                href="/dashboard"
+                href={session ? "/dashboard" : "/"}
                 className="inline-block px-4 py-2 rounded-xl bg-rose-700 text-white text-xs font-semibold"
               >
-                Kembali ke Dashboard
+                {session ? "Kembali ke Dashboard" : "Kembali ke Beranda"}
               </Link>
             </div>
           </div>
@@ -103,7 +109,7 @@ export default async function QrAssetShortlinkPage({
             {activeReports.length > 0 && (
               <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 space-y-2.5">
                 <div className="text-xs font-bold text-amber-900 uppercase">
-                  ℹ️ Terdapat {activeReports.length} Laporan Aktif pada Aset Ini
+                  Ada {activeReports.length} laporan aktif pada aset ini
                 </div>
                 <p className="text-xs text-amber-800">
                   Kerusakan di bawah ini sedang ditangani. Anda tidak perlu
@@ -117,8 +123,10 @@ export default async function QrAssetShortlinkPage({
                     >
                       <div className="flex items-center justify-between font-semibold text-slate-900">
                         <span className="font-mono">{rep.ticketNo}</span>
-                        <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-900">
-                          {rep.status}
+                        <span
+                          className={`px-2 py-0.5 rounded border ${STATUS_METADATA[rep.status].badgeColor}`}
+                        >
+                          {STATUS_METADATA[rep.status].label}
                         </span>
                       </div>
                       <p className="text-slate-600 mt-1">{rep.description}</p>
@@ -136,7 +144,8 @@ export default async function QrAssetShortlinkPage({
                 </div>
                 {recentRejections.map((rej) => (
                   <div key={rej.id} className="text-slate-700">
-                    • Tiket <strong>{rej.ticketNo}</strong> ({rej.status}):{" "}
+                    • Tiket <strong>{rej.ticketNo}</strong> (
+                    {STATUS_METADATA[rej.status].label}):{" "}
                     {rej.reason || "Tanpa catatan alasan"}
                   </div>
                 ))}

@@ -173,29 +173,131 @@ export function PicTechnicianForms({
 export function TechnicianStatusSelect({
   technicianId,
   currentStatus,
+  deactivationReason,
+  reactivationRequested = false,
 }: {
   technicianId: string;
   currentStatus: TechnicianStatus;
+  deactivationReason?: string | null;
+  reactivationRequested?: boolean;
 }) {
   const [isPending, startTransition] = useTransition();
+  const [showRequestModal, setShowRequestModal] = useState(false);
+  const [note, setNote] = useState("");
+  const [feedback, setFeedback] = useState<string | null>(null);
 
   function handleChange(newStatus: TechnicianStatus) {
+    if (newStatus === "ACTIVE" && deactivationReason === "AUTO_60_DAYS") {
+      setShowRequestModal(true);
+      return;
+    }
+
     startTransition(async () => {
-      await updateTechnicianStatusAction(technicianId, newStatus);
+      const res = await updateTechnicianStatusAction(technicianId, newStatus);
+      if (res.error) {
+        setFeedback(res.error);
+      }
+    });
+  }
+
+  function handleReactivateRequest(e: React.FormEvent) {
+    e.preventDefault();
+    startTransition(async () => {
+      const { requestTechnicianReactivationAction } = await import(
+        "@/app/actions/phase2-actions"
+      );
+      const res = await requestTechnicianReactivationAction(
+        technicianId,
+        note
+      );
+      if (res.error) {
+        setFeedback(res.error);
+      } else {
+        setShowRequestModal(false);
+      }
     });
   }
 
   return (
-    <select
-      disabled={isPending}
-      value={currentStatus}
-      onChange={(e) => handleChange(e.target.value as TechnicianStatus)}
-      className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-800"
-    >
-      <option value="ACTIVE">ACTIVE (Siap Tugas)</option>
-      <option value="ON_LEAVE">ON_LEAVE (Cuti)</option>
-      <option value="INACTIVE">INACTIVE (Nonaktif)</option>
-    </select>
+    <div className="space-y-1">
+      {feedback && (
+        <div className="text-[10px] text-rose-600 font-semibold">{feedback}</div>
+      )}
+
+      {currentStatus === "INACTIVE" && deactivationReason === "AUTO_60_DAYS" && (
+        <div className="flex items-center gap-2">
+          {reactivationRequested ? (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+              ⏳ Menunggu Persetujuan Admin
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowRequestModal(true)}
+              className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] transition"
+            >
+              Ajukan Aktif Kembali ke Admin
+            </button>
+          )}
+        </div>
+      )}
+
+      {(!deactivationReason || deactivationReason === "MANUAL_BY_PIC" || currentStatus === "ON_LEAVE" || currentStatus === "ACTIVE") && (
+        <select
+          disabled={isPending}
+          value={currentStatus}
+          onChange={(e) => handleChange(e.target.value as TechnicianStatus)}
+          className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-800"
+        >
+          <option value="ACTIVE">ACTIVE (Siap Tugas)</option>
+          <option value="ON_LEAVE">ON_LEAVE (Cuti)</option>
+          <option value="INACTIVE">INACTIVE (Nonaktif)</option>
+        </select>
+      )}
+
+      {showRequestModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 space-y-4 shadow-xl border border-slate-200">
+            <h3 className="font-extrabold text-sm text-slate-900">
+              Ajukan Pengaktifan Kembali Teknisi (60 Hari)
+            </h3>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Sesuai PRD v0.2 Bagian 5.3, teknisi yang dinonaktifkan otomatis oleh sistem karena tidak aktif selama 60 hari memerlukan persetujuan ulang dari Admin.
+            </p>
+            <form onSubmit={handleReactivateRequest} className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Catatan untuk Admin (Opsional):
+                </label>
+                <textarea
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  placeholder="Mis. Teknisi telah kembali bertugas aktif dan siap menerima penugasan SPK..."
+                  className="w-full text-xs rounded-xl border border-slate-200 p-2.5"
+                  rows={3}
+                />
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowRequestModal(false)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={isPending}
+                  className="px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
+                >
+                  {isPending ? "Mengajukan..." : "Kirim Pengajuan ke Admin"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
