@@ -2,6 +2,7 @@ import type { Priority } from "@prisma/client";
 import { prisma } from "../prisma";
 import { assertPermission, validateStatusTransition } from "../permissions";
 import { sendReportStatusEmail } from "../email";
+import { activeAssignmentWhere } from "../scopes";
 import type { SessionUser } from "../auth";
 
 /**
@@ -119,11 +120,11 @@ export async function verifyReportAsValid(
   });
 
   // Beri tahu Manager yang ditautkan ke cluster ini via Notifikasi Web (Bagian 9 PRD)
-  const now = new Date();
   const managerAssignments = await prisma.clusterManagerAssignment.findMany({
     where: {
       clusterId: report.asset.park.clusterId,
-      OR: [{ validUntil: null }, { validUntil: { gte: now } }],
+      ...activeAssignmentWhere(new Date()),
+      user: { isActive: true },
     },
     select: { userId: true },
   });

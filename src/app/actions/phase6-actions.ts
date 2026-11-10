@@ -176,7 +176,13 @@ export async function decideVendorReplacementAction(formData: FormData) {
     revalidatePath("/dashboard/pengajuan-ganti-vendor");
     revalidatePath("/dashboard");
 
-    return { success: true, result };
+    return {
+      success: true,
+      message:
+        result.decision === "DISETUJUI"
+          ? "Pengajuan disetujui. Admin sudah diberi tahu untuk meneruskan ke Owner."
+          : "Pengajuan ditolak. Pengelola sudah diberi tahu.",
+    };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Gagal memutuskan pengajuan." };
   }
@@ -190,7 +196,7 @@ export async function forwardVendorReplacementAction(formData: FormData) {
     const requestId = (formData.get("requestId") as string) ?? "";
     const forwardNote = (formData.get("forwardNote") as string) ?? undefined;
 
-    const result = await forwardVendorReplacementByAdmin(session, {
+    await forwardVendorReplacementByAdmin(session, {
       requestId,
       forwardNote,
     });
@@ -198,7 +204,10 @@ export async function forwardVendorReplacementAction(formData: FormData) {
     revalidatePath("/dashboard/pengajuan-ganti-vendor");
     revalidatePath("/dashboard");
 
-    return { success: true, result };
+    return {
+      success: true,
+      message: "Pengajuan diteruskan ke Owner / Direksi.",
+    };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Gagal meneruskan pengajuan ke Owner." };
   }

@@ -13,7 +13,7 @@ import {
   User,
   Download,
 } from "lucide-react";
-import { STATUS_METADATA } from "@/lib/permissions";
+import { STATUS_METADATA, TERMINAL_REPORT_STATUSES } from "@/lib/permissions";
 import { ArchiveReportButton } from "./archive-button";
 import { CancelReportButton } from "./cancel-report-button";
 import { PengelolaVerificationPanel } from "./pengelola-verification-panel";
@@ -29,6 +29,7 @@ interface LaporanClientBoardProps {
   canArchive: boolean;
   canVerify: boolean;
   isManager: boolean;
+  initialQuery?: string;
   allVendorsWithAreas: Array<{
     id: string;
     name: string;
@@ -40,17 +41,27 @@ interface LaporanClientBoardProps {
 
 type FilterTab = "ALL" | "ACTION_NEEDED" | "WARRANTY" | "CLOSED";
 
+const PRIORITY_LABEL: Record<string, string> = {
+  TINGGI: "Tinggi",
+  NORMAL: "Normal",
+  RENDAH: "Rendah",
+};
+
+const OPERATIONAL_ROLES: Role[] = ["PENGELOLA", "MANAGER", "PIC_VENDOR", "TEKNISI"];
+
 export function LaporanClientBoard({
   reports,
   role,
   canArchive,
   canVerify,
   isManager,
+  initialQuery = "",
   allVendorsWithAreas,
   picTechnicians,
 }: LaporanClientBoardProps) {
   const [activeTab, setActiveTab] = useState<FilterTab>("ALL");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(initialQuery);
+  const isOperational = OPERATIONAL_ROLES.includes(role);
 
   // Counts for KPIs & Tabs
   const totalCount = reports.length;
@@ -70,15 +81,16 @@ export function LaporanClientBoard({
         );
       if (role === "PIC_VENDOR") return r.status === "DISETUJUI";
       if (role === "TEKNISI") return r.status === "DIKERJAKAN";
-      return r.priority === "TINGGI" && r.status !== "SELESAI";
+      return (
+        r.priority === "TINGGI" &&
+        !TERMINAL_REPORT_STATUSES.includes(r.status as ReportStatus)
+      );
     }).length;
   }, [reports, role]);
 
   const closedCount = useMemo(() => {
     return reports.filter((r) =>
-      ["SELESAI", "DITOLAK", "TIDAK_VALID", "DIBATALKAN", "DIGABUNG"].includes(
-        r.status
-      )
+      TERMINAL_REPORT_STATUSES.includes(r.status as ReportStatus)
     ).length;
   }, [reports]);
 
@@ -96,23 +108,16 @@ export function LaporanClientBoard({
         if (role === "PIC_VENDOR" && r.status !== "DISETUJUI") return false;
         if (role === "TEKNISI" && r.status !== "DIKERJAKAN") return false;
         if (
-          !["PENGELOLA", "MANAGER", "PIC_VENDOR", "TEKNISI"].includes(role) &&
-          (r.priority !== "TINGGI" || r.status === "SELESAI")
+          !isOperational &&
+          (r.priority !== "TINGGI" ||
+            TERMINAL_REPORT_STATUSES.includes(r.status as ReportStatus))
         )
           return false;
       } else if (activeTab === "WARRANTY") {
         if (!("underWarrantyOfVendor" in r && r.underWarrantyOfVendor))
           return false;
       } else if (activeTab === "CLOSED") {
-        if (
-          ![
-            "SELESAI",
-            "DITOLAK",
-            "TIDAK_VALID",
-            "DIBATALKAN",
-            "DIGABUNG",
-          ].includes(r.status)
-        )
+        if (!TERMINAL_REPORT_STATUSES.includes(r.status as ReportStatus))
           return false;
       }
 
@@ -258,7 +263,9 @@ export function LaporanClientBoard({
             }`}
           >
             <span className="w-2 h-2 rounded-full bg-rose-500" />
-            <span>Butuh Tindakan ({actionNeededCount})</span>
+            <span>
+              {isOperational ? "Butuh Tindakan" : "Prioritas Tinggi Aktif"} ({actionNeededCount})
+            </span>
           </button>
           <button
             type="button"
@@ -422,7 +429,7 @@ export function LaporanClientBoard({
                               : "bg-slate-100 text-slate-700 border-slate-200"
                           }`}
                         >
-                          Prioritas: {report.priority}
+                          Prioritas: {PRIORITY_LABEL[report.priority] ?? report.priority}
                         </span>
                       )}
 
@@ -529,18 +536,22 @@ export function LaporanClientBoard({
                       {/* Info Laporan Digabung */}
                       {parentReport && (
                         <div className="text-xs p-3 rounded-2xl bg-indigo-50 border border-indigo-200 text-indigo-950">
-                          🔗 Laporan ini digabung ke Laporan Induk:{" "}
+                          Digabung ke laporan induk:{" "}
                           <strong className="font-mono">
                             {parentReport.ticketNo}
                           </strong>{" "}
-                          (Status Induk:{" "}
-                          <strong>{parentReport.status}</strong>)
+                          (Status induk:{" "}
+                          <strong>
+                            {STATUS_METADATA[parentReport.status as ReportStatus]?.label ??
+                              parentReport.status}
+                          </strong>
+                          )
                         </div>
                       )}
 
                       {mergedChildren && mergedChildren.length > 0 && (
                         <div className="text-xs p-3 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-950">
-                          📌 Laporan Induk dari {mergedChildren.length} laporan
+                          Laporan induk dari {mergedChildren.length} laporan
                           gabungan:{" "}
                           <strong className="font-mono">
                             {mergedChildren.map((c) => c.ticketNo).join(", ")}
@@ -633,7 +644,8 @@ export function LaporanClientBoard({
 
                             {warrantyVendor && (
                               <div className="mt-2 text-[11px] font-semibold text-amber-800 bg-amber-50 p-2 rounded-lg border border-amber-200 flex items-center gap-1.5">
-                                <span>🛡️ Masa Garansi Vendor Aktif</span>
+                                <ShieldCheck className="w-3.5 h-3.5 shrink-0 text-amber-700" />
+                                <span>Masa Garansi Vendor Aktif</span>
                               </div>
                             )}
                           </div>
@@ -643,9 +655,11 @@ export function LaporanClientBoard({
                             <div className="text-xs font-semibold text-slate-600">
                               Belum Ada SPK Diterbitkan
                             </div>
-                            <p className="text-[11px] text-slate-400 mt-0.5">
-                              SPK otomatis terbit setelah disetujui Manager.
-                            </p>
+                            {!TERMINAL_REPORT_STATUSES.includes(report.status as ReportStatus) && (
+                              <p className="text-[11px] text-slate-400 mt-0.5">
+                                SPK otomatis terbit setelah disetujui Manager.
+                              </p>
+                            )}
                           </div>
                         )}
                       </div>
@@ -673,8 +687,7 @@ export function LaporanClientBoard({
                           <div className="flex items-center gap-2 text-xs text-amber-800 font-medium bg-amber-50 p-2.5 rounded-xl border border-amber-200">
                             <User className="w-4 h-4 shrink-0" />
                             <span>
-                              Identitas Pelapor Disembunyikan (Aturan Privasi
-                              Teknisi PRD 14.5)
+                              Identitas pelapor disembunyikan untuk menjaga privasi.
                             </span>
                           </div>
                         )}

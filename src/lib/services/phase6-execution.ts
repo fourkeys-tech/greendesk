@@ -2,6 +2,7 @@ import { prisma } from "../prisma";
 import { assertPermission, validateStatusTransition } from "../permissions";
 import { sendReportStatusEmailWithMergedChildren } from "../email";
 import { recordAuditLog } from "../audit";
+import { activeAssignmentWhere } from "../scopes";
 import { getManagerAssignedClusterIds } from "./phase5-decision";
 import type { SessionUser } from "../auth";
 
@@ -415,12 +416,11 @@ export async function submitWorkResultByTechnician(
       });
 
       // 3. Notifikasi Web ke seluruh Manager yang bertugas di cluster ini
-      const now = new Date();
       const managerAssignments = await tx.clusterManagerAssignment.findMany({
         where: {
           clusterId,
-          validFrom: { lte: now },
-          OR: [{ validUntil: null }, { validUntil: { gte: now } }],
+          ...activeAssignmentWhere(new Date()),
+          user: { isActive: true },
         },
         select: { userId: true },
       });
@@ -485,13 +485,16 @@ export async function confirmWorkResultByManager(
   }
 ) {
   assertPermission(actor.role, "CONFIRM_COMPLETION");
+  if (!actor.companyId) {
+    throw new Error("Akun Manager harus terhubung ke perusahaan.");
+  }
 
   const clusterIds = await getManagerAssignedClusterIds(actor.id);
 
   const workOrder = await prisma.workOrder.findFirst({
     where: {
       id: input.workOrderId,
-      companyId: actor.companyId || undefined,
+      companyId: actor.companyId,
     },
     include: {
       photos: true,

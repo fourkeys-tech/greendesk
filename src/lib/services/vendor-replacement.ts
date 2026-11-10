@@ -2,6 +2,7 @@ import { prisma } from "../prisma";
 import { assertPermission } from "../permissions";
 import { recordAuditLog } from "../audit";
 import { getManagerAssignedClusterIds } from "./phase5-decision";
+import { activeAssignmentWhere } from "../scopes";
 import type { SessionUser } from "../auth";
 
 /**
@@ -150,8 +151,8 @@ export async function submitVendorReplacementRequest(
       const managerAssignments = await tx.clusterManagerAssignment.findMany({
         where: {
           clusterId: asset.park.clusterId,
-          validFrom: { lte: now },
-          OR: [{ validUntil: null }, { validUntil: { gte: now } }],
+          ...activeAssignmentWhere(now),
+          user: { isActive: true },
         },
         select: { userId: true },
       });
@@ -214,12 +215,16 @@ export async function decideVendorReplacementByManager(
     );
   }
 
+  if (!actor.companyId) {
+    throw new Error("Akun Manager tidak terhubung ke perusahaan.");
+  }
+
   const clusterIds = await getManagerAssignedClusterIds(actor.id);
 
   const request = await prisma.vendorReplacementRequest.findFirst({
     where: {
       id: input.requestId,
-      companyId: actor.companyId || undefined,
+      companyId: actor.companyId,
     },
     include: {
       asset: true,
@@ -371,16 +376,20 @@ export async function forwardVendorReplacementByAdmin(
     forwardNote?: string;
   }
 ) {
+  assertPermission(actor.role, "MANAGE_VENDORS");
   if (actor.role !== "ADMIN") {
     throw new Error(
       "Akses ditolak: Hanya Admin yang dapat meneruskan eskalasi ke Owner."
     );
   }
+  if (!actor.companyId) {
+    throw new Error("Akun Admin tidak terhubung ke perusahaan.");
+  }
 
   const request = await prisma.vendorReplacementRequest.findFirst({
     where: {
       id: input.requestId,
-      companyId: actor.companyId || undefined,
+      companyId: actor.companyId,
     },
     include: {
       asset: true,
@@ -465,13 +474,26 @@ export async function markVendorReplacementViewedByOwner(
   if (actor.role !== "OWNER") {
     throw new Error("Akses ditolak: Hanya Owner yang dapat mengakses fitur ini.");
   }
+  if (!actor.companyId) {
+    throw new Error("Akun Owner tidak terhubung ke perusahaan.");
+  }
 
-  const updated = await prisma.vendorReplacementRequest.update({
-    where: { id: requestId },
+  const request = await prisma.vendorReplacementRequest.findFirst({
+    where: {
+      id: requestId,
+      companyId: actor.companyId,
+      status: "DITERUSKAN_KE_OWNER",
+    },
+  });
+  if (!request) {
+    throw new Error("Eskalasi pergantian vendor tidak ditemukan.");
+  }
+  if (request.ownerViewedAt) return request;
+
+  return prisma.vendorReplacementRequest.update({
+    where: { id: request.id },
     data: { ownerViewedAt: new Date() },
   });
-
-  return updated;
 }
 
 /**
@@ -539,12 +561,13 @@ export async function getVendorReportCard(
   const avgDurationHours =
     completedCount > 0 ? Math.round((totalDurationHours / completedCount) * 10) / 10 : 0;
 
-  // Hitung jumlah laporan baru yang masuk dalam masa garansi vendor ini
+  // Hitung laporan kerusakan ulang dalam masa garansi vendor ini (yang terbukti valid)
   const warrantyDefectsCount = await prisma.report.count({
     where: {
       companyId,
       underWarrantyOfVendorId: vendor.id,
       archivedAt: null,
+      status: { notIn: ["DIBATALKAN", "TIDAK_VALID", "DIGABUNG"] },
     },
   });
 

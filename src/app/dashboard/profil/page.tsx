@@ -1,36 +1,43 @@
 import { redirect } from "next/navigation";
-import { Building2, LogOut, Check, Lock } from "lucide-react";
+import { Building2, LogOut, ShieldCheck } from "lucide-react";
 import { getCurrentSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { ROLE_METADATA } from "@/lib/permissions";
-import {
-  logoutAction,
-  updateUserProfileAction,
-} from "@/app/actions/auth-actions";
+import { activeAssignmentWhere } from "@/lib/scopes";
+import { formatWibDate, formatWibDateTime } from "@/lib/dates";
+import { logoutAction } from "@/app/actions/auth-actions";
+import { DbErrorNotice } from "@/components/dashboard/db-error-notice";
+import { ProfileForm } from "./profile-form";
 
 export default async function DashboardProfilePage() {
   const session = await getCurrentSession();
   if (!session) redirect("/login");
 
-  const user = await prisma.user.findUnique({
-    where: { id: session.id },
-    include: {
-      staffCluster: {
-        include: {
-          complex: true,
+  let user;
+  try {
+    user = await prisma.user.findUnique({
+      where: { id: session.id },
+      include: {
+        staffCluster: {
+          include: {
+            complex: true,
+          },
         },
-      },
-      managerAssignments: {
-        include: {
-          cluster: {
-            include: { complex: true },
+        managerAssignments: {
+          where: activeAssignmentWhere(new Date()),
+          orderBy: { isTemporary: "asc" },
+          include: {
+            cluster: {
+              include: { complex: true },
+            },
           },
         },
       },
-      managedVendor: true,
-      technicianProfile: true,
-    },
-  });
+    });
+  } catch (error) {
+    console.error("[profil] gagal memuat profil:", error);
+    return <DbErrorNotice />;
+  }
 
   if (!user) redirect("/login");
 
@@ -109,10 +116,7 @@ export default async function DashboardProfilePage() {
                   Terakhir Masuk:
                 </span>
                 <span className="font-medium text-slate-700">
-                  {new Date(user.lastLoginAt).toLocaleString("id-ID", {
-                    dateStyle: "short",
-                    timeStyle: "short",
-                  })}
+                  {formatWibDateTime(user.lastLoginAt)}
                 </span>
               </div>
             )}
@@ -185,9 +189,8 @@ export default async function DashboardProfilePage() {
                       Kompleks: {user.staffCluster.complex.name}
                     </p>
                     <p className="text-xs text-slate-600 mt-2.5 leading-relaxed">
-                      Sesuai PRD v0.2, Pengelola bertanggung jawab memverifikasi
-                      laporan kerusakan dan dapat mengajukan pergantian vendor
-                      untuk aset di cluster ini.
+                      Anda memverifikasi laporan kerusakan dan dapat mengajukan
+                      pergantian vendor untuk aset di cluster ini.
                     </p>
                   </div>
                 </div>
@@ -228,13 +231,7 @@ export default async function DashboardProfilePage() {
                       <div>
                         {a.isTemporary ? (
                           <span className="bg-amber-100 text-amber-800 font-bold px-2.5 py-1 rounded-full text-[11px] border border-amber-200">
-                            Pengganti Sementara (s/d{" "}
-                            {a.validUntil
-                              ? new Date(a.validUntil).toLocaleDateString(
-                                  "id-ID"
-                                )
-                              : "-"}
-                            )
+                            Pengganti Sementara (s/d {formatWibDate(a.validUntil)})
                           </span>
                         ) : (
                           <span className="bg-emerald-100 text-emerald-800 font-bold px-2.5 py-1 rounded-full text-[11px] border border-emerald-200">
@@ -254,114 +251,51 @@ export default async function DashboardProfilePage() {
             </div>
           )}
 
+          {(user.role === "ADMIN" || user.role === "OWNER") && (
+            <div className="bg-white rounded-3xl border border-slate-200/90 p-6 shadow-xs">
+              <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-800 mb-4">
+                Cakupan Akses {roleMeta.label}
+              </h3>
+              <div className="rounded-2xl bg-slate-50 border border-slate-200 p-5 flex items-start gap-4">
+                <div className="w-11 h-11 rounded-2xl bg-emerald-100 border border-emerald-200 text-emerald-700 flex items-center justify-center shrink-0">
+                  <ShieldCheck className="w-6 h-6" />
+                </div>
+                <div className="min-w-0 space-y-1.5">
+                  <h4 className="text-base font-extrabold text-slate-900">
+                    {session.companyName || "Belum terhubung ke perusahaan"}
+                  </h4>
+                  <p className="text-xs font-semibold text-slate-600">
+                    {roleMeta.scopeDescription}
+                  </p>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    {user.role === "ADMIN"
+                      ? "Anda mengelola wilayah, aset, QR, kategori, akun internal, dan vendor; menyetujui teknisi; serta memblokir akun pelapor bermasalah. Admin tidak memverifikasi atau memutuskan laporan."
+                      : "Anda memantau ringkasan semua cluster, rapor vendor, eskalasi ganti vendor, dan riwayat perubahan data (hanya lihat)."}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Form Pembaruan Profil */}
           <div className="bg-white rounded-3xl border border-slate-200/90 p-6 shadow-xs">
             <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-800 mb-5">
               Ubah Data Diri
             </h3>
 
-            <form
-              action={async (formData) => {
-                "use server";
-                await updateUserProfileAction(formData);
-              }}
-              className="space-y-4"
-            >
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  Nama Lengkap
-                </label>
-                <input
-                  type="text"
-                  name="name"
-                  defaultValue={user.name}
-                  required
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-white text-sm font-medium text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600 transition"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  Alamat Email (Akun)
-                </label>
-                <input
-                  type="email"
-                  value={user.email}
-                  disabled
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-100/80 text-sm font-medium text-slate-500 cursor-not-allowed"
-                />
-                <p className="text-[11px] text-slate-400 mt-1.5 flex items-center gap-1">
-                  <Lock className="w-3.5 h-3.5" />
-                  <span>Email akun tidak dapat diubah secara langsung.</span>
-                </p>
-              </div>
-
-              {user.role === "PENGGUNA" && (
-                <>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                        Status Pelapor (Opsional)
-                      </label>
-                      <select
-                        name="reporterStatus"
-                        defaultValue={user.reporterStatus || ""}
-                        className="w-full text-sm rounded-xl border border-slate-300 px-3.5 py-2.5 bg-white focus:border-emerald-600 focus:outline-hidden"
-                      >
-                        <option value="">-- Pilih Status --</option>
-                        <option value="WARGA">Warga Perumahan</option>
-                        <option value="PENGUNJUNG">Pengunjung Umum</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                        Blok / Nomor Rumah (Untuk Warga)
-                      </label>
-                      <input
-                        type="text"
-                        name="blockHouseNo"
-                        defaultValue={user.blockHouseNo || ""}
-                        placeholder="Mis. Blok B2 No. 08"
-                        className="w-full text-sm rounded-xl border border-slate-300 px-3.5 py-2.5 focus:border-emerald-600 focus:outline-hidden"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="pt-2">
-                    <label className="flex items-start gap-2.5 text-xs text-slate-600 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        name="dataConsent"
-                        defaultChecked={!!user.dataConsentAt}
-                        className="mt-0.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                      />
-                      <span>
-                        Saya menyetujui data laporan dan identitas saya
-                        digunakan untuk keperluan perbaikan fasilitas taman
-                        GreenPark (Data Consent:{" "}
-                        {user.dataConsentAt
-                          ? new Date(user.dataConsentAt).toLocaleDateString(
-                              "id-ID"
-                            )
-                          : "Belum disetujui"}
-                        ).
-                      </span>
-                    </label>
-                  </div>
-                </>
-              )}
-
-              <div className="pt-2">
-                <button
-                  type="submit"
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm shadow-emerald-600/20 transition cursor-pointer"
-                >
-                  <Check className="w-4 h-4" />
-                  <span>Simpan Perubahan Profil</span>
-                </button>
-              </div>
-            </form>
+            <ProfileForm
+              name={user.name}
+              email={user.email}
+              isReporter={user.role === "PENGGUNA"}
+              reporterStatus={user.reporterStatus}
+              blockHouseNo={user.blockHouseNo}
+              hasConsent={!!user.dataConsentAt}
+              dataConsentLabel={
+                user.dataConsentAt
+                  ? `disetujui ${formatWibDate(user.dataConsentAt)}`
+                  : "belum disetujui"
+              }
+            />
           </div>
         </div>
       </div>

@@ -12,7 +12,6 @@ import {
 function revalidateVerificationPaths() {
   revalidatePath("/dashboard/laporan");
   revalidatePath("/dashboard/akun");
-  revalidatePath("/dashboard/fondasi");
   revalidatePath("/dashboard");
 }
 

@@ -188,9 +188,17 @@ export function getReportViewScope(role: Role): ScopeLevel {
   }
 }
 
+/**
+ * Ambang jumlah laporan Tidak Valid sebelum pelapor disorot "Perlu ditinjau" oleh Admin.
+ * Angka final masih pertanyaan terbuka di PRD (Q11), jadi dibuat mudah diubah.
+ */
+export const REPORTER_REVIEW_THRESHOLD = 3;
+
 export interface NavItem {
   href: string;
   label: string;
+  /** Label pendek untuk bottom-nav mobile */
+  shortLabel?: string;
   description: string;
   iconName: string;
   badge?: string;
@@ -207,6 +215,7 @@ export function getNavigationForRole(
     {
       href: "/dashboard",
       label: "Ringkasan & Tugas",
+      shortLabel: "Ringkasan",
       description: "Halaman utama sesuai role Anda",
       iconName: "LayoutDashboard",
     },
@@ -217,18 +226,21 @@ export function getNavigationForRole(
       {
         href: "/dashboard/lapor",
         label: "Buat Laporan Baru",
+        shortLabel: "Lapor",
         description: "Laporkan kerusakan fasilitas taman via QR atau pilih aset",
         iconName: "PlusCircle",
       },
       {
         href: "/dashboard/laporan",
         label: "Laporan Saya",
+        shortLabel: "Laporan",
         description: "Pantau status laporan dan batalkan jika masih Baru",
         iconName: "FileText",
       },
       {
         href: "/dashboard/profil",
         label: "Profil Saya",
+        shortLabel: "Profil",
         description: "Status pelapor, rekam jejak, dan persetujuan data",
         iconName: "User",
       }
@@ -240,24 +252,28 @@ export function getNavigationForRole(
       {
         href: "/dashboard/laporan",
         label: "Antrean Verifikasi Cluster",
+        shortLabel: "Antrean",
         description: "Verifikasi laporan Baru, tetapkan prioritas, atau gabung laporan",
         iconName: "ClipboardCheck",
       },
       {
         href: "/dashboard/pengajuan-ganti-vendor",
         label: "Pengajuan Ganti Vendor",
+        shortLabel: "Vendor",
         description: "Ajukan pergantian vendor untuk aset yang rusak berulang",
         iconName: "RotateCcw",
       },
       {
         href: "/dashboard/wilayah",
         label: "Data Wilayah & Aset (Lihat)",
+        shortLabel: "Aset",
         description: "Lihat struktur cluster, taman, dan aset aktif",
         iconName: "MapPin",
       },
       {
         href: "/dashboard/profil",
         label: "Profil Saya",
+        shortLabel: "Profil",
         description: "Identitas akun dan cluster penugasan",
         iconName: "User",
       }
@@ -269,36 +285,42 @@ export function getNavigationForRole(
       {
         href: "/dashboard/laporan",
         label: "Keputusan & Konfirmasi",
+        shortLabel: "Keputusan",
         description: "Setuju/tolak perbaikan, buat SPK, dan konfirmasi hasil",
         iconName: "CheckSquare",
       },
       {
         href: "/dashboard/spk",
         label: "Daftar SPK",
+        shortLabel: "SPK",
         description: "Pantau seluruh penugasan SPK dan pengerjaan",
         iconName: "FileSpreadsheet",
       },
       {
         href: "/dashboard/pengajuan-ganti-vendor",
         label: "Pengajuan Ganti Vendor",
+        shortLabel: "Eskalasi",
         description: "Putuskan pengajuan pergantian vendor dari Pengelola",
         iconName: "RotateCcw",
       },
       {
         href: "/dashboard/vendor",
         label: "Vendor & Rapor Kinerja",
+        shortLabel: "Vendor",
         description: "Daftar vendor, rapor SPK, dan daftar teknisi",
         iconName: "Building2",
       },
       {
         href: "/dashboard/wilayah",
         label: "Wilayah & Aset (Lihat)",
+        shortLabel: "Aset",
         description: "Lihat daftar taman, aset, dan QR di cluster tertaut",
         iconName: "MapPin",
       },
       {
         href: "/dashboard/profil",
         label: "Profil Saya",
+        shortLabel: "Profil",
         description: "Identitas dan cluster wewenang manajer",
         iconName: "User",
       }
@@ -310,24 +332,28 @@ export function getNavigationForRole(
       {
         href: "/dashboard/laporan",
         label: "SPK Vendor Saya",
+        shortLabel: "SPK",
         description: "Terima SPK dari Manager dan tunjuk teknisi penanggung jawab",
         iconName: "Wrench",
       },
       {
         href: "/dashboard/spk",
         label: "Semua SPK Vendor",
+        shortLabel: "Semua SPK",
         description: "Pantau seluruh SPK vendor dan ganti teknisi bila diperlukan",
         iconName: "FileSpreadsheet",
       },
       {
         href: "/dashboard/teknisi",
         label: "Teknisi Saya",
+        shortLabel: "Teknisi",
         description: "Daftarkan teknisi baru dan atur status aktif/cuti",
         iconName: "Users",
       },
       {
         href: "/dashboard/vendor",
         label: "Profil Vendor Saya",
+        shortLabel: "Vendor",
         description: "Lihat informasi kontrak, area layanan, dan masa garansi",
         iconName: "Building2",
       }
@@ -337,6 +363,7 @@ export function getNavigationForRole(
       items.push({
         href: "/dashboard/profil-teknisi",
         label: "Profil Teknisi (Peran Ganda)",
+        shortLabel: "Profil",
         description: "Lihat data keahlian dan status tugas teknisi Anda",
         iconName: "UserCheck",
       });
@@ -348,12 +375,14 @@ export function getNavigationForRole(
       {
         href: "/dashboard/laporan",
         label: "SPK Tugas Saya",
+        shortLabel: "Tugas",
         description: "Kerjakan perbaikan dan unggah foto sebelum/sesudah (tanpa identitas pelapor)",
         iconName: "Hammer",
       },
       {
         href: "/dashboard/profil-teknisi",
         label: "Profil Teknisi Saya",
+        shortLabel: "Profil",
         description: "Lihat status keahlian dan penugasan Anda",
         iconName: "UserCheck",
       }
@@ -363,6 +392,7 @@ export function getNavigationForRole(
       items.push({
         href: "/dashboard/teknisi",
         label: "Kelola Teknisi (Peran PIC)",
+        shortLabel: "Teknisi",
         description: "Akses kelola tim teknisi vendor Anda",
         iconName: "Users",
       });
@@ -374,42 +404,49 @@ export function getNavigationForRole(
       {
         href: "/dashboard/wilayah",
         label: "Kelola Wilayah, Aset & QR",
+        shortLabel: "Wilayah",
         description: "Kelola Komplek, Cluster, Taman, Aset, Kategori, dan cetak QR",
         iconName: "MapPin",
       },
       {
         href: "/dashboard/vendor",
         label: "Kelola Vendor & Setujui Teknisi",
+        shortLabel: "Vendor",
         description: "Input data vendor, buat akun PIC, dan setujui teknisi",
         iconName: "Building2",
       },
       {
         href: "/dashboard/akun",
         label: "Akun Internal & Blokir Pengguna",
+        shortLabel: "Akun",
         description: "Kelola akun Pengelola/Manager dan blokir akun pelapor bermasalah",
         iconName: "Users",
       },
       {
         href: "/dashboard/laporan",
         label: "Semua Laporan (Mode Lihat)",
+        shortLabel: "Laporan",
         description: "Pantau seluruh laporan perusahaan (Admin tidak bisa verifikasi/putuskan)",
         iconName: "Eye",
       },
       {
         href: "/dashboard/audit",
         label: "Riwayat Perubahan Data",
+        shortLabel: "Audit",
         description: "Jejak audit perubahan data master (siapa, apa, kapan, nilai lama & baru)",
         iconName: "History",
       },
       {
         href: "/dashboard/pengajuan-ganti-vendor",
         label: "Pengajuan Ganti Vendor",
+        shortLabel: "Eskalasi",
         description: "Teruskan pengajuan ganti vendor yang disetujui Manager ke Owner",
         iconName: "RotateCcw",
       },
       {
         href: "/dashboard/profil",
         label: "Profil Saya",
+        shortLabel: "Profil",
         description: "Identitas akun Admin",
         iconName: "User",
       }
@@ -421,49 +458,54 @@ export function getNavigationForRole(
       {
         href: "/dashboard/laporan",
         label: "Pantau Semua Laporan",
+        shortLabel: "Laporan",
         description: "Ringkasan laporan seluruh cluster (Mode Lihat)",
         iconName: "BarChart3",
       },
       {
+        href: "/dashboard/spk",
+        label: "Daftar SPK (Lihat)",
+        shortLabel: "SPK",
+        description: "Pantau progres SPK dan penugasan vendor (hanya lihat)",
+        iconName: "FileSpreadsheet",
+      },
+      {
         href: "/dashboard/wilayah",
         label: "Data Wilayah & Aset (Lihat)",
+        shortLabel: "Wilayah",
         description: "Lihat struktur wilayah dan aset seluruh perusahaan",
         iconName: "MapPin",
       },
       {
         href: "/dashboard/vendor",
         label: "Data & Rapor Vendor (Lihat)",
+        shortLabel: "Vendor",
         description: "Pantau performa vendor dan daftar teknisi",
         iconName: "Building2",
       },
       {
         href: "/dashboard/pengajuan-ganti-vendor",
         label: "Eskalasi Ganti Vendor",
+        shortLabel: "Eskalasi",
         description: "Daftar eskalasi pergantian vendor dari Admin",
         iconName: "RotateCcw",
       },
       {
         href: "/dashboard/audit",
         label: "Riwayat Perubahan Data",
+        shortLabel: "Audit",
         description: "Audit seluruh perubahan data master di perusahaan",
         iconName: "History",
       },
       {
         href: "/dashboard/profil",
         label: "Profil Saya",
+        shortLabel: "Profil",
         description: "Identitas akun Owner",
         iconName: "User",
       }
     );
   }
-
-  // Menu khusus dev/verifikasi Fase 0 (Email Log & Matriks Hak Akses)
-  items.push({
-    href: "/dashboard/fondasi",
-    label: "Verifikasi Fase 0 (Fondasi)",
-    description: "Uji Matriks Hak Akses, Storage Foto, Email Outbox, dan Arsip Laporan",
-    iconName: "ShieldCheck",
-  });
 
   return items;
 }

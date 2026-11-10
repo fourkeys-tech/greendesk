@@ -109,6 +109,7 @@ model Complex {
   companyId String
   name      String
   address   String
+  isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -123,6 +124,7 @@ model Cluster {
   companyId String
   complexId String
   name      String
+  isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -144,6 +146,7 @@ model Park {
   clusterId    String
   name         String
   locationNote String?
+  isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -160,6 +163,7 @@ model Category {
   companyId   String
   name        String
   damageTypes String[]
+  isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -240,12 +244,14 @@ model ClusterManagerAssignment {
   replacedManagerId String?
   validFrom         DateTime  @default(now())
   validUntil        DateTime?
+  cancelledAt       DateTime?
+  cancelledById     String?
   createdAt         DateTime  @default(now())
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   cluster Cluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, clusterId, isTemporary])
+  @@index([userId, clusterId])
   @@index([clusterId])
 }
 
@@ -303,6 +309,7 @@ model Technician {
   approvalStatus ApprovalStatus   @default(PENDING)
   approvedById   String?
   approvedAt     DateTime?
+  rejectionReason       String?
   deactivationReason    String? // AUTO_60_DAYS | MANUAL_BY_PIC | MANUAL_BY_ADMIN
   reactivationRequested Boolean  @default(false)
   reactivationNote      String?

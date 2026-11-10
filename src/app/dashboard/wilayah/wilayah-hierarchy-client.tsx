@@ -1,198 +1,330 @@
 "use client";
 
-import React, { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Search, MapPin, ArrowRight, Printer, Download } from "lucide-react";
-import { AssetEditForm } from "./asset-edit-form";
+import { Search, MapPin, ArrowRight } from "lucide-react";
 import { downloadSingleQr, printSingleQr } from "./cetak-qr/print-button";
+import {
+  AssetEditForm,
+  ClusterEditForm,
+  ComplexEditForm,
+  ParkEditForm,
+} from "./wilayah-edit-forms";
+import type {
+  HierarchyAsset,
+  HierarchyComplex,
+} from "./wilayah-types";
 
 interface WilayahHierarchyClientProps {
-  complexes: any[];
-  categories: Array<{ id: string; name: string }>;
-  qrRecord: Record<string, { shortUrl: string; qrDataUrl: string }>;
+  complexes: HierarchyComplex[];
+  categories: Array<{ id: string; name: string; isActive: boolean }>;
   canManage: boolean;
+  companyName?: string;
+}
+
+type StatusFilter = "ALL" | "ACTIVE" | "INACTIVE";
+
+function ActiveBadge({
+  isActive,
+  parentInactive,
+}: {
+  isActive: boolean;
+  parentInactive?: boolean;
+}) {
+  if (!isActive) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full border bg-rose-50 text-rose-800 border-rose-200">
+        <span className="w-1.5 h-1.5 rounded-full bg-rose-600" />
+        Nonaktif
+      </span>
+    );
+  }
+  if (parentInactive) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full border bg-amber-50 text-amber-800 border-amber-200"
+        title="Ikut nonaktif karena induknya nonaktif"
+      >
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+        Nonaktif (induk)
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-800 border-emerald-200">
+      <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" />
+      Aktif
+    </span>
+  );
 }
 
 export function WilayahHierarchyClient({
   complexes,
   categories,
-  qrRecord,
   canManage,
+  companyName,
 }: WilayahHierarchyClientProps) {
-  const [selectedCategory, setSelectedCategory] = useState<string>("ALL");
-  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [categoryId, setCategoryId] = useState<string>("ALL");
+  const [status, setStatus] = useState<StatusFilter>("ALL");
+  const [query, setQuery] = useState("");
+
+  const q = query.trim().toLowerCase();
+  const filtersActive = categoryId !== "ALL" || status !== "ALL" || q.length > 0;
+
+  const totalAssets = useMemo(
+    () =>
+      complexes.reduce(
+        (sum, c) =>
+          sum +
+          c.clusters.reduce(
+            (s, cl) => s + cl.parks.reduce((p, pk) => p + pk.assets.length, 0),
+            0
+          ),
+        0
+      ),
+    [complexes]
+  );
+
+  function assetMatches(asset: HierarchyAsset, effectiveActive: boolean) {
+    if (categoryId !== "ALL" && asset.category.id !== categoryId) return false;
+    if (status === "ACTIVE" && !effectiveActive) return false;
+    if (status === "INACTIVE" && effectiveActive) return false;
+    if (q) {
+      const hay = `${asset.name} ${asset.code} ${asset.category.name}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  }
+
+  let visibleAssetCount = 0;
+
+  const rendered = complexes.map((comp) => {
+    const clusters = comp.clusters.map((cluster) => {
+      const clusterParentInactive = !comp.isActive;
+      const parks = cluster.parks.map((park) => {
+        const parkParentInactive =
+          clusterParentInactive || !cluster.isActive;
+        const assets = park.assets.filter((asset) => {
+          const effectiveActive =
+            asset.isActive &&
+            asset.category.isActive &&
+            park.isActive &&
+            !parkParentInactive;
+          return assetMatches(asset, effectiveActive);
+        });
+        visibleAssetCount += assets.length;
+        return { park, parkParentInactive, assets };
+      });
+      return { cluster, clusterParentInactive, parks };
+    });
+    return { comp, clusters };
+  });
 
   return (
-    <div className="space-y-6">
-      {complexes.map((comp) => (
-        <div
+    <div className="space-y-5">
+      {/* Filter global */}
+      <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-xs space-y-3 lg:sticky lg:top-2 lg:z-10">
+        <div className="flex flex-col sm:flex-row gap-3">
+          <div className="relative flex-1 min-w-0">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Cari nama, kode, atau kategori aset..."
+              aria-label="Cari aset"
+              className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50/70 text-xs text-slate-800 placeholder-slate-400 focus:bg-white focus:outline-hidden focus:border-emerald-500 transition"
+            />
+          </div>
+          <select
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
+            aria-label="Filter kategori"
+            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
+          >
+            <option value="ALL">Semua kategori</option>
+            {categories.map((cat) => (
+              <option key={cat.id} value={cat.id}>
+                {cat.name}
+                {cat.isActive ? "" : " (nonaktif)"}
+              </option>
+            ))}
+          </select>
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value as StatusFilter)}
+            aria-label="Filter status aset"
+            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
+          >
+            <option value="ALL">Semua status</option>
+            <option value="ACTIVE">Bisa dilaporkan</option>
+            <option value="INACTIVE">Nonaktif</option>
+          </select>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+          <span>
+            Menampilkan <strong className="text-slate-800">{visibleAssetCount}</strong> dari{" "}
+            {totalAssets} aset
+          </span>
+          {filtersActive && (
+            <button
+              type="button"
+              onClick={() => {
+                setQuery("");
+                setCategoryId("ALL");
+                setStatus("ALL");
+              }}
+              className="font-semibold text-emerald-700 hover:underline cursor-pointer"
+            >
+              Reset filter
+            </button>
+          )}
+        </div>
+      </div>
+
+      {rendered.map(({ comp, clusters }) => (
+        <section
           key={comp.id}
-          className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 space-y-6 shadow-xs"
+          className="bg-white rounded-3xl border border-slate-200/90 p-4 sm:p-6 space-y-5 shadow-xs"
         >
-          {/* Tingkat 2: Komplek Header */}
-          <div className="border-b border-slate-200/80 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div>
-              <div className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-700">
-                Tingkat 2: Komplek / Perumahan
+          <div className="border-b border-slate-200/80 pb-4 flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">
+                Komplek
               </div>
-              <h2 className="text-lg font-extrabold text-slate-900 mt-0.5">
-                {comp.name}
-              </h2>
+              <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                <h2 className="text-lg font-extrabold text-slate-900">{comp.name}</h2>
+                <ActiveBadge isActive={comp.isActive} />
+              </div>
               <p className="text-xs text-slate-500 mt-0.5">{comp.address}</p>
             </div>
-            <div className="flex items-center gap-2 self-start sm:self-center">
-              <span className="text-xs font-bold px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
-                {comp.clusters.length} Cluster Aktif
+            <div className="flex flex-col items-start sm:items-end gap-2 shrink-0">
+              <span className="text-xs font-bold px-3 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                {comp.clusters.length} Cluster
               </span>
+              {canManage && <ComplexEditForm complex={comp} />}
             </div>
           </div>
 
-          {/* Tingkat 3: Cluster Container */}
-          <div className="space-y-5">
-            {comp.clusters.map((cluster: any) => (
+          <div className="space-y-4">
+            {clusters.map(({ cluster, clusterParentInactive, parks }) => (
               <div
                 key={cluster.id}
-                className="rounded-2xl border border-slate-200/90 p-5 bg-slate-50/60 space-y-4"
+                className="rounded-2xl border border-slate-200/90 p-4 sm:p-5 bg-slate-50/60 space-y-4"
               >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
+                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                  <div className="min-w-0 space-y-1">
                     <span className="text-[11px] font-bold uppercase tracking-wider text-sky-700">
-                      Tingkat 3: Cluster
+                      Cluster
                     </span>
-                    <h3 className="text-base font-extrabold text-slate-900">
-                      {cluster.name}
-                    </h3>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-base font-extrabold text-slate-900">
+                        {cluster.name}
+                      </h3>
+                      <ActiveBadge
+                        isActive={cluster.isActive}
+                        parentInactive={clusterParentInactive}
+                      />
+                    </div>
+                    <div className="text-[11px] text-slate-600 space-y-0.5">
+                      <div>
+                        Pengelola:{" "}
+                        {cluster.pengelolaNames.length > 0 ? (
+                          <strong className="text-slate-800">
+                            {cluster.pengelolaNames.join(", ")}
+                          </strong>
+                        ) : (
+                          <span className="text-amber-700 font-semibold">belum ada</span>
+                        )}
+                      </div>
+                      <div>
+                        Manager:{" "}
+                        {cluster.managerNames.length > 0 ? (
+                          <strong className="text-slate-800">
+                            {cluster.managerNames
+                              .map((m) => (m.isTemporary ? `${m.name} (pengganti)` : m.name))
+                              .join(", ")}
+                          </strong>
+                        ) : (
+                          <span className="text-amber-700 font-semibold">belum ada</span>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  <span className="text-xs font-semibold text-slate-500">
-                    Cakupan Pengelola Klaster
-                  </span>
+                  {canManage && (
+                    <div className="shrink-0">
+                      <ClusterEditForm cluster={cluster} />
+                    </div>
+                  )}
                 </div>
 
-                {/* Tingkat 4: Taman Container */}
-                {cluster.parks.map((park: any) => {
-                  const filteredAssets = park.assets.filter((asset: any) => {
-                    if (
-                      selectedCategory !== "ALL" &&
-                      asset.category?.name !== selectedCategory
-                    ) {
-                      return false;
-                    }
-                    if (searchQuery.trim()) {
-                      const q = searchQuery.toLowerCase();
-                      const matchName = asset.name?.toLowerCase().includes(q);
-                      const matchCode = asset.code?.toLowerCase().includes(q);
-                      const matchCat = asset.category?.name
-                        ?.toLowerCase()
-                        .includes(q);
-                      if (!matchName && !matchCode && !matchCat) return false;
-                    }
-                    return true;
-                  });
+                {parks.length === 0 && (
+                  <div className="p-4 text-center text-xs text-slate-500 bg-white rounded-xl border border-dashed border-slate-200">
+                    Belum ada taman di cluster ini.
+                  </div>
+                )}
 
+                {parks.map(({ park, parkParentInactive, assets }) => {
+                  if (filtersActive && assets.length === 0) return null;
                   return (
                     <div
                       key={park.id}
-                      className="rounded-2xl bg-white border border-slate-200/90 p-5 space-y-4 shadow-2xs"
+                      className="rounded-2xl bg-white border border-slate-200/90 p-4 sm:p-5 space-y-4 shadow-2xs"
                     >
-                      {/* Park Header */}
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-                        <div>
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 pb-3 border-b border-slate-100">
+                        <div className="min-w-0">
                           <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-700">
-                            Tingkat 4: Taman
+                            Taman
                           </span>
-                          <h4 className="font-extrabold text-base text-slate-900">
-                            {park.name}
-                          </h4>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h4 className="font-extrabold text-base text-slate-900">
+                              {park.name}
+                            </h4>
+                            <ActiveBadge
+                              isActive={park.isActive}
+                              parentInactive={parkParentInactive}
+                            />
+                          </div>
                           <p className="text-xs text-slate-500 mt-0.5">
                             Lokasi: {park.locationNote || "-"}
                           </p>
                         </div>
-                        <div className="flex items-center gap-2 self-start sm:self-center">
+                        <div className="flex flex-col items-start sm:items-end gap-2 shrink-0">
                           <span className="text-xs bg-slate-100 text-slate-800 px-3 py-1 rounded-full font-bold border border-slate-200">
-                            {park.assets.length} Aset Terdaftar
+                            {filtersActive
+                              ? `${assets.length} dari ${park.assets.length} aset`
+                              : `${park.assets.length} aset`}
                           </span>
+                          {canManage && <ParkEditForm park={park} />}
                         </div>
                       </div>
 
-                      {/* Filter & Search Bar for Assets */}
-                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-1">
-                        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 text-xs">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedCategory("ALL")}
-                            className={`px-3 py-1.5 rounded-xl whitespace-nowrap transition cursor-pointer ${
-                              selectedCategory === "ALL"
-                                ? "bg-slate-900 text-white font-bold"
-                                : "bg-slate-100 hover:bg-slate-200/70 text-slate-700 font-semibold"
-                            }`}
-                          >
-                            Semua ({park.assets.length})
-                          </button>
-                          {categories.map((cat) => (
-                            <button
-                              key={cat.id}
-                              type="button"
-                              onClick={() => setSelectedCategory(cat.name)}
-                              className={`px-3 py-1.5 rounded-xl whitespace-nowrap transition cursor-pointer ${
-                                selectedCategory === cat.name
-                                  ? "bg-slate-900 text-white font-bold"
-                                  : "bg-slate-100 hover:bg-slate-200/70 text-slate-700 font-semibold"
-                              }`}
-                            >
-                              {cat.name}
-                            </button>
-                          ))}
-                        </div>
-
-                        <div className="relative w-full sm:w-64">
-                          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                          <input
-                            type="text"
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            placeholder="Cari nama atau kode aset..."
-                            className="w-full pl-8 pr-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50/70 text-xs text-slate-800 placeholder-slate-400 focus:bg-white focus:outline-hidden focus:border-emerald-500 transition"
-                          />
-                        </div>
-                      </div>
-
-                      {/* Tingkat 5: Asset Cards Grid */}
-                      {filteredAssets.length === 0 ? (
-                        <div className="p-6 text-center text-xs text-slate-500 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
-                          Tidak ada aset pada taman ini yang cocok dengan filter
-                          kategori / pencarian.
+                      {assets.length === 0 ? (
+                        <div className="p-5 text-center text-xs text-slate-500 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                          Belum ada aset di taman ini.
                         </div>
                       ) : (
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-2">
-                          {filteredAssets.map((asset: any) => {
-                            const qr = qrRecord[asset.code];
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                          {assets.map((asset) => {
+                            const parentInactive =
+                              parkParentInactive ||
+                              !park.isActive ||
+                              !asset.category.isActive;
                             return (
-                              <div
+                              <article
                                 key={asset.id}
-                                className="rounded-2xl border border-slate-200/90 p-5 bg-slate-50/40 hover:bg-white hover:shadow-md transition flex flex-col justify-between gap-4"
+                                className="rounded-2xl border border-slate-200/90 p-4 bg-slate-50/40 hover:bg-white hover:shadow-md transition flex flex-col justify-between gap-4"
                               >
                                 <div className="flex flex-col sm:flex-row items-start justify-between gap-4">
                                   <div className="space-y-1.5 flex-1 min-w-0">
-                                    <div className="flex items-center gap-2">
-                                      <span className="font-mono text-xs font-bold px-2.5 py-0.5 rounded-md bg-slate-900 text-white">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="font-mono text-xs font-bold px-2.5 py-0.5 rounded-md bg-slate-900 text-white break-all">
                                         {asset.code}
                                       </span>
-                                      <span
-                                        className={`inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full border ${
-                                          asset.isActive
-                                            ? "bg-emerald-100 text-emerald-800 border-emerald-200"
-                                            : "bg-rose-100 text-rose-800 border-rose-200"
-                                        }`}
-                                      >
-                                        <span
-                                          className={`w-1.5 h-1.5 rounded-full ${
-                                            asset.isActive
-                                              ? "bg-emerald-600"
-                                              : "bg-rose-600"
-                                          }`}
-                                        />
-                                        {asset.isActive ? "Aktif" : "Nonaktif"}
-                                      </span>
+                                      <ActiveBadge
+                                        isActive={asset.isActive}
+                                        parentInactive={parentInactive}
+                                      />
                                     </div>
 
                                     <h5 className="font-extrabold text-base text-slate-900 pt-1">
@@ -205,20 +337,23 @@ export function WilayahHierarchyClient({
                                         <strong className="text-slate-800">
                                           {asset.category.name}
                                         </strong>
+                                        {!asset.category.isActive && (
+                                          <span className="text-amber-700"> (kategori nonaktif)</span>
+                                        )}
                                       </div>
                                       <div className="text-slate-500 flex items-center gap-1">
                                         <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                                        <span>
-                                          Titik Lokasi:{" "}
-                                          {asset.locationNote || "-"}
-                                        </span>
+                                        <span>Titik lokasi: {asset.locationNote || "-"}</span>
                                       </div>
                                       {asset.installedAt && (
                                         <div className="text-[11px] text-slate-400">
-                                          Tanggal Pasang:{" "}
-                                          {new Date(
-                                            asset.installedAt
-                                          ).toLocaleDateString("id-ID")}
+                                          Dipasang:{" "}
+                                          {new Date(asset.installedAt).toLocaleDateString("id-ID", {
+                                            day: "numeric",
+                                            month: "short",
+                                            year: "numeric",
+                                            timeZone: "Asia/Jakarta",
+                                          })}
                                         </div>
                                       )}
                                     </div>
@@ -232,96 +367,87 @@ export function WilayahHierarchyClient({
                                       />
                                     )}
 
-                                    {/* Riwayat Vendor Perbaikan Terakhir */}
                                     <div className="pt-3 mt-2 border-t border-slate-200/80 text-xs">
                                       <span className="font-bold text-slate-700 block mb-1.5">
-                                        Riwayat Vendor Perbaikan Terakhir:
+                                        Vendor perbaikan terakhir
                                       </span>
-                                      {asset.reports &&
-                                      asset.reports.length > 0 ? (
-                                        <div className="space-y-1.5">
-                                          {asset.reports.map((r: any) => (
-                                            <div
-                                              key={r.id}
-                                              className="text-[11px] text-slate-600 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200/90 shadow-2xs"
+                                      {asset.recentWork.length > 0 ? (
+                                        <ul className="space-y-1.5">
+                                          {asset.recentWork.map((w) => (
+                                            <li
+                                              key={w.id}
+                                              className="text-[11px] text-slate-600 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200/90"
                                             >
-                                              • Vendor:{" "}
-                                              <strong className="text-slate-900">
-                                                {r.workOrder?.vendor.name}
-                                              </strong>{" "}
+                                              <strong className="text-slate-900">{w.vendorName}</strong>{" "}
                                               <span className="font-mono text-indigo-700 font-semibold">
-                                                ({r.workOrder?.spkNo})
+                                                ({w.spkNo})
                                               </span>
-                                            </div>
+                                            </li>
                                           ))}
-                                        </div>
+                                        </ul>
                                       ) : (
                                         <div className="text-[11px] text-slate-400 italic bg-white/60 px-2.5 py-1.5 rounded-lg border border-dashed border-slate-200">
-                                          Belum ada riwayat SPK vendor pada aset
-                                          ini.
+                                          Belum ada riwayat SPK.
                                         </div>
                                       )}
                                     </div>
                                   </div>
 
-                                  {/* QR Code Box */}
-                                  {qr && (
+                                  {asset.qrDataUrl && (
                                     <div className="w-full sm:w-36 flex flex-col items-center justify-center bg-white p-3 rounded-2xl border border-slate-200/90 shadow-2xs shrink-0">
                                       {/* eslint-disable-next-line @next/next/no-img-element */}
                                       <img
-                                        src={qr.qrDataUrl}
+                                        src={asset.qrDataUrl}
                                         alt={`QR ${asset.code}`}
                                         className="w-24 h-24 rounded-lg border border-slate-100 p-1"
                                       />
-                                      <span className="font-mono text-[11px] font-extrabold text-slate-900 tracking-tight mt-2">
+                                      <span className="font-mono text-[11px] font-extrabold text-slate-900 tracking-tight mt-2 break-all text-center">
                                         {asset.code}
                                       </span>
                                       <Link
-                                        href={`/r/${encodeURIComponent(
-                                          asset.code
-                                        )}`}
+                                        href={`/r/${encodeURIComponent(asset.code)}`}
                                         className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100/80 px-2.5 py-1 rounded-lg transition border border-emerald-200/60"
                                       >
-                                        <span>Uji Scan QR</span>
+                                        <span>Uji scan QR</span>
                                         <ArrowRight className="w-3 h-3" />
                                       </Link>
 
-                                      <div className="flex items-center gap-1 mt-1.5">
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            printSingleQr({
-                                              qrDataUrl: qr.qrDataUrl,
-                                              assetCode: asset.code,
-                                              assetName: asset.name,
-                                              parkName: park.name,
-                                            })
-                                          }
-                                          className="text-[10px] font-bold text-slate-600 hover:text-emerald-700 hover:bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200 transition cursor-pointer"
-                                          title="Cetak hanya gambar QR ini"
-                                        >
-                                          Cetak
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            downloadSingleQr(
-                                              qr.qrDataUrl,
-                                              asset.code
-                                            )
-                                          }
-                                          className="text-[10px] font-bold text-slate-600 hover:text-emerald-700 hover:bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200 transition cursor-pointer"
-                                          title="Unduh gambar QR PNG"
-                                        >
-                                          Unduh
-                                        </button>
-                                      </div>
+                                      {canManage && (
+                                        <div className="flex items-center gap-1 mt-1.5">
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              printSingleQr({
+                                                qrDataUrl: asset.qrDataUrl!,
+                                                assetCode: asset.code,
+                                                assetName: asset.name,
+                                                parkName: park.name,
+                                                companyName,
+                                              })
+                                            }
+                                            className="text-[10px] font-bold text-slate-600 hover:text-emerald-700 hover:bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200 transition cursor-pointer"
+                                            title="Cetak stiker QR aset ini"
+                                          >
+                                            Cetak
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              downloadSingleQr(asset.qrDataUrl!, asset.code)
+                                            }
+                                            className="text-[10px] font-bold text-slate-600 hover:text-emerald-700 hover:bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200 transition cursor-pointer"
+                                            title="Unduh gambar QR (.png)"
+                                          >
+                                            Unduh
+                                          </button>
+                                        </div>
+                                      )}
                                     </div>
                                   )}
                                 </div>
 
                                 {canManage && <AssetEditForm asset={asset} />}
-                              </div>
+                              </article>
                             );
                           })}
                         </div>
@@ -332,9 +458,14 @@ export function WilayahHierarchyClient({
               </div>
             ))}
           </div>
-        </div>
+        </section>
       ))}
+
+      {filtersActive && visibleAssetCount === 0 && (
+        <div className="p-6 text-center text-sm text-slate-500 bg-white rounded-2xl border border-dashed border-slate-200">
+          Tidak ada aset yang cocok dengan filter.
+        </div>
+      )}
     </div>
   );
 }
-

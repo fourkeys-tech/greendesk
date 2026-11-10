@@ -3,26 +3,36 @@ import { redirect } from "next/navigation";
 import { Archive, Plus } from "lucide-react";
 import { getCurrentSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { getReportViewScope, hasPermission } from "@/lib/permissions";
+import { hasPermission, ROLE_METADATA } from "@/lib/permissions";
 import { getScopedReportsForUser } from "@/lib/services/foundation";
+import { DbErrorNotice } from "@/components/dashboard/db-error-notice";
 import { LaporanClientBoard } from "./laporan-client-board";
 
 export default async function LaporanPage({
   searchParams,
 }: {
-  searchParams: Promise<{ arsip?: string }>;
+  searchParams: Promise<{ arsip?: string; q?: string }>;
 }) {
   const session = await getCurrentSession();
   if (!session) redirect("/login");
 
   const resolvedParams = await searchParams;
   const showArchived = resolvedParams.arsip === "1";
+  const initialQuery = resolvedParams.q ?? "";
 
-  const rawReports = await getScopedReportsForUser(session, {
-    includeArchived: showArchived,
-  });
+  let rawReports: Awaited<ReturnType<typeof getScopedReportsForUser>> = [];
+  let dbError = false;
+  try {
+    rawReports = await getScopedReportsForUser(session, {
+      includeArchived: showArchived,
+      throwOnError: true,
+    });
+  } catch (err) {
+    console.error("[laporan] gagal memuat laporan:", err);
+    dbError = true;
+  }
 
-  const scope = getReportViewScope(session.role);
+  const roleMeta = ROLE_METADATA[session.role];
   const canArchive = hasPermission(session.role, "ARCHIVE_REPORT");
   const canVerify = hasPermission(session.role, "VERIFY_AND_PRIORITIZE");
   const isManager = session.role === "MANAGER";
@@ -36,27 +46,32 @@ export default async function LaporanPage({
 
   let picTechnicians: Array<{ id: string; fullName: string }> = [];
 
-  if (isManager && session.companyId) {
-    allVendorsWithAreas = await prisma.vendor.findMany({
-      where: { companyId: session.companyId, isActive: true },
-      select: {
-        id: true,
-        name: true,
-        warrantyDays: true,
-        serviceAreas: { select: { clusterId: true } },
-      },
-    });
-  } else if (session.role === "PIC_VENDOR") {
-    const vendor = await prisma.vendor.findUnique({
-      where: { picUserId: session.id },
-      include: {
-        technicians: {
-          where: { status: "ACTIVE", approvalStatus: "APPROVED" },
-          select: { id: true, fullName: true },
+  try {
+    if (isManager && session.companyId) {
+      allVendorsWithAreas = await prisma.vendor.findMany({
+        where: { companyId: session.companyId, isActive: true },
+        select: {
+          id: true,
+          name: true,
+          warrantyDays: true,
+          serviceAreas: { select: { clusterId: true } },
         },
-      },
-    });
-    picTechnicians = vendor?.technicians || [];
+      });
+    } else if (session.role === "PIC_VENDOR") {
+      const vendor = await prisma.vendor.findUnique({
+        where: { picUserId: session.id },
+        include: {
+          technicians: {
+            where: { status: "ACTIVE", approvalStatus: "APPROVED" },
+            select: { id: true, fullName: true },
+          },
+        },
+      });
+      picTechnicians = vendor?.technicians || [];
+    }
+  } catch (err) {
+    console.error("Error loading vendor/technician data:", err);
+    dbError = true;
   }
 
   // Pengurutan cerdas untuk Manager (MGR-M1 & MGR-M2)
@@ -104,19 +119,21 @@ export default async function LaporanPage({
 
   return (
     <div className="space-y-6">
+      {dbError && <DbErrorNotice />}
       {/* Header Halaman */}
       <div className="bg-white rounded-3xl border border-slate-200/90 p-6 sm:p-7 shadow-xs">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 text-xs font-bold px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" />
-                Role: {session.role} ({scope})
+              <span
+                className={`inline-flex items-center gap-1.5 text-xs font-bold px-3 py-1 rounded-full border ${roleMeta.badgeColor}`}
+              >
+                {roleMeta.label}
               </span>
 
               {canVerify && (
                 <span className="inline-flex items-center gap-1.5 text-xs font-bold px-3 py-1 rounded-full bg-sky-50 text-sky-900 border border-sky-200">
-                  Antrean Verifikasi (BARU): {baruCount}
+                  Antrean Verifikasi (Baru): {baruCount}
                 </span>
               )}
 
@@ -133,7 +150,7 @@ export default async function LaporanPage({
 
               {session.role === "TEKNISI" && (
                 <span className="text-xs font-semibold px-3 py-1 rounded-full bg-amber-50 text-amber-900 border border-amber-200">
-                  Privasi Pelapor Disembunyikan Sesuai PRD 14.5
+                  Identitas pelapor disembunyikan
                 </span>
               )}
             </div>
@@ -152,12 +169,14 @@ export default async function LaporanPage({
 
             <p className="text-xs sm:text-sm text-slate-600 max-w-2xl leading-relaxed">
               {session.role === "PENGELOLA"
-                ? "Saring laporan BARU: Nyatakan Valid (+Prioritas), Tidak Valid (+Alasan), atau Gabung Laporan Ganda."
+                ? "Saring laporan Baru: nyatakan Valid (plus prioritas), Tidak Valid (dengan alasan), atau gabungkan laporan ganda."
                 : isManager
-                ? "Urutan laporan otomatis memprioritaskan tingkat TINGGI dan waktu terlama. Setujui untuk menerbitkan SPK atau tolak dengan alasan resmi."
+                ? "Urutan laporan otomatis memprioritaskan tingkat Tinggi dan waktu terlama. Setujui untuk menerbitkan SPK atau tolak dengan alasan."
                 : session.role === "PENGGUNA"
-                ? "Pantau status pengerjaan kerusakan aset. Anda dapat membatalkan laporan selama masih berstatus BARU."
-                : "Seluruh riwayat status tercatat secara transparan dan terikat aturan bisnis PRD."}
+                ? "Pantau status pengerjaan kerusakan aset. Anda dapat membatalkan laporan selama masih berstatus Baru."
+                : session.role === "ADMIN" || session.role === "OWNER"
+                ? "Pantau seluruh laporan kerusakan aset lintas cluster di perusahaan (hanya lihat)."
+                : "Seluruh riwayat status tercatat secara transparan sesuai alur penanganan."}
             </p>
           </div>
 
@@ -198,6 +217,7 @@ export default async function LaporanPage({
         canArchive={canArchive}
         canVerify={canVerify}
         isManager={isManager}
+        initialQuery={initialQuery}
         allVendorsWithAreas={allVendorsWithAreas}
         picTechnicians={picTechnicians}
       />

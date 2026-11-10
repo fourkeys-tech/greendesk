@@ -57,12 +57,12 @@ export function AppSidebar({
       {/* 2. Middle Sidebar: Navigasi Menu */}
       <div className="flex-1 py-4 px-3 space-y-4 overflow-y-auto">
         <div>
-          <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-3 mb-2 flex items-center justify-between">
-            <span>Menu Utama</span>
+          <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-3 mb-2 flex items-center justify-between gap-2">
+            <span className="shrink-0">Menu Utama</span>
             <span
-              className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${roleMeta.badgeColor}`}
+              className={`text-[10px] px-2 py-0.5 rounded-full border font-bold truncate ${roleMeta.badgeColor}`}
             >
-              {session.role}
+              {roleMeta.label}
             </span>
           </div>
           <DashboardNav items={navItems} badges={badges} />

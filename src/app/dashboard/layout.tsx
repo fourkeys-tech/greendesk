@@ -3,6 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { activeAssignmentWhere } from "@/lib/scopes";
 import { getNavigationForRole, ROLE_METADATA } from "@/lib/permissions";
 import { AppSidebar } from "@/components/dashboard/app-sidebar";
 import { MobileBottomNav } from "@/components/dashboard/mobile-bottom-nav";
@@ -30,8 +31,22 @@ export default async function DashboardLayout({
   const roleMeta = ROLE_METADATA[session.role];
 
   // Ambil notifikasi terbaru & info klaster untuk header dan badge sidebar
-  const [rawNotifications, staffCluster, managerClusters, pendingQueueCount] =
-    await Promise.all([
+  let rawNotifications: any[] = [];
+  let staffCluster: any = null;
+  let managerClusters: any[] = [];
+  let pendingQueueCount = 0;
+  let adminVendorBadgeCount = 0;
+  let adminReplacementBadgeCount = 0;
+
+  try {
+    [
+      rawNotifications,
+      staffCluster,
+      managerClusters,
+      pendingQueueCount,
+      adminVendorBadgeCount,
+      adminReplacementBadgeCount,
+    ] = await Promise.all([
       prisma.notification.findMany({
         where: { recipientId: session.id },
         select: {
@@ -53,7 +68,7 @@ export default async function DashboardLayout({
         : Promise.resolve(null),
       session.role === "MANAGER"
         ? prisma.clusterManagerAssignment.findMany({
-            where: { userId: session.id },
+            where: { userId: session.id, ...activeAssignmentWhere(new Date()) },
             select: { cluster: { select: { name: true } } },
           })
         : Promise.resolve([]),
@@ -74,7 +89,26 @@ export default async function DashboardLayout({
             },
           })
         : Promise.resolve(0),
+      session.role === "ADMIN" && session.companyId
+        ? prisma.technician.count({
+            where: {
+              companyId: session.companyId,
+              OR: [
+                { approvalStatus: "PENDING" },
+                { approvalStatus: "APPROVED", reactivationRequested: true },
+              ],
+            },
+          })
+        : Promise.resolve(0),
+      session.role === "ADMIN" && session.companyId
+        ? prisma.vendorReplacementRequest.count({
+            where: { companyId: session.companyId, status: "DISETUJUI" },
+          })
+        : Promise.resolve(0),
     ]);
+  } catch {
+    // Fallback jika database sedang proses restart/offline
+  }
 
   const notifications: HeaderNotificationItem[] = rawNotifications.map((n) => ({
     id: n.id,
@@ -90,6 +124,12 @@ export default async function DashboardLayout({
   const navBadges: Record<string, number> = {};
   if (pendingQueueCount > 0) {
     navBadges["/dashboard/laporan"] = pendingQueueCount;
+  }
+  if (adminVendorBadgeCount > 0) {
+    navBadges["/dashboard/vendor"] = adminVendorBadgeCount;
+  }
+  if (adminReplacementBadgeCount > 0) {
+    navBadges["/dashboard/pengajuan-ganti-vendor"] = adminReplacementBadgeCount;
   }
   if (unreadCount > 0) {
     navBadges["/dashboard/notifikasi"] = unreadCount;

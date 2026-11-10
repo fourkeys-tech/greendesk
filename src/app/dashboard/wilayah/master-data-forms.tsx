@@ -20,7 +20,14 @@ interface MasterDataFormsProps {
     clusterName: string;
     complexName?: string;
   }>;
-  categories: Array<{ id: string; name: string; damageTypes: string[] }>;
+  categories: Array<{
+    id: string;
+    name: string;
+    damageTypes: string[];
+    isActive: boolean;
+  }>;
+  /** Tanggal hari ini (WIB) format YYYY-MM-DD untuk default tanggal pasang. */
+  todayInput: string;
 }
 
 export function MasterDataForms({
@@ -28,7 +35,9 @@ export function MasterDataForms({
   clusters,
   parks,
   categories,
+  todayInput,
 }: MasterDataFormsProps) {
+  const activeCategories = categories.filter((c) => c.isActive);
   const [activeTab, setActiveTab] = useState<
     "wilayah" | "kategori" | "aset" | null
   >(parks.length === 0 ? "wilayah" : "aset");
@@ -39,7 +48,7 @@ export function MasterDataForms({
     parks[0]?.id || ""
   );
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>(
-    categories[0]?.id || ""
+    activeCategories[0]?.id || ""
   );
   const [feedback, setFeedback] = useState<{
     type: "success" | "error";
@@ -48,7 +57,8 @@ export function MasterDataForms({
 
   const selectedPark = parks.find((p) => p.id === selectedParkId) || parks[0];
   const selectedCat =
-    categories.find((c) => c.id === selectedCategoryId) || categories[0];
+    activeCategories.find((c) => c.id === selectedCategoryId) ||
+    activeCategories[0];
 
   const previewPrefix =
     selectedPark && selectedCat
@@ -71,12 +81,16 @@ export function MasterDataForms({
     return (formData: FormData) => {
       setFeedback(null);
       startTransition(async () => {
-        const res = await actionFn(formData);
-        if (res.error) {
-          setFeedback({ type: "error", text: res.error });
-        } else if (res.message) {
-          setFeedback({ type: "success", text: res.message });
-          setEditingCategoryId(null);
+        try {
+          const res = await actionFn(formData);
+          if (res.error) {
+            setFeedback({ type: "error", text: res.error });
+          } else if (res.message) {
+            setFeedback({ type: "success", text: res.message });
+            setEditingCategoryId(null);
+          }
+        } catch {
+          setFeedback({ type: "error", text: "Terjadi kesalahan jaringan. Coba lagi." });
         }
       });
     };
@@ -87,12 +101,13 @@ export function MasterDataForms({
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4">
         <div>
           <h2 className="text-base font-bold text-slate-900">
-            Panel Admin Fase 1: Kelola Hierarki Wilayah, Kategori & Aset
+            Tambah Data Wilayah, Kategori &amp; Aset
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Urutan hierarki wajib: <strong>1. Komplek</strong> →{" "}
-            <strong>2. Cluster</strong> → <strong>3. Taman</strong> →{" "}
-            <strong>4. Kategori</strong> → <strong>5. Aset</strong>.
+            Urutan: <strong>Komplek</strong> → <strong>Cluster</strong> →{" "}
+            <strong>Taman</strong> → <strong>Aset</strong>. Kategori dipakai saat
+            menambah aset. Untuk mengubah atau menonaktifkan, gunakan tombol
+            &quot;Ubah&quot; di daftar di bawah.
           </p>
         </div>
 
@@ -108,7 +123,7 @@ export function MasterDataForms({
                 : "bg-slate-100 text-slate-700 hover:bg-slate-200"
             }`}
           >
-            1. + Komplek / Cluster / Taman ({parks.length} Taman)
+            + Komplek / Cluster / Taman
           </button>
           <button
             type="button"
@@ -121,7 +136,7 @@ export function MasterDataForms({
                 : "bg-slate-100 text-slate-700 hover:bg-slate-200"
             }`}
           >
-            2. Kelola Kategori ({categories.length})
+            Kategori ({categories.length})
           </button>
           <button
             type="button"
@@ -132,13 +147,14 @@ export function MasterDataForms({
                 : "bg-slate-100 text-slate-700 hover:bg-slate-200"
             }`}
           >
-            3. + Tambah Aset & Buat QR
+            + Aset &amp; QR
           </button>
         </div>
       </div>
 
       {feedback && (
         <div
+          role={feedback.type === "error" ? "alert" : "status"}
           className={`p-3.5 rounded-xl border text-xs font-medium ${
             feedback.type === "success"
               ? "bg-emerald-50 border-emerald-200 text-emerald-900"
@@ -158,7 +174,7 @@ export function MasterDataForms({
             className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs"
           >
             <div className="font-bold text-slate-900 text-sm">
-              Langkah 1: Tambah Komplek (Tingkat 2)
+              Tambah Komplek
             </div>
             <div>
               <label className="block font-medium text-slate-700 mb-1">
@@ -199,11 +215,11 @@ export function MasterDataForms({
             className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs"
           >
             <div className="font-bold text-slate-900 text-sm">
-              Langkah 2: Tambah Cluster (Tingkat 3)
+              Tambah Cluster
             </div>
             <div>
               <label className="block font-medium text-slate-700 mb-1">
-                Pilih Komplek Induk (Wajib)
+                Komplek induk
               </label>
               <select
                 name="complexId"
@@ -213,7 +229,7 @@ export function MasterDataForms({
               >
                 {complexes.length === 0 ? (
                   <option value="">
-                    -- Buat Komplek di Langkah 1 dulu --
+                    -- Belum ada komplek aktif --
                   </option>
                 ) : (
                   complexes.map((c) => (
@@ -252,11 +268,11 @@ export function MasterDataForms({
             className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs"
           >
             <div className="font-bold text-slate-900 text-sm">
-              Langkah 3: Tambah Taman (Tingkat 4)
+              Tambah Taman
             </div>
             <div>
               <label className="block font-medium text-slate-700 mb-1">
-                Pilih Cluster Induk (Wajib)
+                Cluster induk
               </label>
               <select
                 name="clusterId"
@@ -266,7 +282,7 @@ export function MasterDataForms({
               >
                 {clusters.length === 0 ? (
                   <option value="">
-                    -- Buat Cluster di Langkah 2 dulu --
+                    -- Belum ada cluster aktif --
                   </option>
                 ) : (
                   clusters.map((cl) => (
@@ -395,6 +411,21 @@ export function MasterDataForms({
                         className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5"
                       />
                     </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Status
+                      </label>
+                      <select
+                        name="isActive"
+                        defaultValue={cat.isActive ? "true" : "false"}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5"
+                      >
+                        <option value="true">Aktif</option>
+                        <option value="false">
+                          Nonaktif (aset kategori ini tidak bisa dilaporkan)
+                        </option>
+                      </select>
+                    </div>
                     <div className="flex gap-2">
                       <button
                         type="submit"
@@ -415,8 +446,13 @@ export function MasterDataForms({
                 ) : (
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <div className="font-bold text-slate-900 text-sm">
+                      <div className="font-bold text-slate-900 text-sm flex flex-wrap items-center gap-2">
                         {cat.name}
+                        {!cat.isActive && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-50 text-rose-800 border border-rose-200">
+                            Nonaktif
+                          </span>
+                        )}
                       </div>
                       <div className="flex flex-wrap gap-1.5 mt-1.5">
                         {cat.damageTypes.map((dt) => (
@@ -447,13 +483,12 @@ export function MasterDataForms({
       {/* TAB 3: TAMBAH ASET BARU (Tingkat 5 Hierarki) */}
       {activeTab === "aset" && (
         <div className="space-y-3">
-          {(parks.length === 0 || categories.length === 0) && (
+          {(parks.length === 0 || activeCategories.length === 0) && (
             <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-xs text-amber-950 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <strong>Perhatian Hierarki 5 Tingkat:</strong>{" "}
                 {parks.length === 0
-                  ? "Perusahaan yang sedang aktif belum memiliki data Taman (Komplek → Cluster → Taman). Buat Taman terlebih dahulu di Tab 1 agar pilihan Taman muncul."
-                  : "Belum ada Kategori Aset. Buat Kategori terlebih dahulu di Tab 2."}
+                  ? "Belum ada taman aktif. Tambahkan komplek, cluster, dan taman terlebih dahulu."
+                  : "Belum ada kategori aktif. Tambahkan kategori terlebih dahulu."}
               </div>
               {parks.length === 0 && (
                 <button
@@ -461,7 +496,7 @@ export function MasterDataForms({
                   onClick={() => setActiveTab("wilayah")}
                   className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white font-semibold cursor-pointer"
                 >
-                  Buka Tab 1 (+ Komplek / Cluster / Taman) →
+                  Tambah Komplek / Cluster / Taman
                 </button>
               )}
             </div>
@@ -472,21 +507,18 @@ export function MasterDataForms({
             className="p-4 rounded-xl bg-slate-50 border border-slate-200 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs"
           >
             <div className="sm:col-span-2 lg:col-span-3 font-bold text-slate-900 text-sm">
-              Tambah Aset Taman Baru (Otomatis Membuat Tautan QR `/r/&#123;kodeAset&#125;`)
+              Tambah Aset Baru (kode &amp; QR dibuat otomatis)
             </div>
 
             <div className="sm:col-span-2 lg:col-span-3 rounded-xl bg-emerald-50/80 border border-emerald-200 p-3.5 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-800">
-                    Otomatisasi Kode & QR Aset (Hierarki 5 Tingkat)
-                  </span>
-                  <span className="bg-emerald-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
-                    Auto-Generated
+                    Kode aset otomatis
                   </span>
                 </div>
                 <p className="text-slate-600 text-xs mt-0.5">
-                  Format: <code>[Komplek]-[Cluster]-[Taman]-[Kategori]-[Urut]</code>. Nomor urut otomatis dihitung oleh sistem.
+                  Format: <code>Komplek-Cluster-Taman-Kategori-Urut</code>. Nomor urut dihitung sistem.
                 </p>
               </div>
               <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-emerald-300 shadow-2xs font-mono text-xs font-bold text-emerald-900">
@@ -497,7 +529,7 @@ export function MasterDataForms({
 
             <div>
               <label className="block font-medium text-slate-700 mb-1">
-                Pilih Taman Induk (Wajib)
+                Taman
               </label>
               <select
                 name="parkId"
@@ -509,7 +541,7 @@ export function MasterDataForms({
               >
                 {parks.length === 0 ? (
                   <option value="">
-                    -- Belum ada Taman (Buat di Tab 1 dulu) --
+                    -- Belum ada taman aktif --
                   </option>
                 ) : (
                   parks.map((p) => (
@@ -523,22 +555,22 @@ export function MasterDataForms({
 
             <div>
               <label className="block font-medium text-slate-700 mb-1">
-                Kategori Aset (Wajib)
+                Kategori aset
               </label>
               <select
                 name="categoryId"
                 required
                 value={selectedCategoryId}
                 onChange={(e) => setSelectedCategoryId(e.target.value)}
-                disabled={categories.length === 0}
+                disabled={activeCategories.length === 0}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100"
               >
-                {categories.length === 0 ? (
+                {activeCategories.length === 0 ? (
                   <option value="">
-                    -- Belum ada Kategori (Buat di Tab 2 dulu) --
+                    -- Belum ada kategori aktif --
                   </option>
                 ) : (
-                  categories.map((cat) => (
+                  activeCategories.map((cat) => (
                     <option key={cat.id} value={cat.id}>
                       {cat.name}
                     </option>
@@ -579,7 +611,7 @@ export function MasterDataForms({
               <input
                 type="date"
                 name="installedAt"
-                defaultValue="2026-11-08"
+                defaultValue={todayInput}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
               />
             </div>
@@ -614,7 +646,7 @@ export function MasterDataForms({
               <button
                 type="submit"
                 disabled={
-                  isPending || parks.length === 0 || categories.length === 0
+                  isPending || parks.length === 0 || activeCategories.length === 0
                 }
                 className="w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold cursor-pointer"
               >

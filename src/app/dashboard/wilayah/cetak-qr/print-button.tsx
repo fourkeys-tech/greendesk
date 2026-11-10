@@ -11,6 +11,21 @@ export interface QrPrintItem {
   companyName?: string;
 }
 
+/** Escape teks sebelum disisipkan ke HTML hasil doc.write (cegah HTML injection). */
+function escapeHtml(value: string | null | undefined): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** Hanya izinkan data URL gambar dari generator QR. */
+function safeImageSrc(url: string): string {
+  return /^data:image\/(png|svg\+xml|jpeg|webp);/i.test(url) ? escapeHtml(url) : "";
+}
+
 export function printSingleQr(item: QrPrintItem) {
   const iframe = document.createElement("iframe");
   iframe.style.position = "fixed";
@@ -29,7 +44,7 @@ export function printSingleQr(item: QrPrintItem) {
     <!DOCTYPE html>
     <html>
       <head>
-        <title>Cetak QR - ${item.assetCode}</title>
+        <title>Cetak QR - ${escapeHtml(item.assetCode)}</title>
         <style>
           @page {
             size: auto;
@@ -103,11 +118,11 @@ export function printSingleQr(item: QrPrintItem) {
       </head>
       <body>
         <div class="sticker">
-          ${item.companyName ? `<div class="company">${item.companyName}</div>` : ""}
-          <img class="qr-img" src="${item.qrDataUrl}" alt="${item.assetCode}" />
-          <div class="code">${item.assetCode}</div>
-          <div class="name">${item.assetName}</div>
-          ${item.parkName ? `<div class="loc">${item.parkName}</div>` : ""}
+          ${item.companyName ? `<div class="company">${escapeHtml(item.companyName)}</div>` : ""}
+          <img class="qr-img" src="${safeImageSrc(item.qrDataUrl)}" alt="${escapeHtml(item.assetCode)}" />
+          <div class="code">${escapeHtml(item.assetCode)}</div>
+          <div class="name">${escapeHtml(item.assetName)}</div>
+          ${item.parkName ? `<div class="loc">${escapeHtml(item.parkName)}</div>` : ""}
           <div class="scan-note">Scan untuk lapor kerusakan fasilitas taman</div>
         </div>
       </body>
@@ -220,11 +235,11 @@ export function printAllQr(items: QrPrintItem[], companyName?: string) {
             .map(
               (item) => `
             <div class="sticker">
-              ${companyName ? `<div class="company">${companyName}</div>` : ""}
-              <img class="qr-img" src="${item.qrDataUrl}" alt="${item.assetCode}" />
-              <div class="code">${item.assetCode}</div>
-              <div class="name">${item.assetName}</div>
-              ${item.parkName ? `<div class="loc">${item.parkName}</div>` : ""}
+              ${companyName ? `<div class="company">${escapeHtml(companyName)}</div>` : ""}
+              <img class="qr-img" src="${safeImageSrc(item.qrDataUrl)}" alt="${escapeHtml(item.assetCode)}" />
+              <div class="code">${escapeHtml(item.assetCode)}</div>
+              <div class="name">${escapeHtml(item.assetName)}</div>
+              ${item.parkName ? `<div class="loc">${escapeHtml(item.parkName)}</div>` : ""}
               <div class="scan-note">Scan untuk lapor</div>
             </div>
           `
@@ -250,7 +265,7 @@ export function printAllQr(items: QrPrintItem[], companyName?: string) {
 export function downloadSingleQr(qrDataUrl: string, assetCode: string) {
   const link = document.createElement("a");
   link.href = qrDataUrl;
-  link.download = `QR-${assetCode}.png`;
+  link.download = `QR-${assetCode.replace(/[^A-Za-z0-9._-]/g, "_")}.png`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

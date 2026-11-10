@@ -2,6 +2,7 @@ import { prisma } from "../prisma";
 import { assertPermission, validateStatusTransition } from "../permissions";
 import { sendReportStatusEmailWithMergedChildren } from "../email";
 import { recordAuditLog } from "../audit";
+import { activeAssignmentWhere } from "../scopes";
 import type { SessionUser } from "../auth";
 
 /**
@@ -11,13 +12,8 @@ import type { SessionUser } from "../auth";
 export async function getManagerAssignedClusterIds(
   managerUserId: string
 ): Promise<string[]> {
-  const now = new Date();
   const assignments = await prisma.clusterManagerAssignment.findMany({
-    where: {
-      userId: managerUserId,
-      validFrom: { lte: now },
-      OR: [{ validUntil: null }, { validUntil: { gte: now } }],
-    },
+    where: { userId: managerUserId, ...activeAssignmentWhere(new Date()) },
     select: { clusterId: true },
   });
   return assignments.map((a) => a.clusterId);
@@ -62,6 +58,7 @@ export async function generateNextSpkNumber(companyId: string): Promise<string> 
  */
 export async function getPendingManagerReports(actor: SessionUser) {
   assertPermission(actor.role, "DECIDE_REPAIR");
+  if (!actor.companyId) return [];
 
   const clusterIds = await getManagerAssignedClusterIds(actor.id);
   if (clusterIds.length === 0) {
@@ -70,7 +67,7 @@ export async function getPendingManagerReports(actor: SessionUser) {
 
   const reports = await prisma.report.findMany({
     where: {
-      companyId: actor.companyId || undefined,
+      companyId: actor.companyId,
       status: "MENUNGGU_KEPUTUSAN",
       archivedAt: null,
       asset: {
