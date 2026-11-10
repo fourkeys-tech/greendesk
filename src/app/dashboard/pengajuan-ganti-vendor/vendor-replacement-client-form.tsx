@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useMemo } from "react";
 import { AlertCircle, CheckCircle2, Send, PlusCircle } from "lucide-react";
 import { submitVendorReplacementAction } from "@/app/actions/phase6-actions";
 
@@ -55,20 +55,48 @@ export function VendorReplacementClientForm({ assets, vendors }: Props) {
 
   const currentAsset = assets.find((a) => a.id === selectedAssetId);
 
+  // Filter laporan yang relevan dengan aset & vendor terpilih
+  const relevantReports = useMemo(() => {
+    if (!currentAsset) return [];
+    if (!selectedVendorId) return currentAsset.reports;
+    return currentAsset.reports.filter(
+      (r) => !r.vendorId || r.vendorId === selectedVendorId
+    );
+  }, [currentAsset, selectedVendorId]);
+
   const handleAssetChange = (newAssetId: string) => {
     setSelectedAssetId(newAssetId);
     setErrorMsg(null);
     setSuccessMsg(null);
 
     const asset = assets.find((a) => a.id === newAssetId);
-    if (asset?.latestVendorId) {
-      setSelectedVendorId(asset.latestVendorId);
+    const vendorId = asset?.latestVendorId || "";
+    if (vendorId) {
+      setSelectedVendorId(vendorId);
     }
-    if (asset && asset.reports.length >= 2) {
-      setSelectedReportIds(asset.reports.slice(0, 2).map((r) => r.id));
+    const matchedReports = asset
+      ? vendorId
+        ? asset.reports.filter((r) => !r.vendorId || r.vendorId === vendorId)
+        : asset.reports
+      : [];
+
+    if (matchedReports.length >= 2) {
+      setSelectedReportIds(matchedReports.slice(0, 2).map((r) => r.id));
     } else {
       setSelectedReportIds([]);
     }
+  };
+
+  const handleVendorChange = (newVendorId: string) => {
+    setSelectedVendorId(newVendorId);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    // Reset or filter selected reports to only those matching new vendor
+    if (!currentAsset) return;
+    const matched = currentAsset.reports.filter(
+      (r) => !newVendorId || !r.vendorId || r.vendorId === newVendorId
+    );
+    setSelectedReportIds((prev) => prev.filter((id) => matched.some((m) => m.id === id)));
   };
 
   const handleToggleReport = (reportId: string) => {
@@ -82,11 +110,11 @@ export function VendorReplacementClientForm({ assets, vendors }: Props) {
   };
 
   const handleSelectAllReports = () => {
-    if (!currentAsset) return;
-    if (selectedReportIds.length === currentAsset.reports.length) {
+    if (relevantReports.length === 0) return;
+    if (selectedReportIds.length === relevantReports.length) {
       setSelectedReportIds([]);
     } else {
-      setSelectedReportIds(currentAsset.reports.map((r) => r.id));
+      setSelectedReportIds(relevantReports.map((r) => r.id));
     }
   };
 
@@ -217,7 +245,7 @@ export function VendorReplacementClientForm({ assets, vendors }: Props) {
             </div>
             <select
               value={selectedVendorId}
-              onChange={(e) => setSelectedVendorId(e.target.value)}
+              onChange={(e) => handleVendorChange(e.target.value)}
               required
               className="w-full text-xs sm:text-sm font-medium rounded-xl border border-slate-300 px-3.5 py-2.5 bg-white text-slate-900 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/20 focus:outline-hidden transition"
             >
@@ -245,13 +273,13 @@ export function VendorReplacementClientForm({ assets, vendors }: Props) {
               </span>
             </label>
             <div className="flex items-center gap-3">
-              {currentAsset && currentAsset.reports.length > 0 && (
+              {relevantReports.length > 0 && (
                 <button
                   type="button"
                   onClick={handleSelectAllReports}
                   className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 transition cursor-pointer"
                 >
-                  {selectedReportIds.length === currentAsset.reports.length
+                  {selectedReportIds.length === relevantReports.length
                     ? "Batal Pilih Semua"
                     : "Pilih Semua"}
                 </button>
@@ -263,7 +291,7 @@ export function VendorReplacementClientForm({ assets, vendors }: Props) {
                     : "text-amber-800 bg-amber-50 border-amber-200"
                 }`}
               >
-                {selectedReportIds.length} dari {currentAsset?.reports.length || 0}{" "}
+                {selectedReportIds.length} dari {relevantReports.length}{" "}
                 Tiket Dipilih
               </span>
             </div>
@@ -273,15 +301,15 @@ export function VendorReplacementClientForm({ assets, vendors }: Props) {
           <div className="p-3 rounded-xl bg-amber-50/80 border border-amber-200/80 flex items-start gap-2.5 text-xs text-amber-900">
             <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
             <span>
-              <strong>Syarat Validasi PRD:</strong> Hanya laporan valid pada
+              <strong>Syarat Validasi PRD:</strong> Hanya laporan sah &amp; valid pada
               aset{" "}
               <strong className="underline">
                 {currentAsset
                   ? `${currentAsset.name} (${currentAsset.code})`
                   : "terpilih"}
               </strong>{" "}
-              (bukan berstatus DIBATALKAN atau TIDAK_VALID) yang ditampilkan
-              sebagai bukti sah kerusakan berulang.
+              (bukan berstatus DIBATALKAN, TIDAK_VALID, atau DIGABUNG) yang ditampilkan
+              sebagai bukti dasar kerusakan berulang.
             </span>
           </div>
 
@@ -290,28 +318,28 @@ export function VendorReplacementClientForm({ assets, vendors }: Props) {
               Silakan pilih aset terlebih dahulu di atas untuk melihat riwayat
               laporannya.
             </div>
-          ) : currentAsset.reports.length === 0 ? (
+          ) : relevantReports.length === 0 ? (
             <div className="p-4 rounded-2xl border border-amber-200 bg-amber-50/70 text-xs text-amber-800">
-              ⚠️ <strong>Tidak Ada Laporan Valid</strong> untuk aset{" "}
+              ⚠️ <strong>Tidak Ada Laporan Terkait</strong> untuk aset{" "}
               <strong>
                 {currentAsset.name} ({currentAsset.code})
               </strong>
-              . Pengajuan pergantian vendor mensyaratkan minimal 2 laporan
+              {selectedVendorId ? " pada vendor terpilih ini" : ""}. Pengajuan pergantian vendor mensyaratkan minimal 2 laporan
               berulang yang pernah masuk pada aset tersebut.
             </div>
           ) : (
             <div className="space-y-2">
-              {currentAsset.reports.length < 2 && (
+              {relevantReports.length < 2 && (
                 <div className="p-3 rounded-xl border border-rose-200 bg-rose-50/70 text-xs text-rose-800">
-                  ℹ️ <strong>Perhatian:</strong> Aset ini baru memiliki{" "}
-                  <strong>{currentAsset.reports.length} laporan valid</strong>.
+                  ℹ️ <strong>Perhatian:</strong> Riwayat yang cocok baru memiliki{" "}
+                  <strong>{relevantReports.length} laporan valid</strong>.
                   Anda memerlukan minimal 2 laporan berulang pada aset yang sama
                   untuk mengajukan pergantian vendor.
                 </div>
               )}
 
               <div className="max-h-64 overflow-y-auto rounded-2xl border border-slate-200/90 p-3 bg-slate-50/70 space-y-2.5">
-                {currentAsset.reports.map((rep) => {
+                {relevantReports.map((rep) => {
                   const isChecked = selectedReportIds.includes(rep.id);
                   return (
                     <label

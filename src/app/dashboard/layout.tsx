@@ -22,7 +22,26 @@ export default async function DashboardLayout({
     redirect("/login");
   }
 
-  const navItems = getNavigationForRole(session.role);
+  // Cek peran ganda PIC Vendor dan Teknisi (PRD v0.2 Keputusan 3 & Bagian 3.2)
+  const [userTechProfile, userManagedVendor] = await Promise.all([
+    session.role === "PIC_VENDOR"
+      ? prisma.technician.findUnique({
+          where: { userId: session.id },
+          select: { id: true, approvalStatus: true },
+        })
+      : Promise.resolve(null),
+    session.role === "TEKNISI"
+      ? prisma.vendor.findUnique({
+          where: { picUserId: session.id },
+          select: { id: true },
+        })
+      : Promise.resolve(null),
+  ]);
+
+  const navItems = getNavigationForRole(session.role, {
+    isDualRoleTechnician: userTechProfile?.approvalStatus === "APPROVED",
+    isDualRolePic: Boolean(userManagedVendor),
+  });
   const roleMeta = ROLE_METADATA[session.role];
 
   // Ambil notifikasi terbaru & info klaster untuk header dan badge sidebar

@@ -54,14 +54,26 @@ export default async function DashboardHomePage() {
         />
       );
 
-    case "PIC_VENDOR":
+    case "PIC_VENDOR": {
+      const vendorRecord = await prisma.vendor.findUnique({
+        where: { picUserId: session.id },
+        select: { lastTechnicianConfirmedAt: true },
+      });
+      const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      const needsConfirmation =
+        !vendorRecord?.lastTechnicianConfirmedAt ||
+        vendorRecord.lastTechnicianConfirmedAt < ninetyDaysAgo;
+
       return (
         <VendorDashboard
           session={session}
           reports={visibleReports}
           technicianCount={technicianCount}
+          needsConfirmation={needsConfirmation}
+          lastConfirmedAt={vendorRecord?.lastTechnicianConfirmedAt?.toISOString() ?? null}
         />
       );
+    }
 
     case "TEKNISI":
       return (

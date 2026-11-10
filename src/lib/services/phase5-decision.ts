@@ -181,6 +181,10 @@ export async function decideManagerReport(
       vendorId: string;
       assignedDate?: Date;
       notes?: string;
+      spkFileUrl?: string;
+      spkFileName?: string;
+      spkFileSize?: number;
+      spkFileMime?: string;
     };
   }
 ) {
@@ -291,8 +295,13 @@ export async function decideManagerReport(
     if (!input.spkInput?.vendorId) {
       throw new Error("Pilihan vendor wajib diisi saat menyetujui perbaikan.");
     }
+    if (!input.spkInput?.spkFileUrl) {
+      throw new Error(
+        "File Surat Perintah Kerja (SPK) wajib dilampirkan sebelum menerbitkan SPK (PRD v0.2 Keputusan 14)."
+      );
+    }
 
-    const { vendorId, assignedDate, notes } = input.spkInput;
+    const { vendorId, assignedDate, notes, spkFileUrl, spkFileName, spkFileSize, spkFileMime } = input.spkInput;
 
     // Verifikasi vendor melayani cluster laporan ini
     const vendor = await prisma.vendor.findFirst({
@@ -338,6 +347,12 @@ export async function decideManagerReport(
           vendorId: vendor.id,
           technicianId: null, // Dikosongkan sesuai PRD v0.2 untuk ditunjuk PIC Vendor
           assignedAt: assignedDate || new Date(),
+          spkFileUrl,
+          spkFileName: spkFileName || `${spkNo}.pdf`,
+          spkFileSize: spkFileSize || null,
+          spkFileMime: spkFileMime || "application/pdf",
+          spkFileUploadedAt: new Date(),
+          spkFileUploadedById: actor.id,
         },
       });
 

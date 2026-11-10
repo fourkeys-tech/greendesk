@@ -13,9 +13,25 @@ export function TechnicianDashboard({
   session,
   reports,
 }: TechnicianDashboardProps) {
-  const activeReports = reports.filter((r) => r.status === "DIKERJAKAN" || r.status === "DISETUJUI");
-  const confirmReports = reports.filter((r) => r.status === "MENUNGGU_KONFIRMASI");
-  const selesaiReports = reports.filter((r) => r.status === "SELESAI");
+  // Urutkan: SPK dengan catatan perbaikan ulang tampil paling atas (PRD TKN-M1 & Keputusan 5)
+  const sortedReports = [...reports].sort((a, b) => {
+    const aHasRevision =
+      a.status === "DIKERJAKAN" &&
+      a.workOrder?.revisionNotes &&
+      a.workOrder.revisionNotes.length > 0;
+    const bHasRevision =
+      b.status === "DIKERJAKAN" &&
+      b.workOrder?.revisionNotes &&
+      b.workOrder.revisionNotes.length > 0;
+
+    if (aHasRevision && !bHasRevision) return -1;
+    if (!aHasRevision && bHasRevision) return 1;
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+  });
+
+  const activeReports = sortedReports.filter((r) => r.status === "DIKERJAKAN" || r.status === "DISETUJUI");
+  const confirmReports = sortedReports.filter((r) => r.status === "MENUNGGU_KONFIRMASI");
+  const selesaiReports = sortedReports.filter((r) => r.status === "SELESAI");
 
   return (
     <div className="space-y-6">
@@ -124,38 +140,64 @@ export function TechnicianDashboard({
           </div>
         ) : (
           <div className="divide-y divide-slate-100">
-            {reports.slice(0, 5).map((r) => (
-              <div
-                key={r.id}
-                className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50 p-2 rounded-xl transition"
-              >
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-slate-900 text-white">
-                      {r.workOrder?.spkNo || r.ticketNo}
-                    </span>
-                    <StatusBadge status={r.status} />
-                    <PriorityBadge priority={r.priority} />
-                  </div>
-                  <div className="text-xs font-bold text-slate-900">
-                    {r.asset?.name}
-                  </div>
-                  <div className="text-[11px] text-slate-600">
-                    Lokasi: {r.asset?.locationNote || r.asset?.park?.name}
-                  </div>
-                  <div className="text-[11px] text-slate-500">
-                    Instruksi: {r.description}
-                  </div>
-                </div>
+            {sortedReports.slice(0, 8).map((r) => {
+              const latestRevision =
+                r.workOrder?.revisionNotes && r.workOrder.revisionNotes.length > 0
+                  ? r.workOrder.revisionNotes[r.workOrder.revisionNotes.length - 1]
+                  : null;
+              const isRework = r.status === "DIKERJAKAN" && Boolean(latestRevision);
 
-                <Link
-                  href="/dashboard/laporan"
-                  className="px-3.5 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold transition self-start sm:self-center"
+              return (
+                <div
+                  key={r.id}
+                  className={`py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl transition ${
+                    isRework
+                      ? "bg-rose-50/70 border border-rose-200"
+                      : "hover:bg-slate-50"
+                  }`}
                 >
-                  Buka & Unggah Hasil →
-                </Link>
-              </div>
-            ))}
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-slate-900 text-white">
+                        {r.workOrder?.spkNo || r.ticketNo}
+                      </span>
+                      <StatusBadge status={r.status} />
+                      <PriorityBadge priority={r.priority} />
+                      {isRework && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-600 text-white">
+                          ⚠️ DIMINTA PERBAIKAN ULANG
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs font-bold text-slate-900">
+                      {r.asset?.name}
+                    </div>
+                    {isRework && latestRevision && (
+                      <div className="text-xs font-semibold text-rose-800 bg-white p-2 rounded-lg border border-rose-200">
+                        Catatan Manager: &quot;{latestRevision.note}&quot;
+                      </div>
+                    )}
+                    <div className="text-[11px] text-slate-600">
+                      Lokasi: {r.asset?.locationNote || r.asset?.park?.name}
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      Instruksi Kerusakan: {r.description}
+                    </div>
+                  </div>
+
+                  <Link
+                    href="/dashboard/laporan"
+                    className={`px-3.5 py-1.5 rounded-lg text-white text-xs font-bold transition self-start sm:self-center shrink-0 ${
+                      isRework
+                        ? "bg-rose-600 hover:bg-rose-700"
+                        : "bg-orange-600 hover:bg-orange-700"
+                    }`}
+                  >
+                    {isRework ? "Perbaiki Ulang →" : "Buka & Unggah Hasil →"}
+                  </Link>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

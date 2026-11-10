@@ -25,7 +25,7 @@ export default async function VendorPage() {
   const canApproveTech = hasPermission(session.role, "APPROVE_TECHNICIANS");
   const isManager = session.role === "MANAGER";
 
-  const [rawVendors, clusters, pendingTechs, unreadNotifications] =
+  const [rawVendors, clusters, pendingTechs, unreadNotifications, reactivationTechs] =
     session.companyId
       ? await Promise.all([
           prisma.vendor.findMany({
@@ -62,8 +62,18 @@ export default async function VendorPage() {
             orderBy: { createdAt: "desc" },
             take: 5,
           }),
+          canApproveTech
+            ? prisma.technician.findMany({
+                where: {
+                  companyId: session.companyId,
+                  reactivationRequested: true,
+                },
+                include: { vendor: true },
+                orderBy: { updatedAt: "desc" },
+              })
+            : Promise.resolve([]),
         ])
-      : [[], [], [], []];
+      : [[], [], [], [], []];
 
   // Hitung Rapor Vendor (MGR-M7) untuk setiap vendor
   const vendors = await Promise.all(
@@ -136,6 +146,13 @@ export default async function VendorPage() {
             skills: t.skills,
             vendorName: t.vendor.name,
             createdAt: t.createdAt.toISOString(),
+          }))}
+          reactivationRequests={reactivationTechs.map((t) => ({
+            id: t.id,
+            fullName: t.fullName,
+            email: t.email,
+            vendorName: t.vendor.name,
+            reactivationNote: t.reactivationNote,
           }))}
         />
       )}

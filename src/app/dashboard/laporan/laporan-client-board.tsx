@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   FileText,
   User,
+  Download,
 } from "lucide-react";
 import { STATUS_METADATA } from "@/lib/permissions";
 import { ArchiveReportButton } from "./archive-button";
@@ -315,8 +316,9 @@ export function LaporanClientBoard({
                   (1000 * 60 * 60 * 24)
               )
             );
+            const isTechnicianOrPic = role === "TEKNISI" || role === "PIC_VENDOR";
             const reporter =
-              "reporter" in report && report.reporter
+              !isTechnicianOrPic && "reporter" in report && report.reporter
                 ? (report.reporter as { name: string; email: string })
                 : null;
             const warrantyVendor =
@@ -615,6 +617,25 @@ export function LaporanClientBoard({
                                 </span>
                               </div>
                             )}
+
+                            {Boolean((report.workOrder as any)?.spkFileUrl) && (
+                              <a
+                                href={(report.workOrder as any).spkFileUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                download={(report.workOrder as any).spkFileName || "SPK.pdf"}
+                                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-800 text-[11px] font-bold border border-indigo-200 transition w-full mt-2"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                                <span>Unduh File SPK Resmi</span>
+                              </a>
+                            )}
+
+                            {warrantyVendor && (
+                              <div className="mt-2 text-[11px] font-semibold text-amber-800 bg-amber-50 p-2 rounded-lg border border-amber-200 flex items-center gap-1.5">
+                                <span>🛡️ Masa Garansi Vendor Aktif</span>
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <div className="bg-white rounded-xl p-3.5 border border-dashed border-slate-200 text-center">
@@ -702,13 +723,18 @@ export function LaporanClientBoard({
                     )}
 
                   {role === "PIC_VENDOR" &&
-                    report.status === "DISETUJUI" &&
+                    (report.status === "DISETUJUI" || report.status === "DIKERJAKAN") &&
                     report.workOrder && (
                       <div className="pt-2 border-t border-slate-100">
                         <PicAssignPanel
                           workOrderId={report.workOrder.id}
                           spkNo={report.workOrder.spkNo}
                           technicians={picTechnicians}
+                          currentTechnicianId={report.workOrder.technicianId}
+                          currentTechnicianName={report.workOrder.technician?.fullName}
+                          isReplacing={report.status === "DIKERJAKAN"}
+                          spkFileUrl={(report.workOrder as any).spkFileUrl}
+                          spkFileName={(report.workOrder as any).spkFileName}
                         />
                       </div>
                     )}
@@ -721,6 +747,21 @@ export function LaporanClientBoard({
                           workOrderId={report.workOrder.id}
                           spkNo={report.workOrder.spkNo}
                           ticketNo={report.ticketNo}
+                          revisionNote={
+                            (report.workOrder as any).revisionNotes &&
+                            (report.workOrder as any).revisionNotes.length > 0
+                              ? (report.workOrder as any).revisionNotes[
+                                  (report.workOrder as any).revisionNotes.length - 1
+                                ].note
+                              : null
+                          }
+                          spkFileUrl={(report.workOrder as any).spkFileUrl}
+                          spkFileName={(report.workOrder as any).spkFileName}
+                          existingBeforeCount={
+                            (report.workOrder as any).photos?.filter(
+                              (p: any) => p.type === "BEFORE"
+                            ).length || 0
+                          }
                         />
                       </div>
                     )}

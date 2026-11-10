@@ -90,6 +90,11 @@ export async function assignTechnicianToWorkOrder(
       },
     });
 
+    await tx.technician.update({
+      where: { id: technician.id },
+      data: { lastActiveAt: new Date() },
+    });
+
     // 2. Update status Laporan ke DIKERJAKAN
     const updatedRep = await tx.report.update({
       where: { id: workOrder.report.id },
@@ -150,6 +155,138 @@ export async function assignTechnicianToWorkOrder(
 }
 
 /**
+ * 1b. PIC Vendor mengganti teknisi pelaksana pada SPK yang sedang berjalan (DIKERJAKAN atau revisi).
+ * - Foto sebelum yang sudah diunggah tetap melekat pada SPK (PRD v0.2 Keputusan 4 & 5).
+ * - Tidak ada email ke pelapor (PRD Bagian 7.2).
+ * - Notifikasi web dikirim ke teknisi baru.
+ */
+export async function replaceTechnicianForWorkOrder(
+  actor: SessionUser,
+  input: {
+    workOrderId: string;
+    newTechnicianId: string;
+    reason?: string;
+  }
+) {
+  assertPermission(actor.role, "ASSIGN_TECHNICIAN");
+
+  const vendor = await prisma.vendor.findFirst({
+    where: {
+      picUserId: actor.id,
+      isActive: true,
+    },
+  });
+
+  if (!vendor) {
+    throw new Error("Akun Anda tidak terdaftar sebagai PIC Vendor aktif.");
+  }
+
+  const workOrder = await prisma.workOrder.findFirst({
+    where: {
+      id: input.workOrderId,
+      vendorId: vendor.id,
+    },
+    include: {
+      technician: true,
+      report: {
+        include: {
+          asset: true,
+        },
+      },
+    },
+  });
+
+  if (!workOrder) {
+    throw new Error("SPK tidak ditemukan untuk vendor Anda.");
+  }
+
+  // Teknisi baru harus aktif dan disetujui Admin (PRD 3.3)
+  const newTechnician = await prisma.technician.findFirst({
+    where: {
+      id: input.newTechnicianId,
+      vendorId: vendor.id,
+      status: "ACTIVE",
+      approvalStatus: "APPROVED",
+    },
+    include: {
+      user: { select: { id: true, name: true } },
+    },
+  });
+
+  if (!newTechnician) {
+    throw new Error(
+      "Teknisi pengganti tidak valid, tidak aktif, atau belum disetujui oleh Admin."
+    );
+  }
+
+  if (workOrder.technicianId === newTechnician.id) {
+    throw new Error("Teknisi yang dipilih sama dengan teknisi yang saat ini ditugaskan.");
+  }
+
+  const oldTechName = workOrder.technician?.fullName || "Belum ada teknisi";
+
+  const result = await prisma.$transaction(async (tx) => {
+    // 1. Update WorkOrder ke teknisi baru (foto sebelum/sesudah yang ada tetap melekat)
+    const updatedWo = await tx.workOrder.update({
+      where: { id: workOrder.id },
+      data: {
+        technicianId: newTechnician.id,
+        assignedAt: new Date(),
+      },
+    });
+
+    await tx.technician.update({
+      where: { id: newTechnician.id },
+      data: { lastActiveAt: new Date() },
+    });
+
+    // 2. Tambah catatan log pergantian teknisi
+    await tx.reportStatusLog.create({
+      data: {
+        reportId: workOrder.report.id,
+        fromStatus: workOrder.report.status,
+        toStatus: workOrder.report.status,
+        changedById: actor.id,
+        note: `PIC Vendor mengganti teknisi dari ${oldTechName} ke ${newTechnician.fullName}.${
+          input.reason ? ` Alasan: ${input.reason}` : ""
+        } Foto sebelum yang ada tetap melekat pada SPK.`,
+      },
+    });
+
+    // 3. Notifikasi Web ke Teknisi baru
+    await tx.notification.create({
+      data: {
+        companyId: actor.companyId,
+        recipientId: newTechnician.userId,
+        title: `Penugasan SPK Pengganti (${workOrder.spkNo})`,
+        message: `Anda ditugaskan oleh PIC menggantikan ${oldTechName} untuk perbaikan aset ${workOrder.report.asset.name}.`,
+        linkUrl: `/dashboard/laporan`,
+      },
+    });
+
+    return updatedWo;
+  });
+
+  // 4. Catat AuditLog
+  await recordAuditLog({
+    companyId: actor.companyId,
+    actor,
+    entityName: "WorkOrder",
+    entityId: workOrder.id,
+    action: "UPDATE",
+    summary: `PIC ${actor.name} mengganti teknisi ${oldTechName} ke ${newTechnician.fullName} untuk ${workOrder.spkNo}`,
+    oldValues: { technicianId: workOrder.technicianId, technicianName: oldTechName },
+    newValues: {
+      technicianId: newTechnician.id,
+      technicianName: newTechnician.fullName,
+      reason: input.reason || null,
+    },
+  });
+
+  return { success: true, workOrder: result };
+}
+
+/**
  * 2. Teknisi menyelesaikan pekerjaan dan mengunggah foto SEBELUM & SESUDAH perbaikan.
  * - Mengubah status laporan: DIKERJAKAN -> MENUNGGU_KONFIRMASI
  * - Mengirim Notifikasi Web ke Manager cluster
@@ -197,15 +334,17 @@ export async function submitWorkResultByTechnician(
     throw new Error("SPK tidak ditemukan atau bukan ditugaskan kepada Anda.");
   }
 
-  // Wajib minimal 1 foto sebelum dan 1 foto sesudah
-  if (
-    !input.beforePhotoUrls ||
-    input.beforePhotoUrls.length === 0 ||
-    !input.afterPhotoUrls ||
-    input.afterPhotoUrls.length === 0
-  ) {
+  // PRD 4.3 & Keputusan 6: Foto sebelum dan sesudah wajib ada sebelum Lapor Selesai.
+  // Bila perbaikan ulang atau sudah ada foto sebelum yang tersimpan, foto sebelum sebelumnya tetap dipertahankan.
+  const existingBeforeCount = await prisma.workPhoto.count({
+    where: { workOrderId: workOrder.id, type: "BEFORE" },
+  });
+  const totalBefore = existingBeforeCount + (input.beforePhotoUrls?.length || 0);
+  const totalAfter = input.afterPhotoUrls?.length || 0;
+
+  if (totalBefore === 0 || totalAfter === 0) {
     throw new Error(
-      "Foto sebelum (before) dan foto sesudah (after) perbaikan wajib dilampirkan."
+      "Foto sebelum (before) dan foto sesudah (after) perbaikan wajib dilampirkan sebelum lapor selesai."
     );
   }
 
@@ -221,16 +360,24 @@ export async function submitWorkResultByTechnician(
   const clusterId = workOrder.report.asset.park.clusterId;
 
   const result = await prisma.$transaction(async (tx) => {
+    // 0. Update lastActiveAt teknisi
+    await tx.technician.update({
+      where: { id: technician.id },
+      data: { lastActiveAt: new Date() },
+    });
+
     // 1. Simpan foto-foto pekerjaan
-    for (const url of input.beforePhotoUrls) {
-      await tx.workPhoto.create({
-        data: {
-          workOrderId: workOrder.id,
-          type: "BEFORE",
-          url,
-          uploadedById: actor.id,
-        },
-      });
+    if (input.beforePhotoUrls) {
+      for (const url of input.beforePhotoUrls) {
+        await tx.workPhoto.create({
+          data: {
+            workOrderId: workOrder.id,
+            type: "BEFORE",
+            url,
+            uploadedById: actor.id,
+          },
+        });
+      }
     }
 
     for (const url of input.afterPhotoUrls) {

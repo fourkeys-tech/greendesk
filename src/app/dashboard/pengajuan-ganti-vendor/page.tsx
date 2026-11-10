@@ -43,7 +43,7 @@ export default async function VendorReplacementPage({
         reports: {
           where: {
             archivedAt: null,
-            status: { notIn: ["DIBATALKAN", "TIDAK_VALID"] },
+            status: { notIn: ["DIBATALKAN", "TIDAK_VALID", "DIGABUNG"] },
           },
           select: {
             id: true,

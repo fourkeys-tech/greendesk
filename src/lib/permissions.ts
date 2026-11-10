@@ -199,7 +199,10 @@ export interface NavItem {
 /**
  * Menu navigasi yang hanya ditampilkan sesuai hak akses masing-masing role (Kriteria Selesai Fase 0)
  */
-export function getNavigationForRole(role: Role): NavItem[] {
+export function getNavigationForRole(
+  role: Role,
+  options?: { isDualRoleTechnician?: boolean; isDualRolePic?: boolean }
+): NavItem[] {
   const items: NavItem[] = [
     {
       href: "/dashboard",
@@ -311,8 +314,14 @@ export function getNavigationForRole(role: Role): NavItem[] {
         iconName: "Wrench",
       },
       {
+        href: "/dashboard/spk",
+        label: "Semua SPK Vendor",
+        description: "Pantau seluruh SPK vendor dan ganti teknisi bila diperlukan",
+        iconName: "FileSpreadsheet",
+      },
+      {
         href: "/dashboard/teknisi",
-        label: "Kelola Teknisi",
+        label: "Teknisi Saya",
         description: "Daftarkan teknisi baru dan atur status aktif/cuti",
         iconName: "Users",
       },
@@ -323,6 +332,15 @@ export function getNavigationForRole(role: Role): NavItem[] {
         iconName: "Building2",
       }
     );
+
+    if (options?.isDualRoleTechnician) {
+      items.push({
+        href: "/dashboard/profil-teknisi",
+        label: "Profil Teknisi (Peran Ganda)",
+        description: "Lihat data keahlian dan status tugas teknisi Anda",
+        iconName: "UserCheck",
+      });
+    }
   }
 
   if (role === "TEKNISI") {
@@ -340,6 +358,15 @@ export function getNavigationForRole(role: Role): NavItem[] {
         iconName: "UserCheck",
       }
     );
+
+    if (options?.isDualRolePic) {
+      items.push({
+        href: "/dashboard/teknisi",
+        label: "Kelola Teknisi (Peran PIC)",
+        description: "Akses kelola tim teknisi vendor Anda",
+        iconName: "Users",
+      });
+    }
   }
 
   if (role === "ADMIN") {

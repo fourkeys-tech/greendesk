@@ -184,6 +184,11 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
                             </span>
                           )}
                         </div>
+                        {wo.report.underWarrantyOfVendorId && (
+                          <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                            🛡️ Garansi Aktif
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-slate-600">
                         {wo.assignedAt
@@ -198,13 +203,25 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <Link
-                          href={`/status/${wo.report.ticketNo}`}
-                          target="_blank"
-                          className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-[11px] inline-block"
-                        >
-                          Lihat Status →
-                        </Link>
+                        <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                          {wo.spkFileUrl && (
+                            <a
+                              href={wo.spkFileUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              download={wo.spkFileName || "SPK.pdf"}
+                              className="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-[11px] inline-flex items-center gap-1 border border-indigo-200"
+                            >
+                              Unduh SPK
+                            </a>
+                          )}
+                          <Link
+                            href="/dashboard/laporan"
+                            className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] inline-block"
+                          >
+                            Detail →
+                          </Link>
+                        </div>
                       </td>
                     </tr>
                   );

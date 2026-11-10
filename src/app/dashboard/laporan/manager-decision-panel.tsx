@@ -30,6 +30,7 @@ export function ManagerDecisionPanel({
   );
   const [notes, setNotes] = useState("");
   const [rejectionReason, setRejectionReason] = useState("");
+  const [spkFile, setSpkFile] = useState<File | null>(null);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(
     null
   );
@@ -58,7 +59,15 @@ export function ManagerDecisionPanel({
         });
         return;
       }
+      if (!spkFile) {
+        setFeedback({
+          type: "error",
+          text: "File Surat Perintah Kerja (SPK) wajib dilampirkan (format PDF/DOC/Scan maks 10 MB) sesuai PRD v0.2 Keputusan 14.",
+        });
+        return;
+      }
       fd.append("vendorId", selectedVendorId);
+      fd.append("spkFile", spkFile);
       if (notes.trim()) fd.append("notes", notes.trim());
     }
 
@@ -157,6 +166,23 @@ export function ManagerDecisionPanel({
                 ))}
               </select>
             )}
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              File Dokumen Surat Perintah Kerja / SPK (Wajib - Keputusan 14):
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="file"
+                accept=".pdf,.doc,.docx,image/*"
+                onChange={(e) => setSpkFile(e.target.files?.[0] || null)}
+                className="w-full text-xs text-slate-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 border border-slate-300 rounded-lg p-1 bg-white"
+              />
+            </div>
+            <p className="text-[11px] text-slate-500 mt-1">
+              Format didukung: PDF, DOCX, scan JPG/PNG (Maks 10 MB). PIC Vendor dan Teknisi wajib dapat mengunduh dokumen ini.
+            </p>
           </div>
 
           <div>
