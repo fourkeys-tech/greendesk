@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useTransition } from "react";
 import { ChevronDown, ChevronUp, Sparkles, Building } from "lucide-react";
-import type { Role } from "@prisma/client";
+import type { Role } from "@/lib/db-types";
 
 interface RoleOption {
   role: Role;
@@ -13,7 +13,7 @@ interface RoleOption {
 interface DevRoleSwitcherProps {
   currentEmail: string;
   currentRole: Role;
-  onSwitchAction: (email: string) => Promise<void>;
+  onSwitchAction: (email: string) => Promise<{ error?: string } | void>;
 }
 
 const ROLES: RoleOption[] = [
@@ -40,6 +40,24 @@ export function DevRoleSwitcher({
   onSwitchAction,
 }: DevRoleSwitcherProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+
+  const handleSwitch = (email: string) => {
+    setErrorMessage(null);
+    startTransition(async () => {
+      try {
+        const res = await onSwitchAction(email);
+        if (res && "error" in res && res.error) {
+          setErrorMessage(res.error);
+        }
+      } catch (err) {
+        setErrorMessage(
+          err instanceof Error ? err.message : "Gagal berpindah akun."
+        );
+      }
+    });
+  };
 
   return (
     <div className="bg-slate-900 text-slate-200 border-b border-slate-800 transition-all text-xs">
@@ -73,44 +91,45 @@ export function DevRoleSwitcher({
           <div className="text-[11px] text-slate-400 mb-2">
             Pilih akun demo untuk menguji visibilitas menu dan hak akses PRD:
           </div>
+          {errorMessage && (
+            <div className="mb-2 px-3 py-1.5 rounded-md bg-rose-950/80 border border-rose-500/40 text-rose-200 text-xs font-medium">
+              {errorMessage}
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-1.5">
             {ROLES.map((r) => {
               const isCurrent =
                 currentEmail.toLowerCase() === r.email.toLowerCase();
               return (
-                <form
+                <button
                   key={r.email}
-                  action={onSwitchAction.bind(null, r.email)}
+                  type="button"
+                  disabled={isPending}
+                  onClick={() => handleSwitch(r.email)}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition cursor-pointer disabled:opacity-50 ${
+                    isCurrent
+                      ? "bg-emerald-500 text-slate-950 font-bold shadow-xs ring-2 ring-emerald-400/50"
+                      : "bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white"
+                  }`}
                 >
-                  <button
-                    type="submit"
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition cursor-pointer ${
-                      isCurrent
-                        ? "bg-emerald-500 text-slate-950 font-bold shadow-xs ring-2 ring-emerald-400/50"
-                        : "bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white"
-                    }`}
-                  >
-                    {r.label}
-                  </button>
-                </form>
+                  {r.label}
+                </button>
               );
             })}
 
-            <form
-              action={onSwitchAction.bind(null, "admin@griyaasri.id")}
+            <button
+              type="button"
+              disabled={isPending}
+              onClick={() => handleSwitch("admin@griyaasri.id")}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition cursor-pointer disabled:opacity-50 ${
+                currentEmail === "admin@griyaasri.id"
+                  ? "bg-amber-400 text-slate-950 font-bold shadow-xs ring-2 ring-amber-300/50"
+                  : "bg-slate-800 text-amber-300 hover:bg-slate-700 hover:text-amber-200"
+              }`}
             >
-              <button
-                type="submit"
-                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition cursor-pointer ${
-                  currentEmail === "admin@griyaasri.id"
-                    ? "bg-amber-400 text-slate-950 font-bold shadow-xs ring-2 ring-amber-300/50"
-                    : "bg-slate-800 text-amber-300 hover:bg-slate-700 hover:text-amber-200"
-                }`}
-              >
-                <Building className="w-3 h-3" />
-                <span>Uji Multi-Perusahaan B</span>
-              </button>
-            </form>
+              <Building className="w-3 h-3" />
+              <span>Uji Multi-Perusahaan B</span>
+            </button>
           </div>
         </div>
       )}

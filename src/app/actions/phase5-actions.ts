@@ -1,7 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { getCurrentSession } from "@/lib/auth";
+import { flushEmailOutboxSafely } from "@/lib/email";
+import { assertPermission } from "@/lib/permissions";
 import { saveUploadedDocument } from "@/lib/storage";
 import {
   decideManagerReport,
@@ -50,6 +53,7 @@ export async function decideManagerReportAction(formData: FormData) {
         : undefined,
     });
 
+    after(() => flushEmailOutboxSafely());
     revalidatePath("/dashboard/laporan");
     revalidatePath("/dashboard/spk");
     revalidatePath("/dashboard");
@@ -65,6 +69,7 @@ export async function getEligibleVendorsAction(clusterId: string) {
   if (!session || !session.companyId) return { error: "Unauthorized" };
 
   try {
+    assertPermission(session.role, "DECIDE_REPAIR");
     const vendors = await getEligibleVendorsForCluster(session.companyId, clusterId);
     return { success: true, vendors };
   } catch (err) {

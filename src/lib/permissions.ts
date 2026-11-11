@@ -1,4 +1,4 @@
-import type { Role, ReportStatus } from "@prisma/client";
+import type { Role, ReportStatus } from "./db-types";
 
 export type PermissionFeature =
   | "CREATE_REPORT"
@@ -147,7 +147,7 @@ const ROLE_PERMISSIONS: Record<Role, PermissionFeature[]> = {
     "MANAGE_INTERNAL_ACCOUNTS",
     "BLOCK_USER_ACCOUNT",
     "VIEW_AUDIT_LOGS",
-    "ARCHIVE_REPORT",
+    // ARCHIVE_REPORT sengaja tidak diberikan: §4 "Admin tidak dapat ... mengubah isi laporan".
   ],
   OWNER: [
     "VIEW_REPORTS",

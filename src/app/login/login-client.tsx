@@ -133,7 +133,9 @@ function Field({
 export function LoginClient() {
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [showPassword, setShowPassword] = useState(false);
-  const [selectedDemoRole, setSelectedDemoRole] = useState("ADMIN");
+  const [selectedDemoRole, setSelectedDemoRole] = useState(
+    DEMO_ACCOUNTS[0].email
+  );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -158,15 +160,19 @@ export function LoginClient() {
     setErrorMessage(null);
     startTransition(async () => {
       try {
-        await quickSwitchRoleAction(target);
+        const res = await quickSwitchRoleAction(target);
+        if (res?.error) {
+          setErrorMessage(res.error);
+        }
       } catch (err) {
         setErrorMessage(
-          err instanceof Error ? err.message : "Gagal berganti role."
+          err instanceof Error ? err.message : "Gagal berganti akun."
         );
       }
     });
   };
 
+  // TODO(pre-prod) P0-1: Blokir fallback `handleRoleSwitch` ketika kata sandi kosong.
   const handleUserLogin = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
@@ -188,11 +194,13 @@ export function LoginClient() {
     }
   };
 
+  // TODO(pre-prod) P0-1: Hapus/guard portal developer tanpa kredensial sebelum production.
   const handleDeveloperLogin = (e: React.FormEvent) => {
     e.preventDefault();
     handleRoleSwitch(devEmail || "admin@greenpark.id");
   };
 
+  // TODO(pre-prod) P0-1: Ganti pendaftaran role-switch ini dengan alur OTP terverifikasi.
   const handleRegister = (e: React.FormEvent) => {
     e.preventDefault();
     handleRoleSwitch(regEmail || "warga@greenpark.id");
@@ -232,7 +240,7 @@ export function LoginClient() {
             GreenPark v0.2
           </span>
           <Link
-            href="/report/new"
+            href="/dashboard/lapor"
             className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 hover:bg-emerald-200 text-[#1b5e45] text-[11px] font-bold transition border border-emerald-300"
           >
             <FileText className="w-3.5 h-3.5" />
@@ -443,6 +451,7 @@ export function LoginClient() {
           </form>
         )}
 
+        {/* TODO(pre-prod) P0-1: Sembunyikan/hapus Panel Uji Cepat 7 Role di production */}
         {/* Panel Uji Cepat 7 Role (PRD v0.2 Testing) */}
         <div className="mt-5 pt-4 border-t border-slate-200/90 space-y-2.5">
           <div className="flex items-center justify-between">

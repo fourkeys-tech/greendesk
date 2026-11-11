@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { getCurrentSession } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
-import { prisma } from "@/lib/prisma";
+import { query } from "@/lib/db";
 import { generateAssetQrDataUrl } from "@/lib/qr";
 import { assetUnreportableReason } from "@/lib/scopes";
 import {
@@ -45,14 +45,33 @@ export default async function CetakQrPage() {
   }[];
 
   try {
-    const assets = await prisma.asset.findMany({
-      where: { companyId: session.companyId },
-      include: {
-        park: { include: { cluster: { include: { complex: true } } } },
-        category: true,
-      },
-      orderBy: { code: "asc" },
-    });
+    const assets = await query<{
+      id: string;
+      code: string;
+      name: string;
+      locationNote: string | null;
+      isActive: boolean;
+      parkName: string;
+      parkIsActive: boolean;
+      clusterName: string;
+      clusterIsActive: boolean;
+      complexIsActive: boolean;
+      categoryIsActive: boolean;
+    }>(
+      `SELECT a."id", a."code", a."name", a."locationNote", a."isActive",
+              p."name" AS "parkName", p."isActive" AS "parkIsActive",
+              cl."name" AS "clusterName", cl."isActive" AS "clusterIsActive",
+              cx."isActive" AS "complexIsActive",
+              cat."isActive" AS "categoryIsActive"
+       FROM "Asset" a
+       JOIN "Park" p ON p."id" = a."parkId"
+       JOIN "Cluster" cl ON cl."id" = p."clusterId"
+       JOIN "Complex" cx ON cx."id" = cl."complexId"
+       JOIN "Category" cat ON cat."id" = a."categoryId"
+       WHERE a."companyId" = $1
+       ORDER BY a."code" ASC`,
+      [session.companyId]
+    );
 
     cards = await Promise.all(
       assets.map(async (asset) => {
@@ -60,12 +79,22 @@ export default async function CetakQrPage() {
         return {
           id: asset.id,
           locationNote: asset.locationNote,
-          inactiveReason: assetUnreportableReason(asset),
+          inactiveReason: assetUnreportableReason({
+            isActive: asset.isActive,
+            category: { isActive: asset.categoryIsActive },
+            park: {
+              isActive: asset.parkIsActive,
+              cluster: {
+                isActive: asset.clusterIsActive,
+                complex: { isActive: asset.complexIsActive },
+              },
+            },
+          }),
           item: {
             qrDataUrl: qr.qrDataUrl,
             assetCode: asset.code,
             assetName: asset.name,
-            parkName: `${asset.park.cluster.name} · ${asset.park.name}`,
+            parkName: `${asset.clusterName} · ${asset.parkName}`,
             companyName,
           },
         };

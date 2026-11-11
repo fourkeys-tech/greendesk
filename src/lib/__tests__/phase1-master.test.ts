@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { prisma } from "../prisma";
+import { query, queryCount, queryOne } from "../db";
+import type {
+  AssetRow,
+  AuditLogRow,
+  CategoryRow,
+  ClusterManagerAssignmentRow,
+  ClusterRow,
+  ParkRow,
+  UserRow,
+} from "../db-types";
 import { generateAssetQrDataUrl } from "../qr";
 import { buildAssetPrefix } from "../asset-code";
 import {
@@ -13,6 +22,16 @@ import {
 } from "../services/phase1-master";
 import { submitCitizenReport } from "../services/phase3-reporting";
 
+async function mustOne<T extends object>(
+  sql: string,
+  params: unknown[],
+  label: string
+): Promise<T> {
+  const row = await queryOne<T>(sql, params);
+  if (!row) throw new Error(`Record tidak ditemukan: ${label}`);
+  return row;
+}
+
 describe("Fase 1 – Data Master, Hierarki 5 Tingkat, QR & Akun Internal", () => {
   it("menghasilkan QR Code otomatis dengan tautan pendek /r/{kodeAset}", async () => {
     const qr = await generateAssetQrDataUrl(
@@ -24,15 +43,21 @@ describe("Fase 1 – Data Master, Hierarki 5 Tingkat, QR & Akun Internal", () =>
   });
 
   it("menjaga hierarki 5 tingkat (menolak pembuatan aset jika taman milik perusahaan lain)", async () => {
-    const adminB = await prisma.user.findUniqueOrThrow({
-      where: { email: "admin@griyaasri.id" },
-    });
-    const parkCompanyA = await prisma.park.findFirstOrThrow({
-      where: { name: "Taman Utama Bougenville" },
-    });
-    const catCompanyA = await prisma.category.findFirstOrThrow({
-      where: { name: "Penerangan & Lampu Taman" },
-    });
+    const adminB = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["admin@griyaasri.id"],
+      "adminB"
+    );
+    const parkCompanyA = await mustOne<ParkRow>(
+      `SELECT * FROM "Park" WHERE "name" = $1 LIMIT 1`,
+      ["Taman Utama Bougenville"],
+      "parkCompanyA"
+    );
+    const catCompanyA = await mustOne<CategoryRow>(
+      `SELECT * FROM "Category" WHERE "name" = $1 LIMIT 1`,
+      ["Penerangan & Lampu Taman"],
+      "catCompanyA"
+    );
 
     await expect(
       createAsset(
@@ -56,13 +81,15 @@ describe("Fase 1 – Data Master, Hierarki 5 Tingkat, QR & Akun Internal", () =>
   });
 
   it("memastikan akun Pengelola hanya bisa ditautkan tepat ke 1 cluster, sedangkan Manager bisa multi-cluster & menunjuk/membatalkan pengganti sementara dengan riwayat tersimpan", async () => {
-    const admin = await prisma.user.findUniqueOrThrow({
-      where: { email: "admin@greenpark.id" },
-    });
-    const clusters = await prisma.cluster.findMany({
-      where: { companyId: admin.companyId! },
-      orderBy: { code: "asc" },
-    });
+    const admin = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["admin@greenpark.id"],
+      "admin"
+    );
+    const clusters = await query<ClusterRow>(
+      `SELECT * FROM "Cluster" WHERE "companyId" = $1 ORDER BY "createdAt" ASC, "id" ASC`,
+      [admin.companyId!]
+    );
     expect(clusters.length).toBeGreaterThanOrEqual(2);
 
     const actor = {
@@ -85,15 +112,31 @@ describe("Fase 1 – Data Master, Hierarki 5 Tingkat, QR & Akun Internal", () =>
       })
     ).rejects.toThrow(/wajib ditautkan tepat ke satu cluster/);
 
-    const primaryManager = await prisma.user.findUniqueOrThrow({
-      where: { email: "manager@greenpark.id" },
-    });
-    const primaryPerm = await prisma.clusterManagerAssignment.findFirstOrThrow({
-      where: { userId: primaryManager.id, isTemporary: false },
-    });
+    const primaryManager = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["manager@greenpark.id"],
+      "primaryManager"
+    );
+    const primaryPerm = await mustOne<ClusterManagerAssignmentRow>(
+      `SELECT * FROM "ClusterManagerAssignment" WHERE "userId" = $1 AND "isTemporary" = false LIMIT 1`,
+      [primaryManager.id],
+      "primaryPerm"
+    );
     const targetClusterId = primaryPerm.clusterId;
     const otherCluster = clusters.find((c) => c.id !== targetClusterId)!;
     expect(otherCluster).toBeDefined();
+
+    // Bersihkan delegasi sementara aktif sisa run sebelumnya yang gagal di tengah jalan,
+    // agar pemeriksaan tumpang-tindih tidak menolak skenario ini.
+    await query(
+      `UPDATE "ClusterManagerAssignment"
+       SET "cancelledAt" = NOW(), "cancelledById" = $3, "validUntil" = NOW()
+       WHERE "clusterId" = $1
+         AND "isTemporary" = true
+         AND "cancelledAt" IS NULL
+         AND "replacedManagerId" = $2`,
+      [targetClusterId, primaryManager.id, admin.id]
+    );
 
     // Buat Manager pengganti baru agar tidak bertabrakan antar-run test
     const uniqueSuffix = Date.now().toString().slice(-6);
@@ -135,14 +178,12 @@ describe("Fase 1 – Data Master, Hierarki 5 Tingkat, QR & Akun Internal", () =>
     });
 
     try {
-      const historyRows = await prisma.clusterManagerAssignment.findMany({
-        where: {
-          userId: secondManager.id,
-          clusterId: targetClusterId,
-          isTemporary: true,
-        },
-        orderBy: { createdAt: "asc" },
-      });
+      const historyRows = await query<ClusterManagerAssignmentRow>(
+        `SELECT * FROM "ClusterManagerAssignment"
+         WHERE "userId" = $1 AND "clusterId" = $2 AND "isTemporary" = true
+         ORDER BY "createdAt" ASC`,
+        [secondManager.id, targetClusterId]
+      );
       expect(historyRows.length).toBe(2);
       expect(historyRows[0].cancelledAt).not.toBeNull();
       expect(historyRows[1].cancelledAt).toBeNull();
@@ -151,24 +192,28 @@ describe("Fase 1 – Data Master, Hierarki 5 Tingkat, QR & Akun Internal", () =>
     }
 
     // Pastikan kategori baru tercatat di AuditLog
-    const catCountBefore = await prisma.auditLog.count({
-      where: { companyId: admin.companyId!, entityName: "Category" },
-    });
+    const catCountBefore = await queryCount(
+      `SELECT COUNT(*)::int AS count FROM "AuditLog" WHERE "companyId" = $1 AND "entityName" = 'Category'`,
+      [admin.companyId!]
+    );
     const uniqueCatName = `Fasilitas Olahraga Taman (${Date.now().toString().slice(-4)})`;
     await createCategory(actor, {
       name: uniqueCatName,
       damageTypes: ["Alat macet", "Besi patah"],
     });
-    const catCountAfter = await prisma.auditLog.count({
-      where: { companyId: admin.companyId!, entityName: "Category" },
-    });
+    const catCountAfter = await queryCount(
+      `SELECT COUNT(*)::int AS count FROM "AuditLog" WHERE "companyId" = $1 AND "entityName" = 'Category'`,
+      [admin.companyId!]
+    );
     expect(catCountAfter).toBe(catCountBefore + 1);
   });
 
   it("mengizinkan Admin memblokir dan membuka blokir pelapor dengan catatan audit", async () => {
-    const admin = await prisma.user.findUniqueOrThrow({
-      where: { email: "admin@greenpark.id" },
-    });
+    const admin = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["admin@greenpark.id"],
+      "admin"
+    );
     const actor = {
       id: admin.id,
       name: admin.name,
@@ -180,15 +225,13 @@ describe("Fase 1 – Data Master, Hierarki 5 Tingkat, QR & Akun Internal", () =>
     };
 
     const suffix = Date.now().toString().slice(-6);
-    const citizen = await prisma.user.create({
-      data: {
-        companyId: admin.companyId!,
-        name: `Warga Uji Blokir ${suffix}`,
-        email: `warga.blokir.${suffix}@greenpark.id`,
-        role: "PENGGUNA",
-        loginMethod: "GOOGLE",
-      },
-    });
+    const citizen = await mustOne<UserRow>(
+      `INSERT INTO "User" ("companyId", "name", "email", "role", "loginMethod", "updatedAt")
+       VALUES ($1, $2, $3, 'PENGGUNA'::"Role", 'GOOGLE', NOW())
+       RETURNING *`,
+      [admin.companyId!, `Warga Uji Blokir ${suffix}`, `warga.blokir.${suffix}@greenpark.id`],
+      "citizen"
+    );
 
     // Tolak blokir tanpa alasan
     await expect(
@@ -204,35 +247,33 @@ describe("Fase 1 – Data Master, Hierarki 5 Tingkat, QR & Akun Internal", () =>
     expect(blocked.isBlocked).toBe(true);
     expect(blocked.blockedReason).toBe("Mengirim laporan palsu berulang");
 
-    const blockLog = await prisma.auditLog.findFirst({
-      where: {
-        companyId: admin.companyId!,
-        entityName: "User",
-        entityId: citizen.id,
-        action: "BLOCK",
-      },
-    });
+    const blockLog = await queryOne<AuditLogRow>(
+      `SELECT * FROM "AuditLog"
+       WHERE "companyId" = $1 AND "entityName" = 'User' AND "entityId" = $2 AND "action" = 'BLOCK'::"AuditAction"
+       LIMIT 1`,
+      [admin.companyId!, citizen.id]
+    );
     expect(blockLog).not.toBeNull();
 
     const unblocked = await setUserBlockStatus(actor, citizen.id, false);
     expect(unblocked.isBlocked).toBe(false);
     expect(unblocked.blockedReason).toBeNull();
 
-    const unblockLog = await prisma.auditLog.findFirst({
-      where: {
-        companyId: admin.companyId!,
-        entityName: "User",
-        entityId: citizen.id,
-        action: "UNBLOCK",
-      },
-    });
+    const unblockLog = await queryOne<AuditLogRow>(
+      `SELECT * FROM "AuditLog"
+       WHERE "companyId" = $1 AND "entityName" = 'User' AND "entityId" = $2 AND "action" = 'UNBLOCK'::"AuditAction"
+       LIMIT 1`,
+      [admin.companyId!, citizen.id]
+    );
     expect(unblockLog).not.toBeNull();
   });
 
   it("menolak pelaporan aset jika induk wilayah (Taman) sedang dinonaktifkan", async () => {
-    const admin = await prisma.user.findUniqueOrThrow({
-      where: { email: "admin@greenpark.id" },
-    });
+    const admin = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["admin@greenpark.id"],
+      "admin"
+    );
     const actor = {
       id: admin.id,
       name: admin.name,
@@ -243,21 +284,20 @@ describe("Fase 1 – Data Master, Hierarki 5 Tingkat, QR & Akun Internal", () =>
       staffClusterId: null,
     };
 
-    const asset = await prisma.asset.findFirstOrThrow({
-      where: { companyId: admin.companyId!, code: "AST-BGV-001" },
-      include: { park: true },
-    });
+    const asset = await mustOne<AssetRow & { parkId: string }>(
+      `SELECT * FROM "Asset" WHERE "companyId" = $1 AND "code" = $2 LIMIT 1`,
+      [admin.companyId!, "AST-BGV-001"],
+      "asset"
+    );
 
     const suffix = Date.now().toString().slice(-6);
-    const citizen = await prisma.user.create({
-      data: {
-        companyId: admin.companyId!,
-        name: `Warga Uji Wilayah ${suffix}`,
-        email: `warga.wilayah.${suffix}@greenpark.id`,
-        role: "PENGGUNA",
-        loginMethod: "GOOGLE",
-      },
-    });
+    const citizen = await mustOne<UserRow>(
+      `INSERT INTO "User" ("companyId", "name", "email", "role", "loginMethod", "updatedAt")
+       VALUES ($1, $2, $3, 'PENGGUNA'::"Role", 'GOOGLE', NOW())
+       RETURNING *`,
+      [admin.companyId!, `Warga Uji Wilayah ${suffix}`, `warga.wilayah.${suffix}@greenpark.id`],
+      "citizen wilayah"
+    );
     const citizenActor = {
       id: citizen.id,
       name: citizen.name,
@@ -268,7 +308,7 @@ describe("Fase 1 – Data Master, Hierarki 5 Tingkat, QR & Akun Internal", () =>
       staffClusterId: null,
     };
 
-    await updatePark(actor, asset.park.id, { isActive: false });
+    await updatePark(actor, asset.parkId, { isActive: false });
     try {
       await expect(
         submitCitizenReport(citizenActor, {
@@ -279,21 +319,36 @@ describe("Fase 1 – Data Master, Hierarki 5 Tingkat, QR & Akun Internal", () =>
         })
       ).rejects.toThrow(/tidak dapat dilaporkan|tidak aktif/i);
     } finally {
-      await updatePark(actor, asset.park.id, { isActive: true });
+      await updatePark(actor, asset.parkId, { isActive: true });
     }
   });
 
   it("menghasilkan kode aset otomatis (5 tingkat) dan nomor urut sekuensial jika input code tidak diisi", async () => {
-    const admin = await prisma.user.findUniqueOrThrow({
-      where: { email: "admin@greenpark.id" },
-    });
-    const park = await prisma.park.findFirstOrThrow({
-      where: { name: "Taman Utama Bougenville" },
-      include: { cluster: { include: { complex: true } } },
-    });
-    const category = await prisma.category.findFirstOrThrow({
-      where: { name: "Penerangan & Lampu Taman" },
-    });
+    const admin = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["admin@greenpark.id"],
+      "admin"
+    );
+    const park = await mustOne<{
+      id: string;
+      name: string;
+      clusterName: string;
+      complexName: string;
+    }>(
+      `SELECT p."id", p."name", cl."name" AS "clusterName", cx."name" AS "complexName"
+       FROM "Park" p
+       INNER JOIN "Cluster" cl ON cl."id" = p."clusterId"
+       INNER JOIN "Complex" cx ON cx."id" = cl."complexId"
+       WHERE p."name" = $1
+       LIMIT 1`,
+      ["Taman Utama Bougenville"],
+      "park"
+    );
+    const category = await mustOne<CategoryRow>(
+      `SELECT * FROM "Category" WHERE "name" = $1 LIMIT 1`,
+      ["Penerangan & Lampu Taman"],
+      "category"
+    );
 
     const actor = {
       id: admin.id,
@@ -314,8 +369,8 @@ describe("Fase 1 – Data Master, Hierarki 5 Tingkat, QR & Akun Internal", () =>
 
     // Kode harus berformat: [Kompleks]-[Cluster]-[Taman]-[Kategori]-[Seq]
     const expectedPrefix = buildAssetPrefix(
-      park.cluster.complex.name,
-      park.cluster.name,
+      park.complexName,
+      park.clusterName,
       park.name,
       category.name
     );

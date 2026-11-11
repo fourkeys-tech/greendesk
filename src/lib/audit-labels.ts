@@ -1,4 +1,4 @@
-import type { AuditAction } from "@prisma/client";
+import type { AuditAction } from "./db-types";
 import { STATUS_METADATA } from "./permissions";
 import { APPROVAL_STATUS_META, DEACTIVATION_REASON_LABEL, TECHNICIAN_STATUS_META } from "./vendor-labels";
 import { formatWibDateTime } from "./dates";

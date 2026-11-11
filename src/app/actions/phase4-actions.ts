@@ -1,8 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import type { Priority } from "@prisma/client";
+import { after } from "next/server";
+import type { Priority } from "@/lib/db-types";
 import { getCurrentSession } from "@/lib/auth";
+import { flushEmailOutboxSafely } from "@/lib/email";
 import {
   markReportAsInvalid,
   mergeDuplicateReport,
@@ -31,6 +33,7 @@ export async function verifyReportValidAction(formData: FormData) {
       note,
     });
 
+    after(() => flushEmailOutboxSafely());
     revalidateVerificationPaths();
     return {
       success: true,
@@ -53,6 +56,7 @@ export async function markReportInvalidAction(formData: FormData) {
     const reason = (formData.get("reason") as string) ?? "";
 
     await markReportAsInvalid(session, { reportId, reason });
+    after(() => flushEmailOutboxSafely());
     revalidateVerificationPaths();
     return {
       success: true,
@@ -78,6 +82,7 @@ export async function mergeDuplicateReportAction(formData: FormData) {
     const parentReportId = (formData.get("parentReportId") as string) ?? "";
 
     await mergeDuplicateReport(session, { childReportId, parentReportId });
+    after(() => flushEmailOutboxSafely());
     revalidateVerificationPaths();
     return {
       success: true,

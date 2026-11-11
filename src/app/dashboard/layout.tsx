@@ -2,8 +2,8 @@ import React from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentSession } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
-import { activeAssignmentWhere } from "@/lib/scopes";
+import { query, queryCount, queryOne } from "@/lib/db";
+import { activeAssignmentSql } from "@/lib/scopes";
 import { getNavigationForRole, ROLE_METADATA } from "@/lib/permissions";
 import { AppSidebar } from "@/components/dashboard/app-sidebar";
 import { MobileBottomNav } from "@/components/dashboard/mobile-bottom-nav";
@@ -31,9 +31,17 @@ export default async function DashboardLayout({
   const roleMeta = ROLE_METADATA[session.role];
 
   // Ambil notifikasi terbaru & info klaster untuk header dan badge sidebar
-  let rawNotifications: any[] = [];
-  let staffCluster: any = null;
-  let managerClusters: any[] = [];
+  const now = new Date();
+  let rawNotifications: {
+    id: string;
+    title: string;
+    message: string;
+    linkUrl: string | null;
+    isRead: boolean;
+    createdAt: Date;
+  }[] = [];
+  let staffCluster: { name: string } | null = null;
+  let managerClusters: { clusterId: string; clusterName: string }[] = [];
   let pendingQueueCount = 0;
   let adminVendorBadgeCount = 0;
   let adminReplacementBadgeCount = 0;
@@ -47,67 +55,113 @@ export default async function DashboardLayout({
       adminVendorBadgeCount,
       adminReplacementBadgeCount,
     ] = await Promise.all([
-      prisma.notification.findMany({
-        where: { recipientId: session.id },
-        select: {
-          id: true,
-          title: true,
-          message: true,
-          linkUrl: true,
-          isRead: true,
-          createdAt: true,
-        },
-        orderBy: { createdAt: "desc" },
-        take: 8,
-      }),
+      query<{
+        id: string;
+        title: string;
+        message: string;
+        linkUrl: string | null;
+        isRead: boolean;
+        createdAt: Date;
+      }>(
+        `SELECT "id", "title", "message", "linkUrl", "isRead", "createdAt"
+         FROM "Notification"
+         WHERE "recipientId" = $1
+         ORDER BY "createdAt" DESC
+         LIMIT 8`,
+        [session.id]
+      ),
       session.staffClusterId
-        ? prisma.cluster.findUnique({
-            where: { id: session.staffClusterId },
-            select: { name: true },
-          })
+        ? queryOne<{ name: string }>(
+            `SELECT "name" FROM "Cluster" WHERE "id" = $1`,
+            [session.staffClusterId]
+          )
         : Promise.resolve(null),
       session.role === "MANAGER"
-        ? prisma.clusterManagerAssignment.findMany({
-            where: { userId: session.id, ...activeAssignmentWhere(new Date()) },
-            select: { cluster: { select: { name: true } } },
-          })
+        ? query<{ clusterId: string; clusterName: string }>(
+            `SELECT cma."clusterId", cl."name" AS "clusterName"
+             FROM "ClusterManagerAssignment" cma
+             JOIN "Cluster" cl ON cl."id" = cma."clusterId"
+             WHERE cma."userId" = $1 AND ${activeAssignmentSql("cma", "$2")}`,
+            [session.id, now]
+          )
         : Promise.resolve([]),
       session.role === "PENGELOLA" && session.staffClusterId
-        ? prisma.report.count({
-            where: {
-              archivedAt: null,
-              status: "BARU",
-              asset: { park: { clusterId: session.staffClusterId } },
-            },
-          })
+        ? queryCount(
+            `SELECT COUNT(*)::int AS count
+             FROM "Report" r
+             JOIN "Asset" a ON a."id" = r."assetId"
+             JOIN "Park" p ON p."id" = a."parkId"
+             WHERE r."archivedAt" IS NULL
+               AND r."status" = 'BARU'::"ReportStatus"
+               AND p."clusterId" = $1`,
+            [session.staffClusterId]
+          )
         : session.role === "MANAGER" && session.companyId
-        ? prisma.report.count({
-            where: {
-              companyId: session.companyId,
-              archivedAt: null,
-              status: { in: ["MENUNGGU_KEPUTUSAN", "MENUNGGU_KONFIRMASI"] },
-            },
-          })
+        ? queryCount(
+            `SELECT COUNT(*)::int AS count
+             FROM "Report" r
+             JOIN "Asset" a ON a."id" = r."assetId"
+             JOIN "Park" p ON p."id" = a."parkId"
+             WHERE r."companyId" = $1
+               AND r."archivedAt" IS NULL
+               AND r."status" IN ('MENUNGGU_KEPUTUSAN', 'MENUNGGU_KONFIRMASI')
+               AND EXISTS (
+                 SELECT 1
+                 FROM "ClusterManagerAssignment" cma
+                 WHERE cma."clusterId" = p."clusterId"
+                   AND cma."userId" = $2
+                   AND ${activeAssignmentSql("cma", "$3")}
+               )`,
+            [session.companyId, session.id, now]
+          )
+        : session.role === "PIC_VENDOR" && session.companyId
+        ? queryCount(
+            `SELECT COUNT(*)::int AS count
+             FROM "Report" r
+             JOIN "WorkOrder" wo ON wo."reportId" = r."id"
+             JOIN "Vendor" v ON v."id" = wo."vendorId"
+             WHERE r."companyId" = $1
+               AND r."archivedAt" IS NULL
+               AND r."status" = 'DISETUJUI'::"ReportStatus"
+               AND v."picUserId" = $2`,
+            [session.companyId, session.id]
+          )
+        : session.role === "TEKNISI" && session.companyId
+        ? queryCount(
+            `SELECT COUNT(*)::int AS count
+             FROM "Report" r
+             JOIN "WorkOrder" wo ON wo."reportId" = r."id"
+             JOIN "Technician" t ON t."id" = wo."technicianId"
+             WHERE r."companyId" = $1
+               AND r."archivedAt" IS NULL
+               AND r."status" = 'DIKERJAKAN'::"ReportStatus"
+               AND t."userId" = $2`,
+            [session.companyId, session.id]
+          )
         : Promise.resolve(0),
       session.role === "ADMIN" && session.companyId
-        ? prisma.technician.count({
-            where: {
-              companyId: session.companyId,
-              OR: [
-                { approvalStatus: "PENDING" },
-                { approvalStatus: "APPROVED", reactivationRequested: true },
-              ],
-            },
-          })
+        ? queryCount(
+            `SELECT COUNT(*)::int AS count
+             FROM "Technician"
+             WHERE "companyId" = $1
+               AND (
+                 "approvalStatus" = 'PENDING'::"ApprovalStatus"
+                 OR ("approvalStatus" = 'APPROVED'::"ApprovalStatus" AND "reactivationRequested" = true)
+               )`,
+            [session.companyId]
+          )
         : Promise.resolve(0),
       session.role === "ADMIN" && session.companyId
-        ? prisma.vendorReplacementRequest.count({
-            where: { companyId: session.companyId, status: "DISETUJUI" },
-          })
+        ? queryCount(
+            `SELECT COUNT(*)::int AS count
+             FROM "VendorReplacementRequest"
+             WHERE "companyId" = $1 AND "status" = 'DISETUJUI'::"VendorReplacementStatus"`,
+            [session.companyId]
+          )
         : Promise.resolve(0),
     ]);
-  } catch {
-    // Fallback jika database sedang proses restart/offline
+  } catch (err) {
+    console.error("[dashboard/layout] gagal memuat data header:", err);
   }
 
   const notifications: HeaderNotificationItem[] = rawNotifications.map((n) => ({
@@ -145,7 +199,7 @@ export default async function DashboardLayout({
   const scopeHeaderLabel =
     staffCluster?.name ||
     (managerClusters.length > 0
-      ? managerClusters.map((m) => m.cluster.name).join(", ")
+      ? managerClusters.map((m) => m.clusterName).join(", ")
       : session.companyName || "Seluruh Area Taman");
 
   const initials = session.name

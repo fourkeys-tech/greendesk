@@ -218,9 +218,12 @@ export async function createInternalAccountAction(formData: FormData) {
     });
 
     revalidateMasterPaths();
+    const tempPassNote = created.temporaryPassword
+      ? ` Sandi sementara (ditampilkan sekali, segera catat & berikan ke pemilik akun): ${created.temporaryPassword}`
+      : "";
     return {
       success: true,
-      message: `Akun ${created.role} (${created.name}) berhasil dibuat dan ditautkan ke cluster.`,
+      message: `Akun ${created.role} (${created.name}) berhasil dibuat dan ditautkan ke cluster.${tempPassNote}`,
     };
   } catch (err) {
     return {

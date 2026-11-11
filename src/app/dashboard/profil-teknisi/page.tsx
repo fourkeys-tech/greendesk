@@ -1,18 +1,54 @@
 import { redirect } from "next/navigation";
 import { getCurrentSession } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
-import { prisma } from "@/lib/prisma";
-import { UserCheck, LogOut, Wrench } from "lucide-react";
+import { queryOne } from "@/lib/db";
+import type { TechnicianRow, VendorType } from "@/lib/db-types";
+import { UserCheck, LogOut } from "lucide-react";
 import { logoutAction } from "@/app/actions/auth-actions";
+import { DbErrorNotice } from "@/components/dashboard/db-error-notice";
 
 export default async function ProfilTeknisiPage() {
   const session = await getCurrentSession();
   if (!session) redirect("/login");
 
-  const tech = await prisma.technician.findUnique({
-    where: { userId: session.id },
-    include: { vendor: true },
-  });
+  let tech:
+    | (TechnicianRow & {
+        vendor: { name: string; type: VendorType; warrantyDays: number };
+      })
+    | null = null;
+
+  try {
+    const row = await queryOne<
+      TechnicianRow & {
+        vendorName: string;
+        vendorType: VendorType;
+        vendorWarrantyDays: number;
+      }
+    >(
+      `SELECT t.*,
+              v."name" AS "vendorName",
+              v."type" AS "vendorType",
+              v."warrantyDays" AS "vendorWarrantyDays"
+       FROM "Technician" t
+       JOIN "Vendor" v ON v."id" = t."vendorId"
+       WHERE t."userId" = $1`,
+      [session.id]
+    );
+    if (row) {
+      const { vendorName, vendorType, vendorWarrantyDays, ...t } = row;
+      tech = {
+        ...t,
+        vendor: {
+          name: vendorName,
+          type: vendorType,
+          warrantyDays: vendorWarrantyDays,
+        },
+      };
+    }
+  } catch (error) {
+    console.error("[profil-teknisi] gagal memuat profil teknisi:", error);
+    return <DbErrorNotice />;
+  }
 
   if (!hasPermission(session.role, "VIEW_OWN_TECH_PROFILE") && !tech) {
     return (

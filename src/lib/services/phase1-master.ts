@@ -1,10 +1,24 @@
+import crypto from "crypto";
 import bcrypt from "bcryptjs";
-import { prisma } from "../prisma";
+import { execute, query, queryCount, queryOne, withTransaction } from "../db";
+import type {
+  AssetRow,
+  CategoryRow,
+  ClusterManagerAssignmentRow,
+  ClusterRow,
+  ComplexRow,
+  ParkRow,
+  UserRow,
+} from "../db-types";
 import { assertPermission } from "../permissions";
-import { activeAssignmentWhere, reporterInCompanyWhere } from "../scopes";
+import { activeAssignmentSql, reporterInCompanySql } from "../scopes";
 import { recordAuditLog } from "../audit";
 import { buildAssetPrefix } from "../asset-code";
 import type { SessionUser } from "../auth";
+
+function generateTemporaryPassword(): string {
+  return crypto.randomBytes(9).toString("base64url");
+}
 
 function requireAdminWithCompany(actor: SessionUser): string {
   assertPermission(actor.role, "MANAGE_MASTER_DATA");
@@ -29,30 +43,36 @@ export async function createComplex(
     throw new Error("Nama komplek dan alamat wajib diisi.");
   }
 
-  const created = await prisma.complex.create({
-    data: {
-      companyId,
-      name,
-      address,
-    },
-  });
+  return withTransaction(async (tx) => {
+    const created = await queryOne<ComplexRow>(
+      `INSERT INTO "Complex" ("companyId", "name", "address")
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [companyId, name, address],
+      tx
+    );
+    if (!created) throw new Error("Gagal membuat komplek.");
 
-  await recordAuditLog({
-    actor: {
-      id: actor.id,
-      name: actor.name,
-      role: actor.role,
-      companyId,
-    },
-    entityName: "Complex",
-    entityId: created.id,
-    action: "CREATE",
-    summary: `Menambahkan komplek baru: ${created.name}`,
-    oldValues: null,
-    newValues: { name: created.name, address: created.address },
-  });
+    await recordAuditLog(
+      {
+        actor: {
+          id: actor.id,
+          name: actor.name,
+          role: actor.role,
+          companyId,
+        },
+        entityName: "Complex",
+        entityId: created.id,
+        action: "CREATE",
+        summary: `Menambahkan komplek baru: ${created.name}`,
+        oldValues: null,
+        newValues: { name: created.name, address: created.address },
+      },
+      tx
+    );
 
-  return created;
+    return created;
+  });
 }
 
 /**
@@ -69,9 +89,10 @@ export async function createCluster(
     throw new Error("Komplek induk dan nama cluster wajib diisi.");
   }
 
-  const parentComplex = await prisma.complex.findFirst({
-    where: { id: input.complexId, companyId },
-  });
+  const parentComplex = await queryOne<ComplexRow>(
+    `SELECT * FROM "Complex" WHERE "id" = $1 AND "companyId" = $2`,
+    [input.complexId, companyId]
+  );
   if (!parentComplex) {
     throw new Error(
       "Hierarki tidak valid: Komplek induk tidak ditemukan di perusahaan Anda."
@@ -83,34 +104,40 @@ export async function createCluster(
     );
   }
 
-  const created = await prisma.cluster.create({
-    data: {
-      companyId,
-      complexId: parentComplex.id,
-      name,
-    },
-  });
+  return withTransaction(async (tx) => {
+    const created = await queryOne<ClusterRow>(
+      `INSERT INTO "Cluster" ("companyId", "complexId", "name")
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [companyId, parentComplex.id, name],
+      tx
+    );
+    if (!created) throw new Error("Gagal membuat cluster.");
 
-  await recordAuditLog({
-    actor: {
-      id: actor.id,
-      name: actor.name,
-      role: actor.role,
-      companyId,
-    },
-    entityName: "Cluster",
-    entityId: created.id,
-    action: "CREATE",
-    summary: `Menambahkan cluster baru: ${created.name} di komplek ${parentComplex.name}`,
-    oldValues: null,
-    newValues: {
-      name: created.name,
-      complexId: parentComplex.id,
-      complexName: parentComplex.name,
-    },
-  });
+    await recordAuditLog(
+      {
+        actor: {
+          id: actor.id,
+          name: actor.name,
+          role: actor.role,
+          companyId,
+        },
+        entityName: "Cluster",
+        entityId: created.id,
+        action: "CREATE",
+        summary: `Menambahkan cluster baru: ${created.name} di komplek ${parentComplex.name}`,
+        oldValues: null,
+        newValues: {
+          name: created.name,
+          complexId: parentComplex.id,
+          complexName: parentComplex.name,
+        },
+      },
+      tx
+    );
 
-  return created;
+    return created;
+  });
 }
 
 /**
@@ -127,50 +154,60 @@ export async function createPark(
     throw new Error("Cluster induk dan nama taman wajib diisi.");
   }
 
-  const parentCluster = await prisma.cluster.findFirst({
-    where: { id: input.clusterId, companyId },
-    include: { complex: true },
-  });
+  const parentCluster = await queryOne<
+    ClusterRow & { complexActive: boolean }
+  >(
+    `SELECT cl.*, cmp."isActive" AS "complexActive"
+     FROM "Cluster" cl
+     JOIN "Complex" cmp ON cmp."id" = cl."complexId"
+     WHERE cl."id" = $1 AND cl."companyId" = $2`,
+    [input.clusterId, companyId]
+  );
   if (!parentCluster) {
     throw new Error(
       "Hierarki tidak valid: Cluster induk tidak ditemukan di perusahaan Anda."
     );
   }
-  if (!parentCluster.isActive || !parentCluster.complex.isActive) {
+  if (!parentCluster.isActive || !parentCluster.complexActive) {
     throw new Error(
       "Cluster induk (atau komplek di atasnya) sedang nonaktif. Aktifkan terlebih dahulu."
     );
   }
 
-  const created = await prisma.park.create({
-    data: {
-      companyId,
-      clusterId: parentCluster.id,
-      name,
-      locationNote: input.locationNote?.trim() || null,
-    },
-  });
+  return withTransaction(async (tx) => {
+    const created = await queryOne<ParkRow>(
+      `INSERT INTO "Park" ("companyId", "clusterId", "name", "locationNote")
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [companyId, parentCluster.id, name, input.locationNote?.trim() || null],
+      tx
+    );
+    if (!created) throw new Error("Gagal membuat taman.");
 
-  await recordAuditLog({
-    actor: {
-      id: actor.id,
-      name: actor.name,
-      role: actor.role,
-      companyId,
-    },
-    entityName: "Park",
-    entityId: created.id,
-    action: "CREATE",
-    summary: `Menambahkan taman baru: ${created.name} di ${parentCluster.name}`,
-    oldValues: null,
-    newValues: {
-      name: created.name,
-      clusterName: parentCluster.name,
-      locationNote: created.locationNote,
-    },
-  });
+    await recordAuditLog(
+      {
+        actor: {
+          id: actor.id,
+          name: actor.name,
+          role: actor.role,
+          companyId,
+        },
+        entityName: "Park",
+        entityId: created.id,
+        action: "CREATE",
+        summary: `Menambahkan taman baru: ${created.name} di ${parentCluster.name}`,
+        oldValues: null,
+        newValues: {
+          name: created.name,
+          clusterName: parentCluster.name,
+          locationNote: created.locationNote,
+        },
+      },
+      tx
+    );
 
-  return created;
+    return created;
+  });
 }
 
 /**
@@ -192,33 +229,39 @@ export async function createCategory(
     );
   }
 
-  const created = await prisma.category.create({
-    data: {
-      companyId,
-      name,
-      damageTypes: cleanDamageTypes,
-    },
-  });
+  return withTransaction(async (tx) => {
+    const created = await queryOne<CategoryRow>(
+      `INSERT INTO "Category" ("companyId", "name", "damageTypes")
+       VALUES ($1, $2, $3::text[])
+       RETURNING *`,
+      [companyId, name, cleanDamageTypes],
+      tx
+    );
+    if (!created) throw new Error("Gagal membuat kategori.");
 
-  await recordAuditLog({
-    actor: {
-      id: actor.id,
-      name: actor.name,
-      role: actor.role,
-      companyId,
-    },
-    entityName: "Category",
-    entityId: created.id,
-    action: "CREATE",
-    summary: `Menambahkan kategori aset: ${created.name}`,
-    oldValues: null,
-    newValues: {
-      name: created.name,
-      damageTypes: created.damageTypes,
-    },
-  });
+    await recordAuditLog(
+      {
+        actor: {
+          id: actor.id,
+          name: actor.name,
+          role: actor.role,
+          companyId,
+        },
+        entityName: "Category",
+        entityId: created.id,
+        action: "CREATE",
+        summary: `Menambahkan kategori aset: ${created.name}`,
+        oldValues: null,
+        newValues: {
+          name: created.name,
+          damageTypes: created.damageTypes,
+        },
+      },
+      tx
+    );
 
-  return created;
+    return created;
+  });
 }
 
 export async function updateCategory(
@@ -227,9 +270,10 @@ export async function updateCategory(
   input: { name: string; damageTypes: string[]; isActive?: boolean }
 ) {
   const companyId = requireAdminWithCompany(actor);
-  const existing = await prisma.category.findFirst({
-    where: { id: categoryId, companyId },
-  });
+  const existing = await queryOne<CategoryRow>(
+    `SELECT * FROM "Category" WHERE "id" = $1 AND "companyId" = $2`,
+    [categoryId, companyId]
+  );
   if (!existing) {
     throw new Error("Kategori tidak ditemukan di perusahaan Anda.");
   }
@@ -245,40 +289,48 @@ export async function updateCategory(
     );
   }
 
-  const updated = await prisma.category.update({
-    where: { id: existing.id },
-    data: {
-      name,
-      damageTypes: cleanDamageTypes,
-      isActive:
-        typeof input.isActive === "boolean" ? input.isActive : existing.isActive,
-    },
-  });
+  const nextIsActive =
+    typeof input.isActive === "boolean" ? input.isActive : existing.isActive;
 
-  await recordAuditLog({
-    actor: {
-      id: actor.id,
-      name: actor.name,
-      role: actor.role,
-      companyId,
-    },
-    entityName: "Category",
-    entityId: existing.id,
-    action: "UPDATE",
-    summary: `Memperbarui kategori aset: ${updated.name}`,
-    oldValues: {
-      name: existing.name,
-      damageTypes: existing.damageTypes,
-      isActive: existing.isActive,
-    },
-    newValues: {
-      name: updated.name,
-      damageTypes: updated.damageTypes,
-      isActive: updated.isActive,
-    },
-  });
+  return withTransaction(async (tx) => {
+    const updated = await queryOne<CategoryRow>(
+      `UPDATE "Category"
+       SET "name" = $2, "damageTypes" = $3::text[], "isActive" = $4, "updatedAt" = NOW()
+       WHERE "id" = $1
+       RETURNING *`,
+      [existing.id, name, cleanDamageTypes, nextIsActive],
+      tx
+    );
+    if (!updated) throw new Error("Gagal memperbarui kategori.");
 
-  return updated;
+    await recordAuditLog(
+      {
+        actor: {
+          id: actor.id,
+          name: actor.name,
+          role: actor.role,
+          companyId,
+        },
+        entityName: "Category",
+        entityId: existing.id,
+        action: "UPDATE",
+        summary: `Memperbarui kategori aset: ${updated.name}`,
+        oldValues: {
+          name: existing.name,
+          damageTypes: existing.damageTypes,
+          isActive: existing.isActive,
+        },
+        newValues: {
+          name: updated.name,
+          damageTypes: updated.damageTypes,
+          isActive: updated.isActive,
+        },
+      },
+      tx
+    );
+
+    return updated;
+  });
 }
 
 /**
@@ -294,13 +346,10 @@ export async function generateNextAssetCode(
 ): Promise<string> {
   const prefix = buildAssetPrefix(complexName, clusterName, parkName, categoryName);
 
-  const existingAssets = await prisma.asset.findMany({
-    where: {
-      companyId,
-      code: { startsWith: `${prefix}-` },
-    },
-    select: { code: true },
-  });
+  const existingAssets = await query<{ code: string }>(
+    `SELECT "code" FROM "Asset" WHERE "companyId" = $1 AND "code" LIKE $2`,
+    [companyId, `${prefix}-%`]
+  );
 
   let maxSeq = 0;
   for (const a of existingAssets) {
@@ -341,19 +390,30 @@ export async function createAsset(
   }
 
   const [park, category] = await Promise.all([
-    prisma.park.findFirst({
-      where: { id: input.parkId, companyId },
-      include: {
-        cluster: {
-          include: {
-            complex: true,
-          },
-        },
-      },
-    }),
-    prisma.category.findFirst({
-      where: { id: input.categoryId, companyId },
-    }),
+    queryOne<
+      ParkRow & {
+        clusterName: string;
+        clusterActive: boolean;
+        complexName: string;
+        complexActive: boolean;
+      }
+    >(
+      `SELECT
+         p.*,
+         cl."name" AS "clusterName",
+         cl."isActive" AS "clusterActive",
+         cmp."name" AS "complexName",
+         cmp."isActive" AS "complexActive"
+       FROM "Park" p
+       JOIN "Cluster" cl ON cl."id" = p."clusterId"
+       JOIN "Complex" cmp ON cmp."id" = cl."complexId"
+       WHERE p."id" = $1 AND p."companyId" = $2`,
+      [input.parkId, companyId]
+    ),
+    queryOne<CategoryRow>(
+      `SELECT * FROM "Category" WHERE "id" = $1 AND "companyId" = $2`,
+      [input.categoryId, companyId]
+    ),
   ]);
 
   if (!park) {
@@ -364,11 +424,7 @@ export async function createAsset(
   if (!category) {
     throw new Error("Kategori aset tidak ditemukan di perusahaan Anda.");
   }
-  if (
-    !park.isActive ||
-    !park.cluster.isActive ||
-    !park.cluster.complex.isActive
-  ) {
+  if (!park.isActive || !park.clusterActive || !park.complexActive) {
     throw new Error(
       "Taman induk (atau cluster/komplek di atasnya) sedang nonaktif. Aktifkan terlebih dahulu."
     );
@@ -380,62 +436,73 @@ export async function createAsset(
   // Tentukan kode aset: jika diinput manual (migrasi/test) gunakan itu, jika kosong generate otomatis
   let code = input.code?.trim().toUpperCase();
   if (!code) {
-    const complexName = park.cluster.complex?.name || "KMP";
-    const clusterName = park.cluster.name;
-    const parkName = park.name;
-    const categoryName = category.name;
-
     code = await generateNextAssetCode(
       companyId,
-      complexName,
-      clusterName,
-      parkName,
-      categoryName
+      park.complexName || "KMP",
+      park.clusterName,
+      park.name,
+      category.name
     );
   }
 
-  const existingCode = await prisma.asset.findUnique({ where: { code } });
+  const existingCode = await queryOne<{ id: string }>(
+    `SELECT "id" FROM "Asset" WHERE "code" = $1`,
+    [code]
+  );
   if (existingCode) {
     throw new Error(`Kode aset ${code} sudah digunakan oleh aset lain.`);
   }
 
-  const created = await prisma.asset.create({
-    data: {
-      companyId,
-      code,
-      parkId: park.id,
-      categoryId: category.id,
-      name,
-      locationNote: input.locationNote?.trim() || null,
-      photoUrl: input.photoUrl || null,
-      installedAt: input.installedAt || new Date(),
-      isActive: input.isActive ?? true,
-    },
-  });
+  return withTransaction(async (tx) => {
+    const created = await queryOne<AssetRow>(
+      `INSERT INTO "Asset" (
+         "companyId", "code", "parkId", "categoryId", "name",
+         "locationNote", "photoUrl", "installedAt", "isActive"
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING *`,
+      [
+        companyId,
+        code,
+        park.id,
+        category.id,
+        name,
+        input.locationNote?.trim() || null,
+        input.photoUrl || null,
+        input.installedAt || new Date(),
+        input.isActive ?? true,
+      ],
+      tx
+    );
+    if (!created) throw new Error("Gagal membuat aset.");
 
-  await recordAuditLog({
-    actor: {
-      id: actor.id,
-      name: actor.name,
-      role: actor.role,
-      companyId,
-    },
-    entityName: "Asset",
-    entityId: created.id,
-    action: "CREATE",
-    summary: `Menambahkan aset baru ${created.code} (${created.name}) di ${park.name}`,
-    oldValues: null,
-    newValues: {
-      code: created.code,
-      name: created.name,
-      parkName: park.name,
-      clusterName: park.cluster.name,
-      categoryName: category.name,
-      isActive: created.isActive,
-    },
-  });
+    await recordAuditLog(
+      {
+        actor: {
+          id: actor.id,
+          name: actor.name,
+          role: actor.role,
+          companyId,
+        },
+        entityName: "Asset",
+        entityId: created.id,
+        action: "CREATE",
+        summary: `Menambahkan aset baru ${created.code} (${created.name}) di ${park.name}`,
+        oldValues: null,
+        newValues: {
+          code: created.code,
+          name: created.name,
+          parkName: park.name,
+          clusterName: park.clusterName,
+          categoryName: category.name,
+          isActive: created.isActive,
+        },
+      },
+      tx
+    );
 
-  return created;
+    return created;
+  });
 }
 
 /**
@@ -464,87 +531,99 @@ export async function createInternalStaffAccount(
     throw new Error("Nama dan email wajib diisi.");
   }
 
-  if (input.clusterIds.length === 0) {
+  const uniqueClusterIds = Array.from(new Set(input.clusterIds.filter(Boolean)));
+  if (uniqueClusterIds.length === 0) {
     throw new Error("Pilih minimal satu cluster untuk ditautkan.");
   }
 
-  if (input.role === "PENGELOLA" && input.clusterIds.length !== 1) {
+  if (input.role === "PENGELOLA" && uniqueClusterIds.length !== 1) {
     throw new Error(
       "Sesuai PRD Bagian 4, akun Pengelola wajib ditautkan tepat ke satu cluster."
     );
   }
 
   // Validasi semua cluster milik perusahaan ini & aktif
-  const validClusters = await prisma.cluster.findMany({
-    where: {
-      id: { in: input.clusterIds },
-      companyId,
-      isActive: true,
-    },
-  });
+  const validClusters = await query<ClusterRow>(
+    `SELECT *
+     FROM "Cluster"
+     WHERE "id" = ANY($1::text[]) AND "companyId" = $2 AND "isActive" = true`,
+    [uniqueClusterIds, companyId]
+  );
 
-  if (validClusters.length !== input.clusterIds.length) {
+  if (validClusters.length !== uniqueClusterIds.length) {
     throw new Error(
       "Satu atau lebih cluster tidak valid (bukan milik perusahaan ini atau sedang nonaktif)."
     );
   }
 
-  const existingUser = await prisma.user.findUnique({ where: { email } });
+  const existingUser = await queryOne<{ id: string }>(
+    `SELECT "id" FROM "User" WHERE "email" = $1`,
+    [email]
+  );
   if (existingUser) {
     throw new Error(`Email ${email} sudah digunakan oleh akun lain.`);
   }
 
-  const rawPassword =
-    input.password?.trim() || process.env.SEED_DEFAULT_PASSWORD;
-  if (!rawPassword) {
-    throw new Error("Kata sandi akun wajib diisi.");
-  }
+  // Tidak lagi fallback ke SEED_DEFAULT_PASSWORD (P0-5): bila kosong, buat sandi acak sekali lihat.
+  const suppliedPassword = input.password?.trim();
+  const temporaryPassword = suppliedPassword ? null : generateTemporaryPassword();
+  const rawPassword = suppliedPassword || temporaryPassword!;
   const passwordHash = await bcrypt.hash(rawPassword, 10);
 
-  const createdUser = await prisma.user.create({
-    data: {
-      companyId,
-      name,
-      email,
-      passwordHash,
-      role: input.role,
-      staffClusterId:
+  const createdUser = await withTransaction(async (tx) => {
+    const user = await queryOne<UserRow>(
+      `INSERT INTO "User" ("companyId", "name", "email", "passwordHash", "role", "staffClusterId")
+       VALUES ($1, $2, $3, $4, $5::"Role", $6)
+       RETURNING *`,
+      [
+        companyId,
+        name,
+        email,
+        passwordHash,
+        input.role,
         input.role === "PENGELOLA" ? validClusters[0].id : null,
-      managerAssignments:
-        input.role === "MANAGER"
-          ? {
-              create: validClusters.map((c) => ({
-                clusterId: c.id,
-                isTemporary: false,
-              })),
-            }
-          : undefined,
-    },
+      ],
+      tx
+    );
+    if (!user) throw new Error("Gagal membuat akun internal.");
+
+    if (input.role === "MANAGER") {
+      await execute(
+        `INSERT INTO "ClusterManagerAssignment" ("userId", "clusterId", "isTemporary")
+         SELECT $1, cid, false FROM unnest($2::text[]) AS cid`,
+        [user.id, validClusters.map((c) => c.id)],
+        tx
+      );
+    }
+
+    await recordAuditLog(
+      {
+        actor: {
+          id: actor.id,
+          name: actor.name,
+          role: actor.role,
+          companyId,
+        },
+        entityName: "User",
+        entityId: user.id,
+        action: "CREATE",
+        summary: `Membuat akun internal ${input.role}: ${user.name} (${user.email})`,
+        oldValues: null,
+        newValues: {
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          clusters: validClusters.map((c) => c.name),
+        },
+      },
+      tx
+    );
+
+    return user;
   });
 
-  await recordAuditLog({
-    actor: {
-      id: actor.id,
-      name: actor.name,
-      role: actor.role,
-      companyId,
-    },
-    entityName: "User",
-    entityId: createdUser.id,
-    action: "CREATE",
-    summary: `Membuat akun internal ${input.role}: ${createdUser.name} (${createdUser.email})`,
-    oldValues: null,
-    newValues: {
-      name: createdUser.name,
-      email: createdUser.email,
-      role: createdUser.role,
-      clusters: validClusters.map((c) => c.name),
-    },
-  });
-
-  return createdUser;
+  return { ...createdUser, temporaryPassword };
 }
-
 
 function auditActor(actor: SessionUser, companyId: string) {
   return { id: actor.id, name: actor.name, role: actor.role, companyId };
@@ -559,44 +638,52 @@ export async function updateComplex(
   input: { name?: string; address?: string; isActive?: boolean }
 ) {
   const companyId = requireAdminWithCompany(actor);
-  const existing = await prisma.complex.findFirst({
-    where: { id: complexId, companyId },
-  });
+  const existing = await queryOne<ComplexRow>(
+    `SELECT * FROM "Complex" WHERE "id" = $1 AND "companyId" = $2`,
+    [complexId, companyId]
+  );
   if (!existing) throw new Error("Komplek tidak ditemukan di perusahaan Anda.");
 
   const name = input.name?.trim() ?? existing.name;
   const address = input.address?.trim() ?? existing.address;
   if (!name || !address) throw new Error("Nama komplek dan alamat wajib diisi.");
+  const nextIsActive =
+    typeof input.isActive === "boolean" ? input.isActive : existing.isActive;
 
-  const updated = await prisma.complex.update({
-    where: { id: existing.id },
-    data: {
-      name,
-      address,
-      isActive:
-        typeof input.isActive === "boolean" ? input.isActive : existing.isActive,
-    },
+  return withTransaction(async (tx) => {
+    const updated = await queryOne<ComplexRow>(
+      `UPDATE "Complex"
+       SET "name" = $2, "address" = $3, "isActive" = $4, "updatedAt" = NOW()
+       WHERE "id" = $1
+       RETURNING *`,
+      [existing.id, name, address, nextIsActive],
+      tx
+    );
+    if (!updated) throw new Error("Gagal memperbarui komplek.");
+
+    await recordAuditLog(
+      {
+        actor: auditActor(actor, companyId),
+        entityName: "Complex",
+        entityId: existing.id,
+        action: "UPDATE",
+        summary: `Memperbarui komplek: ${updated.name}`,
+        oldValues: {
+          name: existing.name,
+          address: existing.address,
+          isActive: existing.isActive,
+        },
+        newValues: {
+          name: updated.name,
+          address: updated.address,
+          isActive: updated.isActive,
+        },
+      },
+      tx
+    );
+
+    return updated;
   });
-
-  await recordAuditLog({
-    actor: auditActor(actor, companyId),
-    entityName: "Complex",
-    entityId: existing.id,
-    action: "UPDATE",
-    summary: `Memperbarui komplek: ${updated.name}`,
-    oldValues: {
-      name: existing.name,
-      address: existing.address,
-      isActive: existing.isActive,
-    },
-    newValues: {
-      name: updated.name,
-      address: updated.address,
-      isActive: updated.isActive,
-    },
-  });
-
-  return updated;
 }
 
 /**
@@ -608,34 +695,43 @@ export async function updateCluster(
   input: { name?: string; isActive?: boolean }
 ) {
   const companyId = requireAdminWithCompany(actor);
-  const existing = await prisma.cluster.findFirst({
-    where: { id: clusterId, companyId },
-  });
+  const existing = await queryOne<ClusterRow>(
+    `SELECT * FROM "Cluster" WHERE "id" = $1 AND "companyId" = $2`,
+    [clusterId, companyId]
+  );
   if (!existing) throw new Error("Cluster tidak ditemukan di perusahaan Anda.");
 
   const name = input.name?.trim() ?? existing.name;
   if (!name) throw new Error("Nama cluster wajib diisi.");
+  const nextIsActive =
+    typeof input.isActive === "boolean" ? input.isActive : existing.isActive;
 
-  const updated = await prisma.cluster.update({
-    where: { id: existing.id },
-    data: {
-      name,
-      isActive:
-        typeof input.isActive === "boolean" ? input.isActive : existing.isActive,
-    },
+  return withTransaction(async (tx) => {
+    const updated = await queryOne<ClusterRow>(
+      `UPDATE "Cluster"
+       SET "name" = $2, "isActive" = $3, "updatedAt" = NOW()
+       WHERE "id" = $1
+       RETURNING *`,
+      [existing.id, name, nextIsActive],
+      tx
+    );
+    if (!updated) throw new Error("Gagal memperbarui cluster.");
+
+    await recordAuditLog(
+      {
+        actor: auditActor(actor, companyId),
+        entityName: "Cluster",
+        entityId: existing.id,
+        action: "UPDATE",
+        summary: `Memperbarui cluster: ${updated.name}`,
+        oldValues: { name: existing.name, isActive: existing.isActive },
+        newValues: { name: updated.name, isActive: updated.isActive },
+      },
+      tx
+    );
+
+    return updated;
   });
-
-  await recordAuditLog({
-    actor: auditActor(actor, companyId),
-    entityName: "Cluster",
-    entityId: existing.id,
-    action: "UPDATE",
-    summary: `Memperbarui cluster: ${updated.name}`,
-    oldValues: { name: existing.name, isActive: existing.isActive },
-    newValues: { name: updated.name, isActive: updated.isActive },
-  });
-
-  return updated;
 }
 
 /**
@@ -647,9 +743,10 @@ export async function updatePark(
   input: { name?: string; locationNote?: string | null; isActive?: boolean }
 ) {
   const companyId = requireAdminWithCompany(actor);
-  const existing = await prisma.park.findFirst({
-    where: { id: parkId, companyId },
-  });
+  const existing = await queryOne<ParkRow>(
+    `SELECT * FROM "Park" WHERE "id" = $1 AND "companyId" = $2`,
+    [parkId, companyId]
+  );
   if (!existing) throw new Error("Taman tidak ditemukan di perusahaan Anda.");
 
   const name = input.name?.trim() ?? existing.name;
@@ -658,36 +755,43 @@ export async function updatePark(
     input.locationNote === undefined
       ? existing.locationNote
       : input.locationNote?.trim() || null;
+  const nextIsActive =
+    typeof input.isActive === "boolean" ? input.isActive : existing.isActive;
 
-  const updated = await prisma.park.update({
-    where: { id: existing.id },
-    data: {
-      name,
-      locationNote,
-      isActive:
-        typeof input.isActive === "boolean" ? input.isActive : existing.isActive,
-    },
+  return withTransaction(async (tx) => {
+    const updated = await queryOne<ParkRow>(
+      `UPDATE "Park"
+       SET "name" = $2, "locationNote" = $3, "isActive" = $4, "updatedAt" = NOW()
+       WHERE "id" = $1
+       RETURNING *`,
+      [existing.id, name, locationNote, nextIsActive],
+      tx
+    );
+    if (!updated) throw new Error("Gagal memperbarui taman.");
+
+    await recordAuditLog(
+      {
+        actor: auditActor(actor, companyId),
+        entityName: "Park",
+        entityId: existing.id,
+        action: "UPDATE",
+        summary: `Memperbarui taman: ${updated.name}`,
+        oldValues: {
+          name: existing.name,
+          locationNote: existing.locationNote,
+          isActive: existing.isActive,
+        },
+        newValues: {
+          name: updated.name,
+          locationNote: updated.locationNote,
+          isActive: updated.isActive,
+        },
+      },
+      tx
+    );
+
+    return updated;
   });
-
-  await recordAuditLog({
-    actor: auditActor(actor, companyId),
-    entityName: "Park",
-    entityId: existing.id,
-    action: "UPDATE",
-    summary: `Memperbarui taman: ${updated.name}`,
-    oldValues: {
-      name: existing.name,
-      locationNote: existing.locationNote,
-      isActive: existing.isActive,
-    },
-    newValues: {
-      name: updated.name,
-      locationNote: updated.locationNote,
-      isActive: updated.isActive,
-    },
-  });
-
-  return updated;
 }
 
 function requireAccountManager(actor: SessionUser): string {
@@ -699,20 +803,40 @@ function requireAccountManager(actor: SessionUser): string {
 }
 
 async function findInternalStaff(companyId: string, userId: string) {
-  const target = await prisma.user.findFirst({
-    where: { id: userId, companyId, role: { in: ["PENGELOLA", "MANAGER"] } },
-    include: {
-      staffCluster: true,
-      managerAssignments: {
-        where: { isTemporary: false },
-        include: { cluster: true },
-      },
-    },
-  });
+  const target = await queryOne<UserRow & { staffClusterName: string | null }>(
+    `SELECT u.*, cl."name" AS "staffClusterName"
+     FROM "User" u
+     LEFT JOIN "Cluster" cl ON cl."id" = u."staffClusterId"
+     WHERE u."id" = $1
+       AND u."companyId" = $2
+       AND u."role" = ANY($3::"Role"[])`,
+    [userId, companyId, ["PENGELOLA", "MANAGER"]]
+  );
   if (!target) {
     throw new Error("Akun Pengelola/Manager tidak ditemukan di perusahaan Anda.");
   }
-  return target;
+
+  const managerAssignments =
+    target.role === "MANAGER"
+      ? await query<{ clusterId: string; clusterName: string }>(
+          `SELECT cma."clusterId", cl."name" AS "clusterName"
+           FROM "ClusterManagerAssignment" cma
+           JOIN "Cluster" cl ON cl."id" = cma."clusterId"
+           WHERE cma."userId" = $1 AND cma."isTemporary" = false`,
+          [target.id]
+        )
+      : [];
+
+  return {
+    ...target,
+    staffCluster: target.staffClusterId
+      ? { id: target.staffClusterId, name: target.staffClusterName ?? "" }
+      : null,
+    managerAssignments: managerAssignments.map((a) => ({
+      clusterId: a.clusterId,
+      cluster: { id: a.clusterId, name: a.clusterName },
+    })),
+  };
 }
 
 /**
@@ -757,9 +881,10 @@ export async function updateInternalAccount(
         "Sesuai PRD Bagian 4, akun Pengelola wajib ditautkan tepat ke satu cluster."
       );
     }
-    const clusters = await prisma.cluster.findMany({
-      where: { id: { in: requested }, companyId },
-    });
+    const clusters = await query<ClusterRow>(
+      `SELECT * FROM "Cluster" WHERE "id" = ANY($1::text[]) AND "companyId" = $2`,
+      [requested, companyId]
+    );
     if (clusters.length !== requested.length) {
       throw new Error("Satu atau lebih cluster tidak valid untuk perusahaan ini.");
     }
@@ -773,49 +898,54 @@ export async function updateInternalAccount(
     );
   }
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const user = await tx.user.update({
-      where: { id: target.id },
-      data: {
-        name,
-        staffClusterId:
-          target.role === "PENGELOLA" ? newClusterIds[0] ?? null : undefined,
-      },
-    });
+  return withTransaction(async (tx) => {
+    const nextStaffClusterId =
+      target.role === "PENGELOLA" ? (newClusterIds[0] ?? null) : target.staffClusterId;
+    const user = await queryOne<UserRow>(
+      `UPDATE "User"
+       SET "name" = $2, "staffClusterId" = $3, "updatedAt" = NOW()
+       WHERE "id" = $1
+       RETURNING *`,
+      [target.id, name, nextStaffClusterId],
+      tx
+    );
+    if (!user) throw new Error("Gagal memperbarui akun.");
 
     if (target.role === "MANAGER" && input.clusterIds) {
-      await tx.clusterManagerAssignment.deleteMany({
-        where: {
-          userId: target.id,
-          isTemporary: false,
-          clusterId: { notIn: newClusterIds },
-        },
-      });
+      await execute(
+        `DELETE FROM "ClusterManagerAssignment"
+         WHERE "userId" = $1
+           AND "isTemporary" = false
+           AND NOT ("clusterId" = ANY($2::text[]))`,
+        [target.id, newClusterIds],
+        tx
+      );
       const toCreate = newClusterIds.filter((id) => !oldClusterIds.includes(id));
       if (toCreate.length > 0) {
-        await tx.clusterManagerAssignment.createMany({
-          data: toCreate.map((clusterId) => ({
-            userId: target.id,
-            clusterId,
-            isTemporary: false,
-          })),
-        });
+        await execute(
+          `INSERT INTO "ClusterManagerAssignment" ("userId", "clusterId", "isTemporary")
+           SELECT $1, cid, false FROM unnest($2::text[]) AS cid`,
+          [target.id, toCreate],
+          tx
+        );
       }
     }
+
+    await recordAuditLog(
+      {
+        actor: auditActor(actor, companyId),
+        entityName: "User",
+        entityId: target.id,
+        action: "UPDATE",
+        summary: `Memperbarui akun ${target.role === "MANAGER" ? "Manager" : "Pengelola"}: ${user.name}`,
+        oldValues: { name: target.name, clusters: oldClusterNames },
+        newValues: { name: user.name, clusters: newClusterNames },
+      },
+      tx
+    );
+
     return user;
   });
-
-  await recordAuditLog({
-    actor: auditActor(actor, companyId),
-    entityName: "User",
-    entityId: target.id,
-    action: "UPDATE",
-    summary: `Memperbarui akun ${target.role === "MANAGER" ? "Manager" : "Pengelola"}: ${updated.name}`,
-    oldValues: { name: target.name, clusters: oldClusterNames },
-    newValues: { name: updated.name, clusters: newClusterNames },
-  });
-
-  return updated;
 }
 
 /**
@@ -840,75 +970,86 @@ export async function setInternalAccountActive(
   }
 
   const now = new Date();
-  let cancelledDelegations = 0;
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const user = await tx.user.update({
-      where: { id: target.id },
-      data: { isActive },
-    });
+  return withTransaction(async (tx) => {
+    let cancelledDelegations = 0;
+
+    const user = await queryOne<UserRow>(
+      `UPDATE "User" SET "isActive" = $2, "updatedAt" = NOW() WHERE "id" = $1 RETURNING *`,
+      [target.id, isActive],
+      tx
+    );
+    if (!user) throw new Error("Gagal mengubah status akun.");
+
     if (!isActive && target.role === "MANAGER") {
-      const res = await tx.clusterManagerAssignment.updateMany({
-        where: {
-          userId: target.id,
-          isTemporary: true,
-          cancelledAt: null,
-          OR: [{ validUntil: null }, { validUntil: { gte: now } }],
-        },
-        data: { cancelledAt: now, cancelledById: actor.id, validUntil: now },
-      });
-      cancelledDelegations = res.count;
+      cancelledDelegations = await execute(
+        `UPDATE "ClusterManagerAssignment"
+         SET "cancelledAt" = $2, "cancelledById" = $3, "validUntil" = $2
+         WHERE "userId" = $1
+           AND "isTemporary" = true
+           AND "cancelledAt" IS NULL
+           AND ("validUntil" IS NULL OR "validUntil" >= $2)`,
+        [target.id, now, actor.id],
+        tx
+      );
     }
-    return user;
-  });
 
-  const warnings: string[] = [];
-  if (!isActive) {
-    if (target.role === "PENGELOLA" && target.staffClusterId) {
-      const remaining = await prisma.user.count({
-        where: {
-          companyId,
-          role: "PENGELOLA",
-          staffClusterId: target.staffClusterId,
-          isActive: true,
-        },
-      });
-      if (remaining === 0) {
-        warnings.push(
-          `${target.staffCluster?.name ?? "Cluster"} kini tidak punya Pengelola aktif.`
+    const warnings: string[] = [];
+    if (!isActive) {
+      if (target.role === "PENGELOLA" && target.staffClusterId) {
+        const remaining = await queryCount(
+          `SELECT COUNT(*)::int AS count
+           FROM "User"
+           WHERE "companyId" = $1
+             AND "role" = 'PENGELOLA'::"Role"
+             AND "staffClusterId" = $2
+             AND "isActive" = true`,
+          [companyId, target.staffClusterId],
+          tx
         );
-      }
-    }
-    if (target.role === "MANAGER") {
-      for (const a of target.managerAssignments) {
-        const remaining = await prisma.clusterManagerAssignment.count({
-          where: {
-            clusterId: a.clusterId,
-            user: { isActive: true },
-            ...activeAssignmentWhere(now),
-          },
-        });
         if (remaining === 0) {
-          warnings.push(`${a.cluster.name} kini tidak punya Manager aktif.`);
+          warnings.push(
+            `${target.staffCluster?.name ?? "Cluster"} kini tidak punya Pengelola aktif.`
+          );
+        }
+      }
+      if (target.role === "MANAGER") {
+        for (const a of target.managerAssignments) {
+          const remaining = await queryCount(
+            `SELECT COUNT(*)::int AS count
+             FROM "ClusterManagerAssignment" cma
+             JOIN "User" u ON u."id" = cma."userId"
+             WHERE cma."clusterId" = $1
+               AND u."isActive" = true
+               AND ${activeAssignmentSql("cma", "$2")}`,
+            [a.clusterId, now],
+            tx
+          );
+          if (remaining === 0) {
+            warnings.push(`${a.cluster.name} kini tidak punya Manager aktif.`);
+          }
         }
       }
     }
-  }
 
-  await recordAuditLog({
-    actor: auditActor(actor, companyId),
-    entityName: "User",
-    entityId: target.id,
-    action: "UPDATE",
-    summary: `${isActive ? "Mengaktifkan" : "Menonaktifkan"} akun ${target.role === "MANAGER" ? "Manager" : "Pengelola"}: ${target.name}`,
-    oldValues: { isActive: target.isActive },
-    newValues: {
-      isActive,
-      ...(cancelledDelegations > 0 ? { cancelledDelegations } : {}),
-    },
+    await recordAuditLog(
+      {
+        actor: auditActor(actor, companyId),
+        entityName: "User",
+        entityId: target.id,
+        action: "UPDATE",
+        summary: `${isActive ? "Mengaktifkan" : "Menonaktifkan"} akun ${target.role === "MANAGER" ? "Manager" : "Pengelola"}: ${target.name}`,
+        oldValues: { isActive: target.isActive },
+        newValues: {
+          isActive,
+          ...(cancelledDelegations > 0 ? { cancelledDelegations } : {}),
+        },
+      },
+      tx
+    );
+
+    return { user, warnings, cancelledDelegations };
   });
-
-  return { user: updated, warnings, cancelledDelegations };
 }
 
 /**
@@ -927,9 +1068,12 @@ export async function setUserBlockStatus(
   }
   const companyId = actor.companyId;
 
-  const target = await prisma.user.findFirst({
-    where: { id: userId, ...reporterInCompanyWhere(companyId) },
-  });
+  const target = await queryOne<UserRow>(
+    `SELECT u.*
+     FROM "User" u
+     WHERE u."id" = $1 AND ${reporterInCompanySql("u", "$2")}`,
+    [userId, companyId]
+  );
   if (!target) {
     throw new Error("Akun pelapor tidak ditemukan di cakupan perusahaan Anda.");
   }
@@ -942,32 +1086,40 @@ export async function setUserBlockStatus(
     throw new Error(`Akun ${target.name} tidak sedang diblokir.`);
   }
 
-  const updated = await prisma.user.update({
-    where: { id: target.id },
-    data: block
-      ? { isBlocked: true, blockedReason: cleanReason }
-      : { isBlocked: false, blockedReason: null },
-  });
+  return withTransaction(async (tx) => {
+    const updated = await queryOne<UserRow>(
+      `UPDATE "User"
+       SET "isBlocked" = $2, "blockedReason" = $3, "updatedAt" = NOW()
+       WHERE "id" = $1
+       RETURNING *`,
+      [target.id, block, block ? cleanReason : null],
+      tx
+    );
+    if (!updated) throw new Error("Gagal memperbarui status blokir akun.");
 
-  await recordAuditLog({
-    actor: auditActor(actor, companyId),
-    entityName: "User",
-    entityId: target.id,
-    action: block ? "BLOCK" : "UNBLOCK",
-    summary: block
-      ? `Memblokir akun pelapor ${target.name} (${target.email})`
-      : `Membuka blokir akun pelapor ${target.name} (${target.email})`,
-    oldValues: {
-      isBlocked: target.isBlocked,
-      blockedReason: target.blockedReason,
-    },
-    newValues: {
-      isBlocked: updated.isBlocked,
-      blockedReason: updated.blockedReason,
-    },
-  });
+    await recordAuditLog(
+      {
+        actor: auditActor(actor, companyId),
+        entityName: "User",
+        entityId: target.id,
+        action: block ? "BLOCK" : "UNBLOCK",
+        summary: block
+          ? `Memblokir akun pelapor ${target.name} (${target.email})`
+          : `Membuka blokir akun pelapor ${target.name} (${target.email})`,
+        oldValues: {
+          isBlocked: target.isBlocked,
+          blockedReason: target.blockedReason,
+        },
+        newValues: {
+          isBlocked: updated.isBlocked,
+          blockedReason: updated.blockedReason,
+        },
+      },
+      tx
+    );
 
-  return updated;
+    return updated;
+  });
 }
 
 /**
@@ -1011,15 +1163,18 @@ export async function assignTemporaryManager(
   }
 
   const [subManager, repManager, cluster] = await Promise.all([
-    prisma.user.findFirst({
-      where: { id: input.substituteManagerId, companyId, role: "MANAGER" },
-    }),
-    prisma.user.findFirst({
-      where: { id: input.replacedManagerId, companyId, role: "MANAGER" },
-    }),
-    prisma.cluster.findFirst({
-      where: { id: input.clusterId, companyId },
-    }),
+    queryOne<UserRow>(
+      `SELECT * FROM "User" WHERE "id" = $1 AND "companyId" = $2 AND "role" = 'MANAGER'::"Role"`,
+      [input.substituteManagerId, companyId]
+    ),
+    queryOne<UserRow>(
+      `SELECT * FROM "User" WHERE "id" = $1 AND "companyId" = $2 AND "role" = 'MANAGER'::"Role"`,
+      [input.replacedManagerId, companyId]
+    ),
+    queryOne<ClusterRow>(
+      `SELECT * FROM "Cluster" WHERE "id" = $1 AND "companyId" = $2`,
+      [input.clusterId, companyId]
+    ),
   ]);
 
   if (!subManager || !repManager) {
@@ -1040,22 +1195,27 @@ export async function assignTemporaryManager(
   }
 
   const [repPermanent, subPermanent, overlap] = await Promise.all([
-    prisma.clusterManagerAssignment.findFirst({
-      where: { userId: repManager.id, clusterId: cluster.id, isTemporary: false },
-    }),
-    prisma.clusterManagerAssignment.findFirst({
-      where: { userId: subManager.id, clusterId: cluster.id, isTemporary: false },
-    }),
-    prisma.clusterManagerAssignment.findFirst({
-      where: {
-        clusterId: cluster.id,
-        isTemporary: true,
-        cancelledAt: null,
-        OR: [{ userId: subManager.id }, { replacedManagerId: repManager.id }],
-        validFrom: { lte: input.validUntil },
-        validUntil: { gte: input.validFrom },
-      },
-    }),
+    queryOne<{ id: string }>(
+      `SELECT "id" FROM "ClusterManagerAssignment"
+       WHERE "userId" = $1 AND "clusterId" = $2 AND "isTemporary" = false LIMIT 1`,
+      [repManager.id, cluster.id]
+    ),
+    queryOne<{ id: string }>(
+      `SELECT "id" FROM "ClusterManagerAssignment"
+       WHERE "userId" = $1 AND "clusterId" = $2 AND "isTemporary" = false LIMIT 1`,
+      [subManager.id, cluster.id]
+    ),
+    queryOne<{ id: string }>(
+      `SELECT "id" FROM "ClusterManagerAssignment"
+       WHERE "clusterId" = $1
+         AND "isTemporary" = true
+         AND "cancelledAt" IS NULL
+         AND ("userId" = $2 OR "replacedManagerId" = $3)
+         AND "validFrom" <= $4
+         AND "validUntil" >= $5
+       LIMIT 1`,
+      [cluster.id, subManager.id, repManager.id, input.validUntil, input.validFrom]
+    ),
   ]);
 
   if (!repPermanent) {
@@ -1074,34 +1234,39 @@ export async function assignTemporaryManager(
     );
   }
 
-  const assignment = await prisma.clusterManagerAssignment.create({
-    data: {
-      userId: subManager.id,
-      clusterId: cluster.id,
-      isTemporary: true,
-      replacedManagerId: repManager.id,
-      validFrom: input.validFrom,
-      validUntil: input.validUntil,
-    },
-  });
+  return withTransaction(async (tx) => {
+    const assignment = await queryOne<ClusterManagerAssignmentRow>(
+      `INSERT INTO "ClusterManagerAssignment" (
+         "userId", "clusterId", "isTemporary", "replacedManagerId", "validFrom", "validUntil"
+       )
+       VALUES ($1, $2, true, $3, $4, $5)
+       RETURNING *`,
+      [subManager.id, cluster.id, repManager.id, input.validFrom, input.validUntil],
+      tx
+    );
+    if (!assignment) throw new Error("Gagal membuat delegasi sementara.");
 
-  await recordAuditLog({
-    actor: auditActor(actor, companyId),
-    entityName: "ClusterManagerAssignment",
-    entityId: assignment.id,
-    action: "CREATE",
-    summary: `Menunjuk ${subManager.name} sebagai Manager Pengganti Sementara untuk ${repManager.name} di ${cluster.name}`,
-    oldValues: null,
-    newValues: {
-      substituteManager: subManager.name,
-      replacedManager: repManager.name,
-      cluster: cluster.name,
-      validFrom: input.validFrom.toISOString(),
-      validUntil: input.validUntil.toISOString(),
-    },
-  });
+    await recordAuditLog(
+      {
+        actor: auditActor(actor, companyId),
+        entityName: "ClusterManagerAssignment",
+        entityId: assignment.id,
+        action: "CREATE",
+        summary: `Menunjuk ${subManager.name} sebagai Manager Pengganti Sementara untuk ${repManager.name} di ${cluster.name}`,
+        oldValues: null,
+        newValues: {
+          substituteManager: subManager.name,
+          replacedManager: repManager.name,
+          cluster: cluster.name,
+          validFrom: input.validFrom.toISOString(),
+          validUntil: input.validUntil.toISOString(),
+        },
+      },
+      tx
+    );
 
-  return assignment;
+    return assignment;
+  });
 }
 
 /**
@@ -1112,10 +1277,16 @@ export async function cancelTemporaryManagerAssignment(
   assignmentId: string
 ) {
   const companyId = requireAccountManager(actor);
-  const existing = await prisma.clusterManagerAssignment.findFirst({
-    where: { id: assignmentId, isTemporary: true, cluster: { companyId } },
-    include: { user: true, cluster: true },
-  });
+  const existing = await queryOne<
+    ClusterManagerAssignmentRow & { userName: string; clusterName: string }
+  >(
+    `SELECT cma.*, u."name" AS "userName", cl."name" AS "clusterName"
+     FROM "ClusterManagerAssignment" cma
+     JOIN "User" u ON u."id" = cma."userId"
+     JOIN "Cluster" cl ON cl."id" = cma."clusterId"
+     WHERE cma."id" = $1 AND cma."isTemporary" = true AND cl."companyId" = $2`,
+    [assignmentId, companyId]
+  );
   if (!existing) throw new Error("Delegasi tidak ditemukan di perusahaan Anda.");
   if (existing.cancelledAt) throw new Error("Delegasi ini sudah dibatalkan.");
 
@@ -1124,26 +1295,36 @@ export async function cancelTemporaryManagerAssignment(
     throw new Error("Delegasi ini sudah selesai dan tidak perlu dibatalkan.");
   }
 
-  const updated = await prisma.clusterManagerAssignment.update({
-    where: { id: existing.id },
-    data: { cancelledAt: now, cancelledById: actor.id, validUntil: now },
-  });
+  return withTransaction(async (tx) => {
+    const updated = await queryOne<ClusterManagerAssignmentRow>(
+      `UPDATE "ClusterManagerAssignment"
+       SET "cancelledAt" = $2, "cancelledById" = $3, "validUntil" = $2
+       WHERE "id" = $1
+       RETURNING *`,
+      [existing.id, now, actor.id],
+      tx
+    );
+    if (!updated) throw new Error("Gagal membatalkan delegasi.");
 
-  await recordAuditLog({
-    actor: auditActor(actor, companyId),
-    entityName: "ClusterManagerAssignment",
-    entityId: existing.id,
-    action: "UPDATE",
-    summary: `Membatalkan delegasi ${existing.user.name} di ${existing.cluster.name}`,
-    oldValues: {
-      validUntil: existing.validUntil?.toISOString() ?? null,
-      cancelledAt: null,
-    },
-    newValues: {
-      validUntil: now.toISOString(),
-      cancelledAt: now.toISOString(),
-    },
-  });
+    await recordAuditLog(
+      {
+        actor: auditActor(actor, companyId),
+        entityName: "ClusterManagerAssignment",
+        entityId: existing.id,
+        action: "UPDATE",
+        summary: `Membatalkan delegasi ${existing.userName} di ${existing.clusterName}`,
+        oldValues: {
+          validUntil: existing.validUntil?.toISOString() ?? null,
+          cancelledAt: null,
+        },
+        newValues: {
+          validUntil: now.toISOString(),
+          cancelledAt: now.toISOString(),
+        },
+      },
+      tx
+    );
 
-  return updated;
+    return updated;
+  });
 }

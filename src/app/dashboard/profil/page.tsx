@@ -1,39 +1,94 @@
 import { redirect } from "next/navigation";
 import { Building2, LogOut, ShieldCheck } from "lucide-react";
 import { getCurrentSession } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { query, queryOne } from "@/lib/db";
+import type { UserRow } from "@/lib/db-types";
 import { ROLE_METADATA } from "@/lib/permissions";
-import { activeAssignmentWhere } from "@/lib/scopes";
+import { activeAssignmentSql } from "@/lib/scopes";
 import { formatWibDate, formatWibDateTime } from "@/lib/dates";
 import { logoutAction } from "@/app/actions/auth-actions";
 import { DbErrorNotice } from "@/components/dashboard/db-error-notice";
 import { ProfileForm } from "./profile-form";
 
+interface StaffClusterSummary {
+  name: string;
+  complex: { name: string };
+}
+
+interface ManagerAssignmentSummary {
+  id: string;
+  isTemporary: boolean;
+  validUntil: Date | null;
+  cluster: { name: string; complex: { name: string } };
+}
+
 export default async function DashboardProfilePage() {
   const session = await getCurrentSession();
   if (!session) redirect("/login");
 
-  let user;
+  let user:
+    | (UserRow & {
+        staffCluster: StaffClusterSummary | null;
+        managerAssignments: ManagerAssignmentSummary[];
+      })
+    | null = null;
+
   try {
-    user = await prisma.user.findUnique({
-      where: { id: session.id },
-      include: {
-        staffCluster: {
-          include: {
-            complex: true,
-          },
+    const userRow = await queryOne<UserRow>(
+      `SELECT * FROM "User" WHERE "id" = $1`,
+      [session.id]
+    );
+    if (!userRow) redirect("/login");
+
+    const now = new Date();
+    const [staffClusterRow, assignmentRows] = await Promise.all([
+      userRow.staffClusterId
+        ? queryOne<{ name: string; complexName: string }>(
+            `SELECT cl."name", cx."name" AS "complexName"
+             FROM "Cluster" cl
+             JOIN "Complex" cx ON cx."id" = cl."complexId"
+             WHERE cl."id" = $1`,
+            [userRow.staffClusterId]
+          )
+        : Promise.resolve(null),
+      userRow.role === "MANAGER"
+        ? query<{
+            id: string;
+            isTemporary: boolean;
+            validUntil: Date | null;
+            clusterName: string;
+            complexName: string;
+          }>(
+            `SELECT cma."id", cma."isTemporary", cma."validUntil",
+                    cl."name" AS "clusterName", cx."name" AS "complexName"
+             FROM "ClusterManagerAssignment" cma
+             JOIN "Cluster" cl ON cl."id" = cma."clusterId"
+             JOIN "Complex" cx ON cx."id" = cl."complexId"
+             WHERE cma."userId" = $1 AND ${activeAssignmentSql("cma", "$2")}
+             ORDER BY cma."isTemporary" ASC`,
+            [userRow.id, now]
+          )
+        : Promise.resolve([]),
+    ]);
+
+    user = {
+      ...userRow,
+      staffCluster: staffClusterRow
+        ? {
+            name: staffClusterRow.name,
+            complex: { name: staffClusterRow.complexName },
+          }
+        : null,
+      managerAssignments: assignmentRows.map((a) => ({
+        id: a.id,
+        isTemporary: a.isTemporary,
+        validUntil: a.validUntil,
+        cluster: {
+          name: a.clusterName,
+          complex: { name: a.complexName },
         },
-        managerAssignments: {
-          where: activeAssignmentWhere(new Date()),
-          orderBy: { isTemporary: "asc" },
-          include: {
-            cluster: {
-              include: { complex: true },
-            },
-          },
-        },
-      },
-    });
+      })),
+    };
   } catch (error) {
     console.error("[profil] gagal memuat profil:", error);
     return <DbErrorNotice />;

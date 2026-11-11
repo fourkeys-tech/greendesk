@@ -18,7 +18,6 @@ import {
 interface QrReportClientProps {
   assetCode: string;
   assetName: string;
-  companyId: string;
   damageTypes: string[];
   initialUser: {
     id: string;
@@ -31,7 +30,6 @@ interface QrReportClientProps {
 export function QrReportClientForm({
   assetCode,
   assetName,
-  companyId,
   damageTypes,
   initialUser,
 }: QrReportClientProps) {
@@ -57,7 +55,7 @@ export function QrReportClientForm({
   const [regEmail, setRegEmail] = useState("");
   const [regStatus, setRegStatus] = useState<"WARGA" | "PENGUNJUNG">("WARGA");
   const [regBlockNo, setRegBlockNo] = useState("");
-  const [dataConsent, setDataConsent] = useState(true);
+  const [dataConsent, setDataConsent] = useState(false);
   const [otpSent, setOtpSent] = useState(false);
   const [otpCode, setOtpCode] = useState("");
   const [debugOtp, setDebugOtp] = useState<string | null>(null);
@@ -220,7 +218,7 @@ export function QrReportClientForm({
         name: googleName,
         email: googleEmail,
         dataConsent,
-        companyId,
+        assetCode,
       });
       if (res.error) {
         setError(res.error);
@@ -262,7 +260,7 @@ export function QrReportClientForm({
         reporterStatus: regStatus,
         blockHouseNo: regBlockNo,
         dataConsent,
-        companyId,
+        assetCode,
       });
       if ("error" in res && res.error) {
         setError(res.error);

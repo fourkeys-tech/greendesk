@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import type { Prisma, ReportStatus, Role } from "@prisma/client";
+import type { ReportStatus, Role } from "@/lib/db-types";
 import { getCurrentSession } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { query } from "@/lib/db";
 import { getManagerAssignedClusterIds } from "@/lib/services/phase5-decision";
 import { ROLE_METADATA, STATUS_METADATA } from "@/lib/permissions";
 import { formatWibDate } from "@/lib/dates";
@@ -25,19 +25,21 @@ const FILTERS: { key: string; label: string; status?: ReportStatus }[] = [
   { key: "SELESAI", label: "Selesai", status: "SELESAI" },
 ];
 
-const WORK_ORDER_INCLUDE = {
-  report: {
-    include: {
-      asset: {
-        include: {
-          park: { include: { cluster: true } },
-        },
-      },
-    },
-  },
-  vendor: true,
-  technician: true,
-} satisfies Prisma.WorkOrderInclude;
+interface SpkListItem {
+  id: string;
+  spkNo: string;
+  spkFileUrl: string | null;
+  spkFileName: string | null;
+  assignedAt: Date | null;
+  reportStatus: ReportStatus;
+  reportTicketNo: string;
+  underWarrantyOfVendorId: string | null;
+  assetName: string;
+  parkName: string;
+  clusterName: string;
+  vendorName: string;
+  technicianFullName: string | null;
+}
 
 export default async function SpkListPage({ searchParams }: SpkPageProps) {
   const session = await getCurrentSession();
@@ -63,33 +65,68 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
   const activeFilter = FILTERS.find((f) => f.key === rawFilter) ?? FILTERS[0];
   const isReadOnly = session.role === "ADMIN" || session.role === "OWNER";
 
-  let workOrders: Prisma.WorkOrderGetPayload<{ include: typeof WORK_ORDER_INCLUDE }>[];
+  let workOrders: SpkListItem[];
   try {
-    const reportWhere: Prisma.ReportWhereInput = {};
-    const where: Prisma.WorkOrderWhereInput = { companyId: session.companyId };
+    const conditions: string[] = [
+      `wo."companyId" = $1`,
+      `r."archivedAt" IS NULL`,
+    ];
+    const params: unknown[] = [session.companyId];
 
     if (session.role === "MANAGER") {
       const clusterIds = await getManagerAssignedClusterIds(session.id);
-      reportWhere.asset = { park: { clusterId: { in: clusterIds } } };
+      if (clusterIds.length === 0) {
+        workOrders = [];
+      } else {
+        params.push(clusterIds);
+        conditions.push(`p."clusterId" = ANY($${params.length}::text[])`);
+      }
     } else if (session.role === "PIC_VENDOR") {
-      where.vendor = { picUserId: session.id };
+      params.push(session.id);
+      conditions.push(`v."picUserId" = $${params.length}`);
     } else if (session.role === "TEKNISI") {
-      where.technician = { userId: session.id };
+      params.push(session.id);
+      conditions.push(`t."userId" = $${params.length}`);
     }
 
     if (activeFilter.status) {
-      reportWhere.status = activeFilter.status;
-    }
-    if (Object.keys(reportWhere).length > 0) {
-      where.report = reportWhere;
+      params.push(activeFilter.status);
+      conditions.push(`r."status" = $${params.length}::"ReportStatus"`);
     }
 
-    workOrders = await prisma.workOrder.findMany({
-      where,
-      include: WORK_ORDER_INCLUDE,
-      orderBy: { createdAt: "desc" },
-      take: 200,
-    });
+    if (
+      session.role === "MANAGER" &&
+      conditions.every((c) => !c.includes("ANY("))
+    ) {
+      workOrders = [];
+    } else {
+      workOrders = await query<SpkListItem>(
+        `SELECT wo."id",
+                wo."spkNo",
+                wo."spkFileUrl",
+                wo."spkFileName",
+                wo."assignedAt",
+                r."status" AS "reportStatus",
+                r."ticketNo" AS "reportTicketNo",
+                r."underWarrantyOfVendorId",
+                a."name" AS "assetName",
+                p."name" AS "parkName",
+                cl."name" AS "clusterName",
+                v."name" AS "vendorName",
+                t."fullName" AS "technicianFullName"
+         FROM "WorkOrder" wo
+         JOIN "Report" r ON r."id" = wo."reportId"
+         JOIN "Asset" a ON a."id" = r."assetId"
+         JOIN "Park" p ON p."id" = a."parkId"
+         JOIN "Cluster" cl ON cl."id" = p."clusterId"
+         JOIN "Vendor" v ON v."id" = wo."vendorId"
+         LEFT JOIN "Technician" t ON t."id" = wo."technicianId"
+         WHERE ${conditions.join(" AND ")}
+         ORDER BY wo."createdAt" DESC
+         LIMIT 200`,
+        params
+      );
+    }
   } catch (error) {
     console.error("[spk] gagal memuat SPK:", error);
     return <DbErrorNotice />;
@@ -145,7 +182,7 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
           {/* Mobile: kartu */}
           <div className="space-y-3 sm:hidden">
             {workOrders.map((wo) => {
-              const meta = STATUS_METADATA[wo.report.status];
+              const meta = STATUS_METADATA[wo.reportStatus];
               return (
                 <div
                   key={wo.id}
@@ -160,16 +197,16 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
                     </span>
                   </div>
                   <div>
-                    <div className="font-bold text-slate-900">{wo.report.asset.name}</div>
+                    <div className="font-bold text-slate-900">{wo.assetName}</div>
                     <div className="text-[11px] text-slate-500">
-                      {wo.report.asset.park.name} · {wo.report.asset.park.cluster.name}
+                      {wo.parkName} · {wo.clusterName}
                     </div>
                   </div>
                   <div className="text-slate-600">
-                    {wo.vendor.name} · Teknisi:{" "}
-                    {wo.technician ? (
+                    {wo.vendorName} · Teknisi:{" "}
+                    {wo.technicianFullName ? (
                       <span className="font-semibold text-slate-800">
-                        {wo.technician.fullName}
+                        {wo.technicianFullName}
                       </span>
                     ) : (
                       <span className="text-amber-700 font-semibold">Belum ditunjuk</span>
@@ -178,12 +215,12 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                     <span className="text-[11px] text-slate-500">
                       {wo.assignedAt ? formatWibDate(wo.assignedAt) : "-"}
-                      {wo.report.underWarrantyOfVendorId ? " · Masa garansi" : ""}
+                      {wo.underWarrantyOfVendorId ? " · Masa garansi" : ""}
                     </span>
                     <SpkActions
                       spkFileUrl={wo.spkFileUrl}
                       spkFileName={wo.spkFileName}
-                      ticketNo={wo.report.ticketNo}
+                      ticketNo={wo.reportTicketNo}
                     />
                   </div>
                 </div>
@@ -208,7 +245,7 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {workOrders.map((wo) => {
-                    const meta = STATUS_METADATA[wo.report.status];
+                    const meta = STATUS_METADATA[wo.reportStatus];
                     return (
                       <tr key={wo.id} className="hover:bg-slate-50/80 transition">
                         <td className="px-4 py-3 font-mono font-black text-slate-900">
@@ -216,27 +253,27 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
                         </td>
                         <td className="px-4 py-3">
                           <div className="font-bold text-slate-900">
-                            {wo.report.asset.name}
+                            {wo.assetName}
                           </div>
                           <div className="text-[11px] font-mono text-slate-500">
-                            Tiket: {wo.report.ticketNo}
+                            Tiket: {wo.reportTicketNo}
                           </div>
                         </td>
                         <td className="px-4 py-3">
                           <div className="text-slate-800">
-                            {wo.report.asset.park.cluster.name}
+                            {wo.clusterName}
                           </div>
                           <div className="text-[11px] text-slate-400">
-                            {wo.report.asset.park.name}
+                            {wo.parkName}
                           </div>
                         </td>
                         <td className="px-4 py-3">
-                          <div className="font-semibold text-slate-900">{wo.vendor.name}</div>
+                          <div className="font-semibold text-slate-900">{wo.vendorName}</div>
                           <div className="text-[11px] text-slate-500">
                             Teknisi:{" "}
-                            {wo.technician ? (
+                            {wo.technicianFullName ? (
                               <span className="font-bold text-slate-800">
-                                {wo.technician.fullName}
+                                {wo.technicianFullName}
                               </span>
                             ) : (
                               <span className="text-amber-700 font-bold">
@@ -244,7 +281,7 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
                               </span>
                             )}
                           </div>
-                          {wo.report.underWarrantyOfVendorId && (
+                          {wo.underWarrantyOfVendorId && (
                             <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
                               Masa garansi
                             </span>
@@ -264,7 +301,7 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
                           <SpkActions
                             spkFileUrl={wo.spkFileUrl}
                             spkFileName={wo.spkFileName}
-                            ticketNo={wo.report.ticketNo}
+                            ticketNo={wo.reportTicketNo}
                           />
                         </td>
                       </tr>

@@ -104,7 +104,7 @@ export function CreateStaffForm({ clusters }: { clusters: ClusterOption[] }) {
             type="password"
             name="password"
             minLength={6}
-            placeholder="Kosongkan untuk memakai sandi bawaan sistem"
+            placeholder="Kosongkan untuk sandi acak otomatis (tampil sekali)"
             className={inputClass}
           />
         </div>

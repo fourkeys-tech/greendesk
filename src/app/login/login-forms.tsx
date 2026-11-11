@@ -126,10 +126,6 @@ export function LoginForms() {
               placeholder="Masukkan kata sandi"
               className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:border-emerald-600 focus:outline-none"
             />
-            <p className="mt-1 text-xs text-slate-500">
-              Gunakan kata sandi yang dikonfigurasi pada variabel{" "}
-              <code>SEED_DEFAULT_PASSWORD</code> di file <code>.env</code>.
-            </p>
           </div>
           <button
             type="submit"

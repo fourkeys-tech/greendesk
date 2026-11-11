@@ -1,5 +1,5 @@
 import React from "react";
-import type { ReportStatus, Priority } from "@prisma/client";
+import type { ReportStatus, Priority } from "@/lib/db-types";
 import { STATUS_METADATA } from "@/lib/permissions";
 
 interface StatusBadgeProps {

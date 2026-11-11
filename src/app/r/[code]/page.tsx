@@ -1,6 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { prisma } from "@/lib/prisma";
+import { query, queryOne } from "@/lib/db";
+import type {
+  AssetRow,
+  CategoryRow,
+  ClusterRow,
+  CompanyRow,
+  ComplexRow,
+  ParkRow,
+  ReportRow,
+} from "@/lib/db-types";
 import { getCurrentSession } from "@/lib/auth";
 import { STATUS_METADATA, TERMINAL_REPORT_STATUSES } from "@/lib/permissions";
 import { assetUnreportableReason } from "@/lib/scopes";
@@ -14,34 +23,67 @@ export default async function QrAssetShortlinkPage({
   const { code } = await params;
   const decodedCode = decodeURIComponent(code).toUpperCase();
 
-  const [asset, session] = await Promise.all([
-    prisma.asset.findUnique({
-      where: { code: decodedCode },
-      include: {
-        category: true,
-        park: {
-          include: {
-            cluster: {
-              include: {
-                complex: {
-                  include: { company: true },
-                },
-              },
-            },
-          },
-        },
-        reports: {
-          orderBy: { createdAt: "desc" },
-          take: 10,
-        },
-      },
-    }),
+  const [assetRow, session] = await Promise.all([
+    queryOne<AssetRow>(`SELECT * FROM "Asset" WHERE "code" = $1`, [decodedCode]),
     getCurrentSession(),
   ]);
 
-  if (!asset) {
+  if (!assetRow) {
     notFound();
   }
+
+  const [category, park, reports] = await Promise.all([
+    queryOne<CategoryRow>(`SELECT * FROM "Category" WHERE "id" = $1`, [
+      assetRow.categoryId,
+    ]),
+    queryOne<ParkRow>(`SELECT * FROM "Park" WHERE "id" = $1`, [assetRow.parkId]),
+    query<ReportRow>(
+      `SELECT *
+       FROM "Report"
+       WHERE "assetId" = $1 AND "archivedAt" IS NULL
+       ORDER BY "createdAt" DESC
+       LIMIT 10`,
+      [assetRow.id]
+    ),
+  ]);
+
+  if (!category || !park) {
+    notFound();
+  }
+
+  const cluster = await queryOne<ClusterRow>(
+    `SELECT * FROM "Cluster" WHERE "id" = $1`,
+    [park.clusterId]
+  );
+  if (!cluster) notFound();
+
+  const complex = await queryOne<ComplexRow>(
+    `SELECT * FROM "Complex" WHERE "id" = $1`,
+    [cluster.complexId]
+  );
+  if (!complex) notFound();
+
+  const company = await queryOne<CompanyRow>(
+    `SELECT * FROM "Company" WHERE "id" = $1`,
+    [complex.companyId]
+  );
+  if (!company) notFound();
+
+  const asset = {
+    ...assetRow,
+    category,
+    park: {
+      ...park,
+      cluster: {
+        ...cluster,
+        complex: {
+          ...complex,
+          company,
+        },
+      },
+    },
+    reports,
+  };
 
   const unreportableReason = assetUnreportableReason(asset);
 
@@ -156,7 +198,6 @@ export default async function QrAssetShortlinkPage({
             <QrReportClientForm
               assetCode={asset.code}
               assetName={asset.name}
-              companyId={asset.companyId}
               damageTypes={asset.category.damageTypes}
               initialUser={session}
             />

@@ -3,9 +3,16 @@ import { redirect } from "next/navigation";
 import { Printer, History } from "lucide-react";
 import { getCurrentSession } from "@/lib/auth";
 import { hasPermission, ROLE_METADATA } from "@/lib/permissions";
-import { prisma } from "@/lib/prisma";
+import { query } from "@/lib/db";
+import type {
+  AssetRow,
+  CategoryRow,
+  ClusterRow,
+  ComplexRow,
+  ParkRow,
+} from "@/lib/db-types";
 import { generateAssetQrDataUrl } from "@/lib/qr";
-import { activeAssignmentWhere } from "@/lib/scopes";
+import { activeAssignmentSql } from "@/lib/scopes";
 import { wibDateInputValue } from "@/lib/dates";
 import {
   AccessDeniedNotice,
@@ -52,124 +59,212 @@ export default async function WilayahPage() {
     if (session.role === "PENGELOLA") {
       clusterScope = session.staffClusterId ? [session.staffClusterId] : [];
     } else if (session.role === "MANAGER") {
-      const assignments = await prisma.clusterManagerAssignment.findMany({
-        where: { userId: session.id, ...activeAssignmentWhere(now) },
-        select: { clusterId: true },
-      });
+      const assignments = await query<{ clusterId: string }>(
+        `SELECT "clusterId"
+         FROM "ClusterManagerAssignment"
+         WHERE "userId" = $1 AND ${activeAssignmentSql("ClusterManagerAssignment", "$2")}`,
+        [session.id, now]
+      );
       clusterScope = assignments.map((a) => a.clusterId);
     }
 
-    const clusterWhere = clusterScope ? { id: { in: clusterScope } } : {};
-
-    const [rawComplexes, rawCategories] = await Promise.all([
-      prisma.complex.findMany({
-        where: {
-          companyId,
-          ...(clusterScope ? { clusters: { some: clusterWhere } } : {}),
-        },
-        include: {
-          clusters: {
-            where: clusterWhere,
-            orderBy: { name: "asc" },
-            include: {
-              staffUsers: {
-                where: { role: "PENGELOLA", isActive: true },
-                select: { name: true },
-              },
-              managerAssignments: {
-                where: { ...activeAssignmentWhere(now), user: { isActive: true } },
-                select: { isTemporary: true, user: { select: { name: true } } },
-              },
-              parks: {
-                orderBy: { name: "asc" },
-                include: {
-                  assets: {
-                    orderBy: { code: "asc" },
-                    include: {
-                      category: { select: { id: true, name: true, isActive: true } },
-                      reports: {
-                        where: { workOrder: { isNot: null } },
-                        select: {
-                          id: true,
-                          workOrder: {
-                            select: { spkNo: true, vendor: { select: { name: true } } },
-                          },
-                        },
-                        orderBy: { createdAt: "desc" },
-                        take: 3,
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-        orderBy: { createdAt: "asc" },
-      }),
-      prisma.category.findMany({
-        where: { companyId },
-        orderBy: { name: "asc" },
-        select: { id: true, name: true, damageTypes: true, isActive: true },
-      }),
-    ]);
+    const rawCategories = await query<{
+      id: string;
+      name: string;
+      damageTypes: string[];
+      isActive: boolean;
+    }>(
+      `SELECT "id", "name", "damageTypes", "isActive"
+       FROM "Category"
+       WHERE "companyId" = $1
+       ORDER BY "name" ASC`,
+      [companyId]
+    );
     categories = rawCategories;
 
-    const allCodes = rawComplexes.flatMap((c) =>
-      c.clusters.flatMap((cl) => cl.parks.flatMap((p) => p.assets.map((a) => a.code)))
-    );
-    const qrEntries = await Promise.all(
-      allCodes.map(async (code) => {
-        try {
-          const qr = await generateAssetQrDataUrl(code);
-          return [code, qr.qrDataUrl] as const;
-        } catch {
-          return [code, null] as const;
-        }
-      })
-    );
-    const qrByCode = new Map(qrEntries);
+    if (clusterScope && clusterScope.length === 0) {
+      complexes = [];
+    } else {
+      const [
+        rawComplexes,
+        rawClusters,
+        rawParks,
+        rawAssets,
+        staffUsers,
+        managerAssigns,
+        recentWorks,
+      ] = await Promise.all([
+        clusterScope
+          ? query<ComplexRow>(
+              `SELECT DISTINCT c.*
+               FROM "Complex" c
+               JOIN "Cluster" cl ON cl."complexId" = c."id"
+               WHERE c."companyId" = $1 AND cl."id" = ANY($2::text[])
+               ORDER BY c."createdAt" ASC`,
+              [companyId, clusterScope]
+            )
+          : query<ComplexRow>(
+              `SELECT * FROM "Complex" WHERE "companyId" = $1 ORDER BY "createdAt" ASC`,
+              [companyId]
+            ),
+        clusterScope
+          ? query<ClusterRow>(
+              `SELECT * FROM "Cluster"
+               WHERE "companyId" = $1 AND "id" = ANY($2::text[])
+               ORDER BY "name" ASC`,
+              [companyId, clusterScope]
+            )
+          : query<ClusterRow>(
+              `SELECT * FROM "Cluster" WHERE "companyId" = $1 ORDER BY "name" ASC`,
+              [companyId]
+            ),
+        query<ParkRow>(
+          `SELECT * FROM "Park" WHERE "companyId" = $1 ORDER BY "name" ASC`,
+          [companyId]
+        ),
+        query<AssetRow>(
+          `SELECT * FROM "Asset" WHERE "companyId" = $1 ORDER BY "code" ASC`,
+          [companyId]
+        ),
+        query<{ name: string; staffClusterId: string }>(
+          `SELECT "name", "staffClusterId"
+           FROM "User"
+           WHERE "companyId" = $1
+             AND "role" = 'PENGELOLA'::"Role"
+             AND "isActive" = true
+             AND "staffClusterId" IS NOT NULL`,
+          [companyId]
+        ),
+        query<{ clusterId: string; isTemporary: boolean; userName: string }>(
+          `SELECT cma."clusterId", cma."isTemporary", u."name" AS "userName"
+           FROM "ClusterManagerAssignment" cma
+           JOIN "User" u ON u."id" = cma."userId"
+           WHERE u."companyId" = $1
+             AND ${activeAssignmentSql("cma", "$2")}
+             AND u."isActive" = true`,
+          [companyId, now]
+        ),
+        query<{
+          assetId: string;
+          reportId: string;
+          spkNo: string;
+          vendorName: string;
+        }>(
+          `SELECT sub."assetId", sub."reportId", sub."spkNo", sub."vendorName"
+           FROM (
+             SELECT r."assetId",
+                    r."id" AS "reportId",
+                    wo."spkNo",
+                    v."name" AS "vendorName",
+                    ROW_NUMBER() OVER (PARTITION BY r."assetId" ORDER BY r."createdAt" DESC) AS rn
+             FROM "Report" r
+             JOIN "WorkOrder" wo ON wo."reportId" = r."id"
+             JOIN "Vendor" v ON v."id" = wo."vendorId"
+             WHERE r."companyId" = $1 AND r."archivedAt" IS NULL
+           ) sub
+           WHERE sub.rn <= 3`,
+          [companyId]
+        ),
+      ]);
 
-    complexes = rawComplexes.map((comp) => ({
-      id: comp.id,
-      name: comp.name,
-      address: comp.address,
-      isActive: comp.isActive,
-      clusters: comp.clusters.map((cl) => ({
-        id: cl.id,
-        name: cl.name,
-        isActive: cl.isActive,
-        pengelolaNames: cl.staffUsers.map((u) => u.name),
-        managerNames: cl.managerAssignments.map((m) => ({
-          name: m.user.name,
-          isTemporary: m.isTemporary,
-        })),
-        parks: cl.parks.map((p) => ({
+      const categoryMap = new Map(
+        rawCategories.map((c) => [
+          c.id,
+          { id: c.id, name: c.name, isActive: c.isActive },
+        ])
+      );
+      const staffByCluster = new Map<string, string[]>();
+      for (const u of staffUsers) {
+        const arr = staffByCluster.get(u.staffClusterId) ?? [];
+        arr.push(u.name);
+        staffByCluster.set(u.staffClusterId, arr);
+      }
+      const managersByCluster = new Map<
+        string,
+        { name: string; isTemporary: boolean }[]
+      >();
+      for (const m of managerAssigns) {
+        const arr = managersByCluster.get(m.clusterId) ?? [];
+        arr.push({ name: m.userName, isTemporary: m.isTemporary });
+        managersByCluster.set(m.clusterId, arr);
+      }
+      const worksByAsset = new Map<
+        string,
+        { id: string; vendorName: string; spkNo: string }[]
+      >();
+      for (const w of recentWorks) {
+        const arr = worksByAsset.get(w.assetId) ?? [];
+        arr.push({ id: w.reportId, vendorName: w.vendorName, spkNo: w.spkNo });
+        worksByAsset.set(w.assetId, arr);
+      }
+
+      const qrEntries = await Promise.all(
+        rawAssets.map(async (a) => {
+          try {
+            const qr = await generateAssetQrDataUrl(a.code);
+            return [a.code, qr.qrDataUrl] as const;
+          } catch {
+            return [a.code, null] as const;
+          }
+        })
+      );
+      const qrByCode = new Map(qrEntries);
+
+      const assetsByPark = new Map<string, HierarchyComplex["clusters"][number]["parks"][number]["assets"]>();
+      for (const a of rawAssets) {
+        const cat = categoryMap.get(a.categoryId);
+        if (!cat) continue;
+        const arr = assetsByPark.get(a.parkId) ?? [];
+        arr.push({
+          id: a.id,
+          code: a.code,
+          name: a.name,
+          locationNote: a.locationNote,
+          photoUrl: a.photoUrl,
+          installedAt: a.installedAt ? a.installedAt.toISOString() : null,
+          isActive: a.isActive,
+          category: cat,
+          qrDataUrl: qrByCode.get(a.code) ?? null,
+          recentWork: worksByAsset.get(a.id) ?? [],
+        });
+        assetsByPark.set(a.parkId, arr);
+      }
+
+      const parksByCluster = new Map<string, HierarchyComplex["clusters"][number]["parks"]>();
+      for (const p of rawParks) {
+        const arr = parksByCluster.get(p.clusterId) ?? [];
+        arr.push({
           id: p.id,
           name: p.name,
           locationNote: p.locationNote,
           isActive: p.isActive,
-          assets: p.assets.map((a) => ({
-            id: a.id,
-            code: a.code,
-            name: a.name,
-            locationNote: a.locationNote,
-            photoUrl: a.photoUrl,
-            installedAt: a.installedAt ? a.installedAt.toISOString() : null,
-            isActive: a.isActive,
-            category: a.category,
-            qrDataUrl: qrByCode.get(a.code) ?? null,
-            recentWork: a.reports
-              .filter((r) => r.workOrder)
-              .map((r) => ({
-                id: r.id,
-                vendorName: r.workOrder!.vendor.name,
-                spkNo: r.workOrder!.spkNo,
-              })),
-          })),
-        })),
-      })),
-    }));
+          assets: assetsByPark.get(p.id) ?? [],
+        });
+        parksByCluster.set(p.clusterId, arr);
+      }
+
+      const clustersByComplex = new Map<string, HierarchyComplex["clusters"]>();
+      for (const cl of rawClusters) {
+        const arr = clustersByComplex.get(cl.complexId) ?? [];
+        arr.push({
+          id: cl.id,
+          name: cl.name,
+          isActive: cl.isActive,
+          pengelolaNames: staffByCluster.get(cl.id) ?? [],
+          managerNames: managersByCluster.get(cl.id) ?? [],
+          parks: parksByCluster.get(cl.id) ?? [],
+        });
+        clustersByComplex.set(cl.complexId, arr);
+      }
+
+      complexes = rawComplexes.map((comp) => ({
+        id: comp.id,
+        name: comp.name,
+        address: comp.address,
+        isActive: comp.isActive,
+        clusters: clustersByComplex.get(comp.id) ?? [],
+      }));
+    }
   } catch (error) {
     console.error("[wilayah] gagal memuat data:", error);
     return <DbErrorNotice />;

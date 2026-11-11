@@ -1,8 +1,8 @@
 import { cache } from "react";
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
-import type { Role } from "@prisma/client";
-import { prisma } from "./prisma";
+import type { ApprovalStatus, Role, TechnicianStatus } from "./db-types";
+import { queryOne } from "./db";
 
 export const SESSION_COOKIE_NAME = "greenpark_session";
 const SESSION_DURATION_DAYS = 30; // Sesuai PRD Bagian 6 Fase 3: Sesi login panjang (usulan 30 hari)
@@ -67,9 +67,25 @@ export async function setSessionCookie(user: SessionUser) {
   cookieStore.set(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
     path: "/",
     maxAge: SESSION_DURATION_DAYS * 24 * 60 * 60,
   });
+}
+
+/**
+ * Dilempar saat database tidak bisa dihubungi ketika memvalidasi sesi.
+ * Sesi TIDAK boleh jatuh ke payload JWT (fail-open): user yang sudah diblokir/dihapus
+ * akan tetap "login" selama DB mati. Error boundary dashboard menampilkan halaman gangguan.
+ */
+export class SessionUnavailableError extends Error {
+  constructor(cause?: unknown) {
+    super("Layanan sedang gangguan: sesi tidak dapat divalidasi.");
+    this.name = "SessionUnavailableError";
+    if (cause !== undefined) {
+      (this as { cause?: unknown }).cause = cause;
+    }
+  }
 }
 
 export async function clearSessionCookie() {
@@ -89,55 +105,77 @@ export const getCurrentSession = cache(async (): Promise<SessionUser | null> => 
   const decoded = await verifySessionToken(token);
   if (!decoded) return null;
 
+  let dbUser: {
+    id: string;
+    name: string;
+    email: string;
+    role: Role;
+    companyId: string | null;
+    staffClusterId: string | null;
+    isActive: boolean;
+    isBlocked: boolean;
+    companyName: string | null;
+    techApprovalStatus: ApprovalStatus | null;
+    techStatus: TechnicianStatus | null;
+    managedVendorId: string | null;
+  } | null;
+
   try {
-    const dbUser = await prisma.user.findUnique({
-      where: { id: decoded.id },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        companyId: true,
-        staffClusterId: true,
-        isActive: true,
-        isBlocked: true,
-        company: { select: { name: true } },
-        technicianProfile: { select: { approvalStatus: true, status: true } },
-        managedVendor: { select: { id: true } },
-      },
-    });
-
-    if (dbUser) {
-      if (!dbUser.isActive || dbUser.isBlocked) {
-        return null;
-      }
-
-      // Teknisi belum disetujui Admin tidak bisa login (PRD Fase 2)
-      if (
-        dbUser.role === "TEKNISI" &&
-        dbUser.technicianProfile &&
-        dbUser.technicianProfile.approvalStatus !== "APPROVED"
-      ) {
-        return null;
-      }
-
-      return {
-        id: dbUser.id,
-        name: dbUser.name,
-        email: dbUser.email,
-        role: dbUser.role,
-        companyId: dbUser.companyId,
-        companyName: dbUser.company?.name ?? null,
-        staffClusterId: dbUser.staffClusterId,
-        technicianApprovalStatus:
-          dbUser.technicianProfile?.approvalStatus ?? null,
-        isDualRolePic: Boolean(dbUser.managedVendor),
-      };
-    }
-  } catch {
-    // Mode dev/testing offline/statis: fallback ke sesi decoded JWT
+    dbUser = await queryOne(
+      `SELECT
+         u."id",
+         u."name",
+         u."email",
+         u."role",
+         u."companyId",
+         u."staffClusterId",
+         u."isActive",
+         u."isBlocked",
+         c."name" AS "companyName",
+         t."approvalStatus" AS "techApprovalStatus",
+         t."status" AS "techStatus",
+         v."id" AS "managedVendorId"
+       FROM "User" u
+       LEFT JOIN "Company" c ON c."id" = u."companyId"
+       LEFT JOIN "Technician" t ON t."userId" = u."id"
+       LEFT JOIN "Vendor" v ON v."picUserId" = u."id"
+       WHERE u."id" = $1
+       LIMIT 1`,
+      [decoded.id]
+    );
+  } catch (err) {
+    // Fail-closed (P0-3): tanpa DB, sesi tidak bisa dipercaya.
+    throw new SessionUnavailableError(err);
   }
 
-  return decoded;
+  // User sudah dihapus / id fiktif (mis. profil demo tanpa baris DB) → tidak ada sesi.
+  if (!dbUser) return null;
+
+  if (!dbUser.isActive || dbUser.isBlocked) {
+    return null;
+  }
+
+  if (dbUser.role === "TEKNISI" && dbUser.techApprovalStatus) {
+    // Teknisi belum disetujui Admin tidak bisa login (PRD Fase 2)
+    if (dbUser.techApprovalStatus !== "APPROVED") {
+      return null;
+    }
+    // Teknisi nonaktif (manual/otomatis 60 hari, §8.3.7) tidak bisa login; cuti tetap boleh.
+    if (dbUser.techStatus === "INACTIVE") {
+      return null;
+    }
+  }
+
+  return {
+    id: dbUser.id,
+    name: dbUser.name,
+    email: dbUser.email,
+    role: dbUser.role,
+    companyId: dbUser.companyId,
+    companyName: dbUser.companyName ?? null,
+    staffClusterId: dbUser.staffClusterId,
+    technicianApprovalStatus: dbUser.techApprovalStatus ?? null,
+    isDualRolePic: Boolean(dbUser.managedVendorId),
+  };
 });
 

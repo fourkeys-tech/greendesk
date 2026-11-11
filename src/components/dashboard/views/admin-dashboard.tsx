@@ -1,6 +1,6 @@
 import React from "react";
 import Link from "next/link";
-import type { AuditAction, Role } from "@prisma/client";
+import type { AuditAction, Role } from "@/lib/db-types";
 import {
   Layers,
   Building2,

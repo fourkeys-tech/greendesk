@@ -2,20 +2,19 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentSession } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { execute } from "@/lib/db";
 
 export async function markNotificationAsReadAction(notificationId: string) {
   const session = await getCurrentSession();
   if (!session) return { error: "Unauthorized" };
 
   try {
-    await prisma.notification.updateMany({
-      where: {
-        id: notificationId,
-        recipientId: session.id,
-      },
-      data: { isRead: true },
-    });
+    await execute(
+      `UPDATE "Notification"
+       SET "isRead" = true
+       WHERE "id" = $1 AND "recipientId" = $2`,
+      [notificationId, session.id]
+    );
 
     revalidatePath("/dashboard/notifikasi");
     revalidatePath("/dashboard");
@@ -30,13 +29,12 @@ export async function markAllNotificationsAsReadAction() {
   if (!session) return { error: "Unauthorized" };
 
   try {
-    await prisma.notification.updateMany({
-      where: {
-        recipientId: session.id,
-        isRead: false,
-      },
-      data: { isRead: true },
-    });
+    await execute(
+      `UPDATE "Notification"
+       SET "isRead" = true
+       WHERE "recipientId" = $1 AND "isRead" = false`,
+      [session.id]
+    );
 
     revalidatePath("/dashboard/notifikasi");
     revalidatePath("/dashboard");

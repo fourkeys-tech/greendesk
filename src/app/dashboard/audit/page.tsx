@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import type { AuditAction } from "@prisma/client";
+import type { AuditAction } from "@/lib/db-types";
 import { ArrowRight, ChevronLeft, ChevronRight, Filter } from "lucide-react";
 import { getCurrentSession } from "@/lib/auth";
 import { hasPermission, ROLE_METADATA } from "@/lib/permissions";

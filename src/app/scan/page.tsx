@@ -85,13 +85,13 @@ export default function QRScannerPage() {
   };
 
   const handleSimulateScan = () => {
-    router.push(`/report/new?assetId=${encodeURIComponent(manualCode)}`);
+    router.push(`/r/${encodeURIComponent(manualCode.trim().toUpperCase())}`);
   };
 
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (manualCode.trim()) {
-      router.push(`/report/new?assetId=${encodeURIComponent(manualCode.trim())}`);
+      router.push(`/r/${encodeURIComponent(manualCode.trim().toUpperCase())}`);
     }
   };
 
@@ -117,7 +117,7 @@ export default function QRScannerPage() {
 
       <header className="relative z-20 flex items-center justify-between p-4 bg-slate-950/40 backdrop-blur-md border-b border-white/10">
         <Link
-          href="/beranda"
+          href="/"
           className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 transition-colors"
         >
           <ChevronLeft className="w-6 h-6" />

@@ -1,38 +1,60 @@
 import { describe, expect, it } from "vitest";
-import { prisma } from "../prisma";
+import { execute, queryCount, queryOne } from "../db";
+import type { UserRow } from "../db-types";
 import {
   getScopedReportsForUser,
   updateAssetMasterData,
 } from "../services/foundation";
 
 describe("Fase 0 – Pengujian Integrasi Database & Layanan Fondasi", () => {
-  it("menolak penghapusan permanen laporan (Report)", async () => {
-    await expect(prisma.report.deleteMany({})).rejects.toThrow(
-      /Laporan tidak dapat dihapus permanen/
+  it("menolak penghapusan permanen laporan (Report) via trigger imutabilitas PostgreSQL", async () => {
+    const existingReport = await queryOne<{ id: string }>(
+      `SELECT "id" FROM "Report" WHERE "archivedAt" IS NULL LIMIT 1`
     );
+    if (!existingReport) throw new Error("Report seed tidak ditemukan");
+
+    await expect(
+      execute(`DELETE FROM "Report" WHERE "id" = $1`, [existingReport.id])
+    ).rejects.toThrow(/Report tidak boleh dihapus permanen/);
   });
 
-  it("menolak perubahan atau penghapusan Riwayat Perubahan Data (AuditLog)", async () => {
-    await expect(prisma.auditLog.deleteMany({})).rejects.toThrow(
-      /AuditLog.*tidak bisa dihapus/
+  it("menolak perubahan atau penghapusan Riwayat Perubahan Data (AuditLog) via trigger imutabilitas PostgreSQL", async () => {
+    const existingAudit = await queryOne<{ id: string }>(
+      `SELECT "id" FROM "AuditLog" LIMIT 1`
     );
+    if (!existingAudit) throw new Error("AuditLog seed tidak ditemukan");
+
     await expect(
-      prisma.auditLog.updateMany({ data: { summary: "Manipulasi" } })
-    ).rejects.toThrow(/AuditLog.*tidak bisa diubah/);
+      execute(`DELETE FROM "AuditLog" WHERE "id" = $1`, [existingAudit.id])
+    ).rejects.toThrow(/AuditLog bersifat immutable/);
+    await expect(
+      execute(
+        `UPDATE "AuditLog" SET "summary" = 'Manipulasi' WHERE "id" = $1`,
+        [existingAudit.id]
+      )
+    ).rejects.toThrow(/AuditLog bersifat immutable/);
   });
 
   it("mencatat nilai lama & baru ke AuditLog saat Admin mengubah data master aset", async () => {
-    const admin = await prisma.user.findUniqueOrThrow({
-      where: { email: "admin@greenpark.id" },
-      include: { company: true },
-    });
-    const asset = await prisma.asset.findUniqueOrThrow({
-      where: { code: "AST-BGV-001" },
-    });
+    const admin = await queryOne<UserRow & { companyName: string | null }>(
+      `SELECT u.*, c."name" AS "companyName"
+       FROM "User" u
+       LEFT JOIN "Company" c ON c."id" = u."companyId"
+       WHERE u."email" = $1`,
+      ["admin@greenpark.id"]
+    );
+    if (!admin) throw new Error("Admin seed tidak ditemukan");
 
-    const beforeCount = await prisma.auditLog.count({
-      where: { entityName: "Asset", entityId: asset.id },
-    });
+    const asset = await queryOne<{ id: string }>(
+      `SELECT "id" FROM "Asset" WHERE "code" = $1`,
+      ["AST-BGV-001"]
+    );
+    if (!asset) throw new Error("Asset AST-BGV-001 tidak ditemukan");
+
+    const beforeCount = await queryCount(
+      `SELECT COUNT(*)::int AS count FROM "AuditLog" WHERE "entityName" = 'Asset' AND "entityId" = $1`,
+      [asset.id]
+    );
 
     await updateAssetMasterData(
       {
@@ -41,7 +63,7 @@ describe("Fase 0 – Pengujian Integrasi Database & Layanan Fondasi", () => {
         email: admin.email,
         role: admin.role,
         companyId: admin.companyId,
-        companyName: admin.company?.name ?? null,
+        companyName: admin.companyName,
         staffClusterId: admin.staffClusterId,
       },
       asset.id,
@@ -50,17 +72,21 @@ describe("Fase 0 – Pengujian Integrasi Database & Layanan Fondasi", () => {
       }
     );
 
-    const afterCount = await prisma.auditLog.count({
-      where: { entityName: "Asset", entityId: asset.id },
-    });
+    const afterCount = await queryCount(
+      `SELECT COUNT(*)::int AS count FROM "AuditLog" WHERE "entityName" = 'Asset' AND "entityId" = $1`,
+      [asset.id]
+    );
 
     expect(afterCount).toBe(beforeCount + 1);
   });
 
   it("menyembunyikan identitas pelapor dari query Teknisi & memisahkan data antar Cluster/Perusahaan", async () => {
-    const teknisi = await prisma.user.findUniqueOrThrow({
-      where: { email: "teknisi.budi@vendorjaya.id" },
-    });
+    const teknisi = await queryOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["teknisi.budi@vendorjaya.id"]
+    );
+    if (!teknisi) throw new Error("Teknisi seed tidak ditemukan");
+
     const techReports = await getScopedReportsForUser({
       id: teknisi.id,
       name: teknisi.name,
@@ -76,9 +102,12 @@ describe("Fase 0 – Pengujian Integrasi Database & Layanan Fondasi", () => {
     expect("reporter" in techReports[0]).toBe(false);
 
     // Pengelola Bougenville hanya melihat laporan di Cluster Bougenville (bukan Edelweiss)
-    const pengelola = await prisma.user.findUniqueOrThrow({
-      where: { email: "pengelola.bgv@greenpark.id" },
-    });
+    const pengelola = await queryOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["pengelola.bgv@greenpark.id"]
+    );
+    if (!pengelola) throw new Error("Pengelola seed tidak ditemukan");
+
     const pengelolaReports = await getScopedReportsForUser({
       id: pengelola.id,
       name: pengelola.name,
@@ -95,9 +124,12 @@ describe("Fase 0 – Pengujian Integrasi Database & Layanan Fondasi", () => {
     ).toBe(true);
 
     // Admin Perusahaan B tidak boleh melihat laporan Perusahaan A
-    const adminB = await prisma.user.findUniqueOrThrow({
-      where: { email: "admin@griyaasri.id" },
-    });
+    const adminB = await queryOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["admin@griyaasri.id"]
+    );
+    if (!adminB) throw new Error("Admin Perusahaan B tidak ditemukan");
+
     const companyBReports = await getScopedReportsForUser({
       id: adminB.id,
       name: adminB.name,
@@ -107,7 +139,18 @@ describe("Fase 0 – Pengujian Integrasi Database & Layanan Fondasi", () => {
       companyName: null,
       staffClusterId: null,
     });
-    expect(companyBReports.length).toBe(0);
+    // Test lain (hardening-p0-p1) membuat laporan Perusahaan B; invarian yang diuji adalah
+    // TIDAK ADA laporan Perusahaan A (lintas perusahaan) yang bocor ke Admin B.
+    const companyBReportIds = companyBReports.map((r) => r.id);
+    const leakedCount =
+      companyBReportIds.length === 0
+        ? 0
+        : await queryCount(
+            `SELECT COUNT(*)::int AS count FROM "Report"
+             WHERE "id" = ANY($1::text[]) AND "companyId" <> $2`,
+            [companyBReportIds, adminB.companyId]
+          );
+    expect(leakedCount).toBe(0);
   });
 });
 

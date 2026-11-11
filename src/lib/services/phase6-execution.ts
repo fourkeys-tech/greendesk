@@ -1,15 +1,24 @@
-import { prisma } from "../prisma";
+import { execute, query, queryCount, queryOne, withTransaction } from "../db";
+import type {
+  ReportRow,
+  ReportStatus,
+  TechnicianRow,
+  VendorRow,
+  WorkOrderRow,
+  WorkPhotoRow,
+} from "../db-types";
 import { assertPermission, validateStatusTransition } from "../permissions";
-import { sendReportStatusEmailWithMergedChildren } from "../email";
+import { enqueueReportStatusEmailWithMergedChildren } from "../email";
 import { recordAuditLog } from "../audit";
-import { activeAssignmentWhere } from "../scopes";
+import { transitionReport } from "../report-transition";
+import { activeAssignmentSql } from "../scopes";
 import { getManagerAssignedClusterIds } from "./phase5-decision";
 import type { SessionUser } from "../auth";
 
 /**
  * 1. PIC Vendor menugaskan Teknisi pelaksana pada SPK yang berstatus DISETUJUI.
- * - Mengubah status laporan: DISETUJUI -> DIKERJAKAN
- * - Mengirim email ke pelapor: DIKERJAKAN ("Teknisi Sedang Menangani Perbaikan")
+ * - Mengubah status laporan: DISETUJUI -> DIKERJAKAN (guard status, atomik)
+ * - Email DIKERJAKAN ke pelapor induk + pelapor anak yang digabung (outbox, dalam transaksi)
  */
 export async function assignTechnicianToWorkOrder(
   actor: SessionUser,
@@ -21,50 +30,46 @@ export async function assignTechnicianToWorkOrder(
   assertPermission(actor.role, "ASSIGN_TECHNICIAN");
 
   // Cari vendor milik PIC
-  const vendor = await prisma.vendor.findFirst({
-    where: {
-      picUserId: actor.id,
-      isActive: true,
-    },
-  });
+  const vendor = await queryOne<VendorRow>(
+    `SELECT * FROM "Vendor" WHERE "picUserId" = $1 AND "isActive" = true`,
+    [actor.id]
+  );
 
   if (!vendor) {
     throw new Error("Akun Anda tidak terdaftar sebagai PIC Vendor aktif.");
   }
 
-  const workOrder = await prisma.workOrder.findFirst({
-    where: {
-      id: input.workOrderId,
-      vendorId: vendor.id,
-    },
-    include: {
-      report: {
-        include: {
-          asset: true,
-          reporter: {
-            select: { id: true, name: true, email: true },
-          },
-        },
-      },
-    },
-  });
+  const workOrder = await queryOne<
+    WorkOrderRow & {
+      reportStatus: ReportStatus;
+      assetName: string;
+    }
+  >(
+    `SELECT
+       wo.*,
+       r."status" AS "reportStatus",
+       a."name" AS "assetName"
+     FROM "WorkOrder" wo
+     JOIN "Report" r ON r."id" = wo."reportId"
+     JOIN "Asset" a ON a."id" = r."assetId"
+     WHERE wo."id" = $1 AND wo."vendorId" = $2 AND r."archivedAt" IS NULL`,
+    [input.workOrderId, vendor.id]
+  );
 
   if (!workOrder) {
     throw new Error("Surat Perintah Kerja (SPK) tidak ditemukan untuk vendor Anda.");
   }
 
   // Teknisi harus milik vendor ini, berstatus ACTIVE dan disetujui (APPROVED)
-  const technician = await prisma.technician.findFirst({
-    where: {
-      id: input.technicianId,
-      vendorId: vendor.id,
-      status: "ACTIVE",
-      approvalStatus: "APPROVED",
-    },
-    include: {
-      user: { select: { id: true, name: true } },
-    },
-  });
+  const technician = await queryOne<TechnicianRow>(
+    `SELECT *
+     FROM "Technician"
+     WHERE "id" = $1
+       AND "vendorId" = $2
+       AND "status" = 'ACTIVE'::"TechnicianStatus"
+       AND "approvalStatus" = 'APPROVED'::"ApprovalStatus"`,
+    [input.technicianId, vendor.id]
+  );
 
   if (!technician) {
     throw new Error(
@@ -73,7 +78,7 @@ export async function assignTechnicianToWorkOrder(
   }
 
   const check = validateStatusTransition(
-    workOrder.report.status,
+    workOrder.reportStatus,
     "DIKERJAKAN",
     actor.role
   );
@@ -81,78 +86,83 @@ export async function assignTechnicianToWorkOrder(
     throw new Error(check.error);
   }
 
-  const result = await prisma.$transaction(
-    async (tx) => {
-      // 1. Update WorkOrder
-      const updatedWo = await tx.workOrder.update({
-        where: { id: workOrder.id },
-        data: {
+  const now = new Date();
+  const result = await withTransaction(async (tx) => {
+    // 1. Transisi status Laporan ke DIKERJAKAN (guard status)
+    await transitionReport(tx, {
+      reportId: workOrder.reportId,
+      from: workOrder.reportStatus,
+      to: "DIKERJAKAN",
+      actor: { id: actor.id, role: actor.role },
+      note: `Teknisi ${technician.fullName} ditugaskan oleh PIC Vendor ${vendor.name}`,
+    });
+
+    // 2. Update WorkOrder
+    const updatedWo = await queryOne<WorkOrderRow>(
+      `UPDATE "WorkOrder"
+       SET "technicianId" = $2, "assignedAt" = $3, "updatedAt" = $3
+       WHERE "id" = $1
+       RETURNING *`,
+      [workOrder.id, technician.id, now],
+      tx
+    );
+    if (!updatedWo) throw new Error("SPK tidak ditemukan.");
+
+    await execute(
+      `UPDATE "Technician" SET "lastActiveAt" = $2, "updatedAt" = $2 WHERE "id" = $1`,
+      [technician.id, now],
+      tx
+    );
+
+    // 3. Notifikasi Web ke Teknisi
+    await execute(
+      `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        actor.companyId ?? vendor.companyId,
+        technician.userId,
+        `Tugas Baru: ${workOrder.spkNo}`,
+        `Anda ditugaskan oleh PIC untuk perbaikan aset ${workOrder.assetName}.`,
+        "/dashboard/laporan",
+      ],
+      tx
+    );
+
+    // 4. Riwayat audit
+    await recordAuditLog(
+      {
+        companyId: actor.companyId,
+        actor,
+        entityName: "WorkOrder",
+        entityId: workOrder.id,
+        action: "UPDATE",
+        summary: `PIC ${actor.name} menunjuk teknisi ${technician.fullName} untuk ${workOrder.spkNo}`,
+        oldValues: {
+          reportStatus: workOrder.reportStatus,
+          technicianId: workOrder.technicianId,
+        },
+        newValues: {
+          reportStatus: "DIKERJAKAN",
           technicianId: technician.id,
-          assignedAt: new Date(),
+          technicianName: technician.fullName,
         },
-      });
+      },
+      tx
+    );
 
-      await tx.technician.update({
-        where: { id: technician.id },
-        data: { lastActiveAt: new Date() },
-      });
+    // 5. Email ke pelapor (identitas teknisi tidak dibagikan demi privasi)
+    await enqueueReportStatusEmailWithMergedChildren(tx, {
+      reportId: workOrder.reportId,
+      triggerType: "DIKERJAKAN",
+    });
 
-      // 2. Update status Laporan ke DIKERJAKAN
-      const updatedRep = await tx.report.update({
-        where: { id: workOrder.report.id },
-        data: {
-          status: "DIKERJAKAN",
-          stageEnteredAt: new Date(),
-          statusLogs: {
-            create: {
-              fromStatus: workOrder.report.status,
-              toStatus: "DIKERJAKAN",
-              changedById: actor.id,
-              note: `Teknisi ${technician.fullName} ditugaskan oleh PIC Vendor ${vendor.name}`,
-            },
-          },
-        },
-      });
-
-      // 3. Notifikasi Web ke Teknisi
-      await tx.notification.create({
-        data: {
-          companyId: actor.companyId,
-          recipientId: technician.userId,
-          title: `Tugas Baru: ${workOrder.spkNo}`,
-          message: `Anda ditugaskan oleh PIC untuk perbaikan aset ${workOrder.report.asset.name}.`,
-          linkUrl: `/dashboard/laporan`,
-        },
-      });
-
-      return { workOrder: updatedWo, report: updatedRep };
-    },
-    { maxWait: 10000, timeout: 30000 }
-  );
-
-  // 4. Catat riwayat audit
-  await recordAuditLog({
-    companyId: actor.companyId,
-    actor,
-    entityName: "WorkOrder",
-    entityId: workOrder.id,
-    action: "UPDATE",
-    summary: `PIC ${actor.name} menunjuk teknisi ${technician.fullName} untuk ${workOrder.spkNo}`,
-    oldValues: {
-      reportStatus: workOrder.report.status,
-      technicianId: workOrder.technicianId,
-    },
-    newValues: {
-      reportStatus: "DIKERJAKAN",
-      technicianId: technician.id,
-      technicianName: technician.fullName,
-    },
-  });
-
-  // Kirim email ke pelapor (identitas teknisi tidak dibagikan demi privasi)
-  await sendReportStatusEmailWithMergedChildren({
-    reportId: workOrder.report.id,
-    triggerType: "DIKERJAKAN",
+    const updatedRep = await queryOne<ReportRow>(
+      `SELECT * FROM "Report" WHERE "id" = $1`,
+      [workOrder.reportId],
+      tx
+    );
+    if (!updatedRep) throw new Error("Laporan tidak ditemukan.");
+    return { workOrder: updatedWo, report: updatedRep };
   });
 
   return { success: true, workOrder: result.workOrder, report: result.report };
@@ -174,48 +184,56 @@ export async function replaceTechnicianForWorkOrder(
 ) {
   assertPermission(actor.role, "ASSIGN_TECHNICIAN");
 
-  const vendor = await prisma.vendor.findFirst({
-    where: {
-      picUserId: actor.id,
-      isActive: true,
-    },
-  });
+  const vendor = await queryOne<VendorRow>(
+    `SELECT * FROM "Vendor" WHERE "picUserId" = $1 AND "isActive" = true`,
+    [actor.id]
+  );
 
   if (!vendor) {
     throw new Error("Akun Anda tidak terdaftar sebagai PIC Vendor aktif.");
   }
 
-  const workOrder = await prisma.workOrder.findFirst({
-    where: {
-      id: input.workOrderId,
-      vendorId: vendor.id,
-    },
-    include: {
-      technician: true,
-      report: {
-        include: {
-          asset: true,
-        },
-      },
-    },
-  });
+  const workOrder = await queryOne<
+    WorkOrderRow & {
+      oldTechFullName: string | null;
+      reportStatus: ReportStatus;
+      assetName: string;
+    }
+  >(
+    `SELECT
+       wo.*,
+       t."fullName" AS "oldTechFullName",
+       r."status" AS "reportStatus",
+       a."name" AS "assetName"
+     FROM "WorkOrder" wo
+     JOIN "Report" r ON r."id" = wo."reportId"
+     JOIN "Asset" a ON a."id" = r."assetId"
+     LEFT JOIN "Technician" t ON t."id" = wo."technicianId"
+     WHERE wo."id" = $1 AND wo."vendorId" = $2 AND r."archivedAt" IS NULL`,
+    [input.workOrderId, vendor.id]
+  );
 
   if (!workOrder) {
     throw new Error("SPK tidak ditemukan untuk vendor Anda.");
   }
 
+  // Pergantian hanya masuk akal saat SPK masih berjalan
+  if (!["DISETUJUI", "DIKERJAKAN", "MENUNGGU_KONFIRMASI"].includes(workOrder.reportStatus)) {
+    throw new Error(
+      `SPK berstatus ${workOrder.reportStatus} tidak dapat diganti teknisinya.`
+    );
+  }
+
   // Teknisi baru harus aktif dan disetujui Admin (PRD 3.3)
-  const newTechnician = await prisma.technician.findFirst({
-    where: {
-      id: input.newTechnicianId,
-      vendorId: vendor.id,
-      status: "ACTIVE",
-      approvalStatus: "APPROVED",
-    },
-    include: {
-      user: { select: { id: true, name: true } },
-    },
-  });
+  const newTechnician = await queryOne<TechnicianRow>(
+    `SELECT *
+     FROM "Technician"
+     WHERE "id" = $1
+       AND "vendorId" = $2
+       AND "status" = 'ACTIVE'::"TechnicianStatus"
+       AND "approvalStatus" = 'APPROVED'::"ApprovalStatus"`,
+    [input.newTechnicianId, vendor.id]
+  );
 
   if (!newTechnician) {
     throw new Error(
@@ -227,67 +245,83 @@ export async function replaceTechnicianForWorkOrder(
     throw new Error("Teknisi yang dipilih sama dengan teknisi yang saat ini ditugaskan.");
   }
 
-  const oldTechName = workOrder.technician?.fullName || "Belum ada teknisi";
+  const oldTechName = workOrder.oldTechFullName || "Belum ada teknisi";
+  const now = new Date();
 
-  const result = await prisma.$transaction(
-    async (tx) => {
-      // 1. Update WorkOrder ke teknisi baru (foto sebelum/sesudah yang ada tetap melekat)
-      const updatedWo = await tx.workOrder.update({
-        where: { id: workOrder.id },
-        data: {
+  const result = await withTransaction(async (tx) => {
+    // 1. Update WorkOrder ke teknisi baru — guard: teknisi lama masih sama (anti double-replace)
+    const updatedCount = await execute(
+      `UPDATE "WorkOrder"
+       SET "technicianId" = $3, "assignedAt" = $4, "updatedAt" = $4
+       WHERE "id" = $1 AND "technicianId" IS NOT DISTINCT FROM $2`,
+      [workOrder.id, workOrder.technicianId, newTechnician.id, now],
+      tx
+    );
+    if (updatedCount !== 1) {
+      throw new Error("Penugasan teknisi sudah berubah, muat ulang halaman.");
+    }
+
+    await execute(
+      `UPDATE "Technician" SET "lastActiveAt" = $2, "updatedAt" = $2 WHERE "id" = $1`,
+      [newTechnician.id, now],
+      tx
+    );
+
+    // 2. Tambah catatan log pergantian teknisi
+    await execute(
+      `INSERT INTO "ReportStatusLog" ("reportId", "fromStatus", "toStatus", "changedById", "note")
+       VALUES ($1, $2::"ReportStatus", $2::"ReportStatus", $3, $4)`,
+      [
+        workOrder.reportId,
+        workOrder.reportStatus,
+        actor.id,
+        `PIC Vendor mengganti teknisi dari ${oldTechName} ke ${newTechnician.fullName}.${
+          input.reason ? ` Alasan: ${input.reason}` : ""
+        } Foto sebelum yang ada tetap melekat pada SPK.`,
+      ],
+      tx
+    );
+
+    // 3. Notifikasi Web ke Teknisi baru
+    await execute(
+      `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        actor.companyId ?? vendor.companyId,
+        newTechnician.userId,
+        `Penugasan SPK Pengganti (${workOrder.spkNo})`,
+        `Anda ditugaskan oleh PIC menggantikan ${oldTechName} untuk perbaikan aset ${workOrder.assetName}.`,
+        "/dashboard/laporan",
+      ],
+      tx
+    );
+
+    // 4. AuditLog
+    await recordAuditLog(
+      {
+        companyId: actor.companyId,
+        actor,
+        entityName: "WorkOrder",
+        entityId: workOrder.id,
+        action: "UPDATE",
+        summary: `PIC ${actor.name} mengganti teknisi ${oldTechName} ke ${newTechnician.fullName} untuk ${workOrder.spkNo}`,
+        oldValues: { technicianId: workOrder.technicianId, technicianName: oldTechName },
+        newValues: {
           technicianId: newTechnician.id,
-          assignedAt: new Date(),
+          technicianName: newTechnician.fullName,
+          reason: input.reason || null,
         },
-      });
+      },
+      tx
+    );
 
-      await tx.technician.update({
-        where: { id: newTechnician.id },
-        data: { lastActiveAt: new Date() },
-      });
-
-      // 2. Tambah catatan log pergantian teknisi
-      await tx.reportStatusLog.create({
-        data: {
-          reportId: workOrder.report.id,
-          fromStatus: workOrder.report.status,
-          toStatus: workOrder.report.status,
-          changedById: actor.id,
-          note: `PIC Vendor mengganti teknisi dari ${oldTechName} ke ${newTechnician.fullName}.${
-            input.reason ? ` Alasan: ${input.reason}` : ""
-          } Foto sebelum yang ada tetap melekat pada SPK.`,
-        },
-      });
-
-      // 3. Notifikasi Web ke Teknisi baru
-      await tx.notification.create({
-        data: {
-          companyId: actor.companyId,
-          recipientId: newTechnician.userId,
-          title: `Penugasan SPK Pengganti (${workOrder.spkNo})`,
-          message: `Anda ditugaskan oleh PIC menggantikan ${oldTechName} untuk perbaikan aset ${workOrder.report.asset.name}.`,
-          linkUrl: `/dashboard/laporan`,
-        },
-      });
-
-      return updatedWo;
-    },
-    { maxWait: 10000, timeout: 30000 }
-  );
-
-  // 4. Catat AuditLog
-  await recordAuditLog({
-    companyId: actor.companyId,
-    actor,
-    entityName: "WorkOrder",
-    entityId: workOrder.id,
-    action: "UPDATE",
-    summary: `PIC ${actor.name} mengganti teknisi ${oldTechName} ke ${newTechnician.fullName} untuk ${workOrder.spkNo}`,
-    oldValues: { technicianId: workOrder.technicianId, technicianName: oldTechName },
-    newValues: {
-      technicianId: newTechnician.id,
-      technicianName: newTechnician.fullName,
-      reason: input.reason || null,
-    },
+    const updatedWo = await queryOne<WorkOrderRow>(
+      `SELECT * FROM "WorkOrder" WHERE "id" = $1`,
+      [workOrder.id],
+      tx
+    );
+    if (!updatedWo) throw new Error("SPK tidak ditemukan.");
+    return updatedWo;
   });
 
   return { success: true, workOrder: result };
@@ -295,7 +329,8 @@ export async function replaceTechnicianForWorkOrder(
 
 /**
  * 2. Teknisi menyelesaikan pekerjaan dan mengunggah foto SEBELUM & SESUDAH perbaikan.
- * - Mengubah status laporan: DIKERJAKAN -> MENUNGGU_KONFIRMASI
+ * - Mengubah status laporan: DIKERJAKAN -> MENUNGGU_KONFIRMASI (guard status)
+ * - Mencatat `WorkOrder.submittedAt` (dasar durasi di rapor vendor)
  * - Mengirim Notifikasi Web ke Manager cluster
  */
 export async function submitWorkResultByTechnician(
@@ -309,54 +344,41 @@ export async function submitWorkResultByTechnician(
 ) {
   assertPermission(actor.role, "SUBMIT_WORK_RESULT");
 
-  const technician = await prisma.technician.findUnique({
-    where: { userId: actor.id },
-  });
+  const technician = await queryOne<TechnicianRow>(
+    `SELECT * FROM "Technician" WHERE "userId" = $1`,
+    [actor.id]
+  );
 
   if (!technician) {
     throw new Error("Profil teknisi Anda tidak ditemukan.");
   }
 
-  const workOrder = await prisma.workOrder.findFirst({
-    where: {
-      id: input.workOrderId,
-      technicianId: technician.id,
-    },
-    include: {
-      report: {
-        include: {
-          asset: {
-            include: {
-              park: {
-                include: { cluster: true },
-              },
-            },
-          },
-        },
-      },
-    },
-  });
+  const workOrder = await queryOne<
+    WorkOrderRow & {
+      reportStatus: ReportStatus;
+      assetName: string;
+      clusterId: string;
+    }
+  >(
+    `SELECT
+       wo.*,
+       r."status" AS "reportStatus",
+       a."name" AS "assetName",
+       p."clusterId" AS "clusterId"
+     FROM "WorkOrder" wo
+     JOIN "Report" r ON r."id" = wo."reportId"
+     JOIN "Asset" a ON a."id" = r."assetId"
+     JOIN "Park" p ON p."id" = a."parkId"
+     WHERE wo."id" = $1 AND wo."technicianId" = $2 AND r."archivedAt" IS NULL`,
+    [input.workOrderId, technician.id]
+  );
 
   if (!workOrder) {
     throw new Error("SPK tidak ditemukan atau bukan ditugaskan kepada Anda.");
   }
 
-  // PRD 4.3 & Keputusan 6: Foto sebelum dan sesudah wajib ada sebelum Lapor Selesai.
-  // Bila perbaikan ulang atau sudah ada foto sebelum yang tersimpan, foto sebelum sebelumnya tetap dipertahankan.
-  const existingBeforeCount = await prisma.workPhoto.count({
-    where: { workOrderId: workOrder.id, type: "BEFORE" },
-  });
-  const totalBefore = existingBeforeCount + (input.beforePhotoUrls?.length || 0);
-  const totalAfter = input.afterPhotoUrls?.length || 0;
-
-  if (totalBefore === 0 || totalAfter === 0) {
-    throw new Error(
-      "Foto sebelum (before) dan foto sesudah (after) perbaikan wajib dilampirkan sebelum lapor selesai."
-    );
-  }
-
   const check = validateStatusTransition(
-    workOrder.report.status,
+    workOrder.reportStatus,
     "MENUNGGU_KONFIRMASI",
     actor.role
   );
@@ -364,101 +386,125 @@ export async function submitWorkResultByTechnician(
     throw new Error(check.error);
   }
 
-  const clusterId = workOrder.report.asset.park.clusterId;
+  const beforeUrls = (input.beforePhotoUrls || []).filter((u) => u && u.trim());
+  const afterUrls = (input.afterPhotoUrls || []).filter((u) => u && u.trim());
+  const clusterId = workOrder.clusterId;
+  const now = new Date();
 
-  const result = await prisma.$transaction(
-    async (tx) => {
-      // 0. Update lastActiveAt teknisi
-      await tx.technician.update({
-        where: { id: technician.id },
-        data: { lastActiveAt: new Date() },
-      });
+  const result = await withTransaction(async (tx) => {
+    // PRD 4.3 & Keputusan 6: Foto sebelum dan sesudah wajib ada sebelum Lapor Selesai.
+    // Bila perbaikan ulang atau sudah ada foto sebelum yang tersimpan, foto sebelum sebelumnya tetap dipertahankan.
+    const existingBeforeCount = await queryCount(
+      `SELECT COUNT(*)::int AS count
+       FROM "WorkPhoto"
+       WHERE "workOrderId" = $1 AND "type" = 'BEFORE'::"WorkPhotoType"`,
+      [workOrder.id],
+      tx
+    );
+    const totalBefore = existingBeforeCount + beforeUrls.length;
+    const totalAfter = afterUrls.length;
 
-      // 1. Simpan foto-foto pekerjaan (batch insert createMany untuk efisiensi tinggi)
-      const photosToCreate = [
-        ...(input.beforePhotoUrls || []).map((url) => ({
-          workOrderId: workOrder.id,
-          type: "BEFORE" as const,
-          url,
-          uploadedById: actor.id,
-        })),
-        ...(input.afterPhotoUrls || []).map((url) => ({
-          workOrderId: workOrder.id,
-          type: "AFTER" as const,
-          url,
-          uploadedById: actor.id,
-        })),
-      ];
-
-      if (photosToCreate.length > 0) {
-        await tx.workPhoto.createMany({
-          data: photosToCreate,
-        });
-      }
-
-      // 2. Update status laporan ke MENUNGGU_KONFIRMASI
-      const updatedRep = await tx.report.update({
-        where: { id: workOrder.report.id },
-        data: {
-          status: "MENUNGGU_KONFIRMASI",
-          stageEnteredAt: new Date(),
-          statusLogs: {
-            create: {
-              fromStatus: workOrder.report.status,
-              toStatus: "MENUNGGU_KONFIRMASI",
-              changedById: actor.id,
-              note:
-                input.notes?.trim() ||
-                `Teknisi ${technician.fullName} telah merampungkan perbaikan dan mengunggah foto sebelum/sesudah.`,
-            },
-          },
-        },
-      });
-
-      // 3. Notifikasi Web ke seluruh Manager yang bertugas di cluster ini
-      const managerAssignments = await tx.clusterManagerAssignment.findMany({
-        where: {
-          clusterId,
-          ...activeAssignmentWhere(new Date()),
-          user: { isActive: true },
-        },
-        select: { userId: true },
-      });
-
-      if (managerAssignments.length > 0) {
-        await tx.notification.createMany({
-          data: managerAssignments.map((ma) => ({
-            companyId: actor.companyId!,
-            recipientId: ma.userId,
-            title: `Hasil Perbaikan Menunggu Konfirmasi (${workOrder.spkNo})`,
-            message: `Teknisi ${technician.fullName} telah menyelesaikan perbaikan pada aset ${workOrder.report.asset.name}. Silakan tinjau foto sebelum dan sesudah.`,
-            linkUrl: `/dashboard/laporan`,
-          })),
-        });
-      }
-
-      return { report: updatedRep };
-    },
-    {
-      maxWait: 10000,
-      timeout: 30000,
+    if (totalBefore === 0 || totalAfter === 0) {
+      throw new Error(
+        "Foto sebelum (before) dan foto sesudah (after) perbaikan wajib dilampirkan sebelum lapor selesai."
+      );
     }
-  );
 
-  // 4. Catat riwayat audit
-  await recordAuditLog({
-    companyId: actor.companyId,
-    actor,
-    entityName: "WorkOrder",
-    entityId: workOrder.id,
-    action: "UPDATE",
-    summary: `Teknisi ${technician.fullName} mengunggah hasil kerja untuk ${workOrder.spkNo}`,
-    oldValues: { reportStatus: workOrder.report.status },
-    newValues: {
-      reportStatus: "MENUNGGU_KONFIRMASI",
-      beforeCount: input.beforePhotoUrls.length,
-      afterCount: input.afterPhotoUrls.length,
-    },
+    // 1. Transisi status laporan ke MENUNGGU_KONFIRMASI (guard status)
+    await transitionReport(tx, {
+      reportId: workOrder.reportId,
+      from: workOrder.reportStatus,
+      to: "MENUNGGU_KONFIRMASI",
+      actor: { id: actor.id, role: actor.role },
+      note:
+        input.notes?.trim() ||
+        `Teknisi ${technician.fullName} telah merampungkan perbaikan dan mengunggah foto sebelum/sesudah.`,
+    });
+
+    // 2. Update lastActiveAt teknisi & submittedAt SPK
+    await execute(
+      `UPDATE "Technician" SET "lastActiveAt" = $2, "updatedAt" = $2 WHERE "id" = $1`,
+      [technician.id, now],
+      tx
+    );
+    await execute(
+      `UPDATE "WorkOrder" SET "submittedAt" = $2, "updatedAt" = $2 WHERE "id" = $1`,
+      [workOrder.id, now],
+      tx
+    );
+
+    // 3. Simpan foto-foto pekerjaan (batch insert)
+    if (beforeUrls.length > 0) {
+      await execute(
+        `INSERT INTO "WorkPhoto" ("workOrderId", "type", "url", "uploadedById")
+         SELECT $1, 'BEFORE'::"WorkPhotoType", u, $2 FROM unnest($3::text[]) AS u`,
+        [workOrder.id, actor.id, beforeUrls],
+        tx
+      );
+    }
+    if (afterUrls.length > 0) {
+      await execute(
+        `INSERT INTO "WorkPhoto" ("workOrderId", "type", "url", "uploadedById")
+         SELECT $1, 'AFTER'::"WorkPhotoType", u, $2 FROM unnest($3::text[]) AS u`,
+        [workOrder.id, actor.id, afterUrls],
+        tx
+      );
+    }
+
+    // 4. Notifikasi Web ke seluruh Manager yang bertugas di cluster ini
+    const managerRows = await query<{ userId: string }>(
+      `SELECT DISTINCT cma."userId"
+       FROM "ClusterManagerAssignment" cma
+       JOIN "User" u ON u."id" = cma."userId"
+       WHERE cma."clusterId" = $1
+         AND ${activeAssignmentSql("cma", "$2")}
+         AND u."isActive" = true`,
+      [clusterId, now],
+      tx
+    );
+    const uniqueManagerIds = managerRows.map((ma) => ma.userId);
+
+    if (uniqueManagerIds.length > 0) {
+      await execute(
+        `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+         SELECT $1, uid, $2, $3, $4 FROM unnest($5::text[]) AS uid`,
+        [
+          actor.companyId!,
+          `Hasil Perbaikan Menunggu Konfirmasi (${workOrder.spkNo})`,
+          `Teknisi ${technician.fullName} telah menyelesaikan perbaikan pada aset ${workOrder.assetName}. Silakan tinjau foto sebelum dan sesudah.`,
+          "/dashboard/laporan",
+          uniqueManagerIds,
+        ],
+        tx
+      );
+    }
+
+    // 5. Riwayat audit
+    await recordAuditLog(
+      {
+        companyId: actor.companyId,
+        actor,
+        entityName: "WorkOrder",
+        entityId: workOrder.id,
+        action: "UPDATE",
+        summary: `Teknisi ${technician.fullName} mengunggah hasil kerja untuk ${workOrder.spkNo}`,
+        oldValues: { reportStatus: workOrder.reportStatus },
+        newValues: {
+          reportStatus: "MENUNGGU_KONFIRMASI",
+          beforeCount: beforeUrls.length,
+          afterCount: afterUrls.length,
+        },
+      },
+      tx
+    );
+
+    const updatedRep = await queryOne<ReportRow>(
+      `SELECT * FROM "Report" WHERE "id" = $1`,
+      [workOrder.reportId],
+      tx
+    );
+    if (!updatedRep) throw new Error("Laporan tidak ditemukan.");
+    return { report: updatedRep };
   });
 
   return { success: true, report: result.report };
@@ -488,56 +534,62 @@ export async function confirmWorkResultByManager(
   if (!actor.companyId) {
     throw new Error("Akun Manager harus terhubung ke perusahaan.");
   }
+  const companyId = actor.companyId;
 
   const clusterIds = await getManagerAssignedClusterIds(actor.id);
 
-  const workOrder = await prisma.workOrder.findFirst({
-    where: {
-      id: input.workOrderId,
-      companyId: actor.companyId,
-    },
-    include: {
-      photos: true,
-      technician: {
-        include: { user: true },
-      },
-      report: {
-        include: {
-          asset: {
-            include: {
-              park: {
-                include: { cluster: true },
-              },
-            },
-          },
-          reporter: {
-            select: { id: true, name: true, email: true },
-          },
-        },
-      },
-    },
-  });
+  const workOrder = await queryOne<
+    WorkOrderRow & {
+      reportStatus: ReportStatus;
+      reportTicketNo: string;
+      assetName: string;
+      clusterId: string;
+      clusterName: string;
+      technicianUserId: string | null;
+    }
+  >(
+    `SELECT
+       wo.*,
+       r."status" AS "reportStatus",
+       r."ticketNo" AS "reportTicketNo",
+       a."name" AS "assetName",
+       p."clusterId" AS "clusterId",
+       cl."name" AS "clusterName",
+       t."userId" AS "technicianUserId"
+     FROM "WorkOrder" wo
+     JOIN "Report" r ON r."id" = wo."reportId"
+     JOIN "Asset" a ON a."id" = r."assetId"
+     JOIN "Park" p ON p."id" = a."parkId"
+     JOIN "Cluster" cl ON cl."id" = p."clusterId"
+     LEFT JOIN "Technician" t ON t."id" = wo."technicianId"
+     WHERE wo."id" = $1 AND wo."companyId" = $2 AND r."archivedAt" IS NULL`,
+    [input.workOrderId, companyId]
+  );
 
   if (!workOrder) {
     throw new Error("SPK tidak ditemukan.");
   }
 
-  const clusterId = workOrder.report.asset.park.clusterId;
-  if (!clusterIds.includes(clusterId)) {
+  if (!clusterIds.includes(workOrder.clusterId)) {
     throw new Error(
-      `Akses ditolak: Anda tidak memiliki wewenang pada cluster ${workOrder.report.asset.park.cluster.name}.`
+      `Akses ditolak: Anda tidak memiliki wewenang pada cluster ${workOrder.clusterName}.`
     );
   }
 
-  if (workOrder.report.status !== "MENUNGGU_KONFIRMASI") {
+  if (workOrder.reportStatus !== "MENUNGGU_KONFIRMASI") {
     throw new Error(
-      `Laporan berstatus ${workOrder.report.status}. Hanya laporan Menunggu Konfirmasi yang dapat ditinjau hasil kerjanya.`
+      `Laporan berstatus ${workOrder.reportStatus}. Hanya laporan Menunggu Konfirmasi yang dapat ditinjau hasil kerjanya.`
     );
   }
+
+  const photos = await query<WorkPhotoRow>(
+    `SELECT * FROM "WorkPhoto" WHERE "workOrderId" = $1`,
+    [workOrder.id]
+  );
 
   // Aturan Bisnis 5.7 no 3: Foto sebelum dan sesudah wajib ada sebelum konfirmasi
-  const beforePhotos = workOrder.photos.filter((p) => p.type === "BEFORE");
-  const afterPhotos = workOrder.photos.filter((p) => p.type === "AFTER");
+  const beforePhotos = photos.filter((p) => p.type === "BEFORE");
+  const afterPhotos = photos.filter((p) => p.type === "AFTER");
   if (beforePhotos.length === 0 || afterPhotos.length === 0) {
     throw new Error(
       "Pemeriksaan foto tidak lengkap: Foto sebelum dan sesudah wajib ada sebelum konfirmasi."
@@ -554,7 +606,7 @@ export async function confirmWorkResultByManager(
     }
 
     const check = validateStatusTransition(
-      workOrder.report.status,
+      workOrder.reportStatus,
       "DIKERJAKAN",
       actor.role,
       revisionNote
@@ -563,62 +615,68 @@ export async function confirmWorkResultByManager(
       throw new Error(check.error);
     }
 
-    const result = await prisma.$transaction(
-      async (tx) => {
-        // 1. Tambah RevisionNote
-        await tx.revisionNote.create({
-          data: {
-            workOrderId: workOrder.id,
-            note: revisionNote,
-            createdById: actor.id,
-          },
-        });
+    const result = await withTransaction(async (tx) => {
+      // 1. Kembalikan status ke DIKERJAKAN (guard status)
+      await transitionReport(tx, {
+        reportId: workOrder.reportId,
+        from: "MENUNGGU_KONFIRMASI",
+        to: "DIKERJAKAN",
+        actor: { id: actor.id, role: actor.role },
+        reason: revisionNote,
+        note: `Manager menyatakan hasil belum sesuai. Catatan perbaikan: ${revisionNote}`,
+      });
 
-        // 2. Kembalikan status ke DIKERJAKAN
-        const rep = await tx.report.update({
-          where: { id: workOrder.report.id },
-          data: {
-            status: "DIKERJAKAN",
-            stageEnteredAt: new Date(),
-            statusLogs: {
-              create: {
-                fromStatus: "MENUNGGU_KONFIRMASI",
-                toStatus: "DIKERJAKAN",
-                changedById: actor.id,
-                note: `Manager menyatakan hasil belum sesuai. Catatan perbaikan: ${revisionNote}`,
-              },
-            },
-          },
-        });
+      // 2. Tambah RevisionNote & reset submittedAt (pekerjaan dibuka kembali)
+      await execute(
+        `INSERT INTO "RevisionNote" ("workOrderId", "note", "createdById")
+         VALUES ($1, $2, $3)`,
+        [workOrder.id, revisionNote, actor.id],
+        tx
+      );
+      await execute(
+        `UPDATE "WorkOrder" SET "submittedAt" = NULL, "updatedAt" = NOW() WHERE "id" = $1`,
+        [workOrder.id],
+        tx
+      );
 
-        // 3. Notifikasi Web ke Teknisi
-        if (workOrder.technician?.userId) {
-          await tx.notification.create({
-            data: {
-              companyId: actor.companyId,
-              recipientId: workOrder.technician.userId,
-              title: `Perbaikan Perlu Revisi (${workOrder.spkNo})`,
-              message: `Manager ${actor.name} meminta perbaikan ulang untuk ${workOrder.report.asset.name}. Catatan: ${revisionNote}`,
-              linkUrl: `/dashboard/laporan`,
-            },
-          });
-        }
+      // 3. Notifikasi Web ke Teknisi
+      if (workOrder.technicianUserId) {
+        await execute(
+          `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+           VALUES ($1, $2, $3, $4, $5)`,
+          [
+            companyId,
+            workOrder.technicianUserId,
+            `Perbaikan Perlu Revisi (${workOrder.spkNo})`,
+            `Manager ${actor.name} meminta perbaikan ulang untuk ${workOrder.assetName}. Catatan: ${revisionNote}`,
+            "/dashboard/laporan",
+          ],
+          tx
+        );
+      }
 
-        return rep;
-      },
-      { maxWait: 10000, timeout: 30000 }
-    );
+      // 4. AuditLog
+      await recordAuditLog(
+        {
+          companyId,
+          actor,
+          entityName: "WorkOrder",
+          entityId: workOrder.id,
+          action: "UPDATE",
+          summary: `Manager ${actor.name} mengembalikan ${workOrder.spkNo} untuk perbaikan ulang. Catatan: ${revisionNote}`,
+          oldValues: { status: "MENUNGGU_KONFIRMASI" },
+          newValues: { status: "DIKERJAKAN", revisionNote },
+        },
+        tx
+      );
 
-    // 4. Catat AuditLog
-    await recordAuditLog({
-      companyId: actor.companyId,
-      actor,
-      entityName: "WorkOrder",
-      entityId: workOrder.id,
-      action: "UPDATE",
-      summary: `Manager ${actor.name} mengembalikan ${workOrder.spkNo} untuk perbaikan ulang. Catatan: ${revisionNote}`,
-      oldValues: { status: "MENUNGGU_KONFIRMASI" },
-      newValues: { status: "DIKERJAKAN", revisionNote },
+      const updatedRep = await queryOne<ReportRow>(
+        `SELECT * FROM "Report" WHERE "id" = $1`,
+        [workOrder.reportId],
+        tx
+      );
+      if (!updatedRep) throw new Error("Laporan tidak ditemukan.");
+      return updatedRep;
     });
 
     return {
@@ -631,7 +689,7 @@ export async function confirmWorkResultByManager(
   // 2. Cabang SESUAI (Selesai Akhir)
   if (input.decision === "SESUAI") {
     const check = validateStatusTransition(
-      workOrder.report.status,
+      workOrder.reportStatus,
       "SELESAI",
       actor.role
     );
@@ -640,59 +698,62 @@ export async function confirmWorkResultByManager(
     }
 
     const now = new Date();
-
-    const result = await prisma.$transaction(
-      async (tx) => {
-        // 1. Tutup WorkOrder
-        const updatedWo = await tx.workOrder.update({
-          where: { id: workOrder.id },
-          data: {
-            completedAt: now,
-            confirmedAt: now,
-          },
-        });
-
-        // 2. Ubah status laporan ke SELESAI
-        const updatedRep = await tx.report.update({
-          where: { id: workOrder.report.id },
-          data: {
-            status: "SELESAI",
-            stageEnteredAt: now,
-            statusLogs: {
-              create: {
-                fromStatus: "MENUNGGU_KONFIRMASI",
-                toStatus: "SELESAI",
-                changedById: actor.id,
-                note: `Manager ${actor.name} telah mengonfirmasi bahwa hasil perbaikan telah sesuai.`,
-              },
-            },
-          },
-        });
-
-        return { workOrder: updatedWo, report: updatedRep };
-      },
-      { maxWait: 10000, timeout: 30000 }
-    );
-
-    // 3. Catat riwayat audit
-    await recordAuditLog({
-      companyId: actor.companyId,
-      actor,
-      entityName: "Report",
-      entityId: workOrder.report.id,
-      action: "UPDATE",
-      summary: `Manager ${actor.name} mengonfirmasi penyelesaian perbaikan tiket ${workOrder.report.ticketNo} (${workOrder.spkNo})`,
-      oldValues: { status: "MENUNGGU_KONFIRMASI" },
-      newValues: { status: "SELESAI" },
-    });
-
-    // 4. Kirim email SELESAI ke pelapor utama & semua pelapor yang laporannya digabung,
-    // lengkap dengan foto hasil (AFTER)
     const afterPhotoUrls = afterPhotos.map((p) => p.url);
-    await sendReportStatusEmailWithMergedChildren({
-      reportId: workOrder.report.id,
-      triggerType: "SELESAI",
-      afterPhotoUrls,
+
+    const result = await withTransaction(async (tx) => {
+      // 1. Ubah status laporan ke SELESAI (guard status)
+      await transitionReport(tx, {
+        reportId: workOrder.reportId,
+        from: "MENUNGGU_KONFIRMASI",
+        to: "SELESAI",
+        actor: { id: actor.id, role: actor.role },
+        note: `Manager ${actor.name} telah mengonfirmasi bahwa hasil perbaikan telah sesuai.`,
+      });
+
+      // 2. Tutup WorkOrder
+      const updatedWo = await queryOne<WorkOrderRow>(
+        `UPDATE "WorkOrder"
+         SET "completedAt" = $2,
+             "confirmedAt" = $2,
+             "submittedAt" = COALESCE("submittedAt", $2),
+             "updatedAt" = $2
+         WHERE "id" = $1
+         RETURNING *`,
+        [workOrder.id, now],
+        tx
+      );
+      if (!updatedWo) throw new Error("SPK tidak ditemukan.");
+
+      // 3. Riwayat audit
+      await recordAuditLog(
+        {
+          companyId,
+          actor,
+          entityName: "Report",
+          entityId: workOrder.reportId,
+          action: "UPDATE",
+          summary: `Manager ${actor.name} mengonfirmasi penyelesaian perbaikan tiket ${workOrder.reportTicketNo} (${workOrder.spkNo})`,
+          oldValues: { status: "MENUNGGU_KONFIRMASI" },
+          newValues: { status: "SELESAI" },
+        },
+        tx
+      );
+
+      // 4. Email SELESAI ke pelapor utama & semua pelapor yang laporannya digabung,
+      //    lengkap dengan foto hasil (AFTER) — outbox
+      await enqueueReportStatusEmailWithMergedChildren(tx, {
+        reportId: workOrder.reportId,
+        triggerType: "SELESAI",
+        afterPhotoUrls,
+      });
+
+      const updatedRep = await queryOne<ReportRow>(
+        `SELECT * FROM "Report" WHERE "id" = $1`,
+        [workOrder.reportId],
+        tx
+      );
+      if (!updatedRep) throw new Error("Laporan tidak ditemukan.");
+      return { workOrder: updatedWo, report: updatedRep };
     });
 
     return {

@@ -1,17 +1,35 @@
-import type { Priority } from "@prisma/client";
-import { prisma } from "../prisma";
-import { assertPermission, validateStatusTransition } from "../permissions";
-import { sendReportStatusEmail } from "../email";
-import { activeAssignmentWhere } from "../scopes";
+import { execute, pool, query, queryOne, withTransaction, type DbClient } from "../db";
+import type { Priority, ReportRow, ReportStatus } from "../db-types";
+import {
+  assertPermission,
+  TERMINAL_REPORT_STATUSES,
+  validateStatusTransition,
+} from "../permissions";
+import {
+  enqueueReportStatusEmail,
+  enqueueReportStatusEmailWithMergedChildren,
+} from "../email";
+import { transitionReport } from "../report-transition";
+import { activeAssignmentSql } from "../scopes";
 import type { SessionUser } from "../auth";
+
+interface AuthorizedStaffReport extends ReportRow {
+  assetName: string;
+  assetCode: string;
+  clusterId: string;
+  clusterName: string;
+  reporterEmail: string;
+  reporterName: string;
+}
 
 /**
  * Memastikan hanya Pengelola dari cluster tempat aset berada yang dapat memverifikasi laporan.
  */
 async function getAndAuthorizeClusterReportForStaff(
   actor: SessionUser,
-  reportId: string
-) {
+  reportId: string,
+  db: DbClient = pool
+): Promise<AuthorizedStaffReport> {
   assertPermission(actor.role, "VERIFY_AND_PRIORITIZE");
 
   if (!actor.companyId || !actor.staffClusterId) {
@@ -20,33 +38,33 @@ async function getAndAuthorizeClusterReportForStaff(
     );
   }
 
-  const report = await prisma.report.findFirst({
-    where: {
-      id: reportId,
-      companyId: actor.companyId,
-    },
-    include: {
-      asset: {
-        include: {
-          park: {
-            include: { cluster: true },
-          },
-        },
-      },
-      reporter: {
-        select: { id: true, name: true, email: true },
-      },
-    },
-  });
+  const report = await queryOne<AuthorizedStaffReport>(
+    `SELECT
+       r.*,
+       a."name" AS "assetName",
+       a."code" AS "assetCode",
+       p."clusterId" AS "clusterId",
+       cl."name" AS "clusterName",
+       u."email" AS "reporterEmail",
+       u."name" AS "reporterName"
+     FROM "Report" r
+     JOIN "Asset" a ON a."id" = r."assetId"
+     JOIN "Park" p ON p."id" = a."parkId"
+     JOIN "Cluster" cl ON cl."id" = p."clusterId"
+     JOIN "User" u ON u."id" = r."reporterId"
+     WHERE r."id" = $1 AND r."companyId" = $2 AND r."archivedAt" IS NULL`,
+    [reportId, actor.companyId],
+    db
+  );
 
   if (!report) {
     throw new Error("Laporan tidak ditemukan.");
   }
 
   // Kriteria Penerimaan Fase 4: Hanya pengelola cluster terkait yang dapat memverifikasi
-  if (report.asset.park.clusterId !== actor.staffClusterId) {
+  if (report.clusterId !== actor.staffClusterId) {
     throw new Error(
-      `Akses ditolak: Laporan ini berada di ${report.asset.park.cluster.name}, sedangkan Anda hanya bertugas di cluster Anda sendiri.`
+      `Akses ditolak: Laporan ini berada di ${report.clusterName}, sedangkan Anda hanya bertugas di cluster Anda sendiri.`
     );
   }
 
@@ -56,9 +74,11 @@ async function getAndAuthorizeClusterReportForStaff(
 /**
  * 1. Pengelola menyatakan laporan VALID, menetapkan Prioritas (TINGGI / NORMAL / RENDAH),
  * lalu meneruskan ke Manager (status -> MENUNGGU_KEPUTUSAN).
- * - Menambah validReportCount pada akun pelapor (+1).
- * - Mengirim email VALID_MENUNGGU_KEPUTUSAN ke pelapor (dan pelapor anak bila ada laporan digabung).
- * - Mengirim Notifikasi Web ke Manager yang membawahi cluster tersebut.
+ * Dalam satu transaksi:
+ * - Transisi berguard status (dua pengelola bersamaan → satu lolos).
+ * - validReportCount pelapor +1.
+ * - Email VALID_MENUNGGU_KEPUTUSAN ke pelapor induk + semua pelapor anak yang digabung (outbox).
+ * - Notifikasi Web ke Manager yang membawahi cluster tersebut.
  */
 export async function verifyReportAsValid(
   actor: SessionUser,
@@ -82,77 +102,74 @@ export async function verifyReportAsValid(
     throw new Error(check.error);
   }
 
-  const updated = await prisma.report.update({
-    where: { id: report.id },
-    data: {
-      status: "MENUNGGU_KEPUTUSAN",
-      priority: input.priority,
-      stageEnteredAt: new Date(),
-      statusLogs: {
-        create: {
-          fromStatus: report.status,
-          toStatus: "MENUNGGU_KEPUTUSAN",
-          changedById: actor.id,
-          note:
-            input.note?.trim() ||
-            `Diverifikasi Valid oleh Pengelola dengan prioritas ${input.priority}`,
-        },
-      },
-    },
-  });
-
-  // Tambah rekam jejak laporan valid pada akun pelapor (Kriteria Penerimaan Fase 4)
-  await prisma.user.update({
-    where: { id: report.reporterId },
-    data: {
-      validReportCount: { increment: 1 },
-    },
-  });
-
-  // Kirim email ke pelapor utama
-  await sendReportStatusEmail({
-    companyId: report.companyId,
-    toEmail: report.reporter.email,
-    reporterName: report.reporter.name,
-    ticketNo: report.ticketNo,
-    assetName: `${report.asset.name} (${report.asset.code})`,
-    triggerType: "VALID_MENUNGGU_KEPUTUSAN",
-  });
-
-  // Beri tahu Manager yang ditautkan ke cluster ini via Notifikasi Web (Bagian 9 PRD)
-  const managerAssignments = await prisma.clusterManagerAssignment.findMany({
-    where: {
-      clusterId: report.asset.park.clusterId,
-      ...activeAssignmentWhere(new Date()),
-      user: { isActive: true },
-    },
-    select: { userId: true },
-  });
-
-  const uniqueManagerIds = Array.from(
-    new Set(managerAssignments.map((m) => m.userId))
+  const now = new Date();
+  const managerRows = await query<{ userId: string }>(
+    `SELECT DISTINCT cma."userId"
+     FROM "ClusterManagerAssignment" cma
+     JOIN "User" u ON u."id" = cma."userId"
+     WHERE cma."clusterId" = $1
+       AND ${activeAssignmentSql("cma", "$2")}
+       AND u."isActive" = true`,
+    [report.clusterId, now]
   );
+  const uniqueManagerIds = managerRows.map((m) => m.userId);
 
-  if (uniqueManagerIds.length > 0) {
-    await prisma.notification.createMany({
-      data: uniqueManagerIds.map((managerId) => ({
-        companyId: report.companyId,
-        recipientId: managerId,
-        title: `Laporan Valid Menunggu Keputusan (${report.ticketNo})`,
-        message: `Pengelola meneruskan laporan ${report.ticketNo} (${report.asset.name}) dengan prioritas ${input.priority}.`,
-        linkUrl: "/dashboard/laporan",
-      })),
+  return withTransaction(async (tx) => {
+    await transitionReport(tx, {
+      reportId: report.id,
+      from: report.status,
+      to: "MENUNGGU_KEPUTUSAN",
+      actor: { id: actor.id, role: actor.role },
+      data: { priority: input.priority },
+      note:
+        input.note?.trim() ||
+        `Diverifikasi Valid oleh Pengelola dengan prioritas ${input.priority}`,
     });
-  }
 
-  return updated;
+    // Tambah rekam jejak laporan valid pada akun pelapor (Kriteria Penerimaan Fase 4)
+    await execute(
+      `UPDATE "User" SET "validReportCount" = "validReportCount" + 1, "updatedAt" = NOW() WHERE "id" = $1`,
+      [report.reporterId],
+      tx
+    );
+
+    // Email ke pelapor induk + fan-out ke pelapor anak yang digabung (§7 Verifikasi 4)
+    await enqueueReportStatusEmailWithMergedChildren(tx, {
+      reportId: report.id,
+      triggerType: "VALID_MENUNGGU_KEPUTUSAN",
+    });
+
+    // Beri tahu Manager yang ditautkan ke cluster ini via Notifikasi Web (Bagian 9 PRD)
+    if (uniqueManagerIds.length > 0) {
+      await execute(
+        `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+         SELECT $1, uid, $2, $3, $4 FROM unnest($5::text[]) AS uid`,
+        [
+          report.companyId,
+          `Laporan Valid Menunggu Keputusan (${report.ticketNo})`,
+          `Pengelola meneruskan laporan ${report.ticketNo} (${report.assetName}) dengan prioritas ${input.priority}.`,
+          "/dashboard/laporan",
+          uniqueManagerIds,
+        ],
+        tx
+      );
+    }
+
+    const updated = await queryOne<ReportRow>(
+      `SELECT * FROM "Report" WHERE "id" = $1`,
+      [report.id],
+      tx
+    );
+    if (!updated) throw new Error("Laporan tidak ditemukan.");
+    return updated;
+  });
 }
 
 /**
  * 2. Pengelola menandai laporan TIDAK_VALID dengan alasan wajib.
  * - Status akhir: TIDAK_VALID.
- * - Menambah invalidReportCount pada akun pelapor (+1).
- * - Mengirim email TIDAK_VALID beserta alasan ke pelapor.
+ * - invalidReportCount pelapor +1.
+ * - Email TIDAK_VALID beserta alasan ke pelapor induk + pelapor anak yang digabung.
  */
 export async function markReportAsInvalid(
   actor: SessionUser,
@@ -177,49 +194,46 @@ export async function markReportAsInvalid(
     throw new Error(check.error);
   }
 
-  const updated = await prisma.report.update({
-    where: { id: report.id },
-    data: {
-      status: "TIDAK_VALID",
+  return withTransaction(async (tx) => {
+    await transitionReport(tx, {
+      reportId: report.id,
+      from: report.status,
+      to: "TIDAK_VALID",
+      actor: { id: actor.id, role: actor.role },
+      data: { reason },
       reason,
-      stageEnteredAt: new Date(),
-      statusLogs: {
-        create: {
-          fromStatus: report.status,
-          toStatus: "TIDAK_VALID",
-          changedById: actor.id,
-          note: `Dinyatakan Tidak Valid: ${reason}`,
-        },
-      },
-    },
-  });
+      note: `Dinyatakan Tidak Valid: ${reason}`,
+    });
 
-  // Tambah rekam jejak laporan tidak valid pada akun pelapor (Kriteria Penerimaan Fase 4)
-  await prisma.user.update({
-    where: { id: report.reporterId },
-    data: {
-      invalidReportCount: { increment: 1 },
-    },
-  });
+    // Tambah rekam jejak laporan tidak valid pada akun pelapor (Kriteria Penerimaan Fase 4)
+    await execute(
+      `UPDATE "User" SET "invalidReportCount" = "invalidReportCount" + 1, "updatedAt" = NOW() WHERE "id" = $1`,
+      [report.reporterId],
+      tx
+    );
 
-  await sendReportStatusEmail({
-    companyId: report.companyId,
-    toEmail: report.reporter.email,
-    reporterName: report.reporter.name,
-    ticketNo: report.ticketNo,
-    assetName: `${report.asset.name} (${report.asset.code})`,
-    triggerType: "TIDAK_VALID",
-    reason,
-  });
+    await enqueueReportStatusEmailWithMergedChildren(tx, {
+      reportId: report.id,
+      triggerType: "TIDAK_VALID",
+      reason,
+    });
 
-  return updated;
+    const updated = await queryOne<ReportRow>(
+      `SELECT * FROM "Report" WHERE "id" = $1`,
+      [report.id],
+      tx
+    );
+    if (!updated) throw new Error("Laporan tidak ditemukan.");
+    return updated;
+  });
 }
 
 /**
  * 3. Pengelola menggabungkan laporan ganda untuk aset yang sama ke laporan induk (status -> DIGABUNG).
- * - Memastikan laporan induk berada pada aset yang sama dan bukan dirinya sendiri.
- * - Menambah validReportCount pada akun pelapor (+1).
- * - Mengirim email DIGABUNG ke pelapor bahwa perkembangan berikutnya mengikuti laporan induk.
+ * - Induk: aset sama, perusahaan sama, bukan dirinya sendiri, belum diarsip, dan status NON-terminal.
+ * - Cucu (laporan yang sebelumnya digabung ke anak) ikut dipindah ke induk baru — tidak ada yang yatim.
+ * - validReportCount pelapor anak +1 (laporan nyata, hanya duplikat).
+ * - Email DIGABUNG ke pelapor anak dengan tautan status tiket anak + nomor tiket induk.
  */
 export async function mergeDuplicateReport(
   actor: SessionUser,
@@ -246,13 +260,20 @@ export async function mergeDuplicateReport(
     throw new Error(check.error);
   }
 
-  const parentReport = await prisma.report.findFirst({
-    where: {
-      id: input.parentReportId,
-      companyId: childReport.companyId,
-      assetId: childReport.assetId,
-    },
-  });
+  const parentReport = await queryOne<{
+    id: string;
+    ticketNo: string;
+    status: ReportStatus;
+    parentReportId: string | null;
+  }>(
+    `SELECT "id", "ticketNo", "status", "parentReportId"
+     FROM "Report"
+     WHERE "id" = $1
+       AND "companyId" = $2
+       AND "assetId" = $3
+       AND "archivedAt" IS NULL`,
+    [input.parentReportId, childReport.companyId, childReport.assetId]
+  );
 
   if (!parentReport) {
     throw new Error(
@@ -260,47 +281,61 @@ export async function mergeDuplicateReport(
     );
   }
 
-  if (parentReport.status === "DIGABUNG" || parentReport.status === "TIDAK_VALID" || parentReport.status === "DIBATALKAN") {
+  if (
+    TERMINAL_REPORT_STATUSES.includes(parentReport.status) ||
+    parentReport.parentReportId
+  ) {
     throw new Error(
-      "Laporan induk yang dipilih tidak aktif untuk penggabungan."
+      "Laporan induk yang dipilih tidak aktif untuk penggabungan (sudah selesai/ditolak/dibatalkan/digabung)."
     );
   }
 
-  const updated = await prisma.report.update({
-    where: { id: childReport.id },
-    data: {
-      status: "DIGABUNG",
-      parentReportId: parentReport.id,
-      reason: `Digabung ke laporan induk ${parentReport.ticketNo}`,
-      stageEnteredAt: new Date(),
-      statusLogs: {
-        create: {
-          fromStatus: childReport.status,
-          toStatus: "DIGABUNG",
-          changedById: actor.id,
-          note: `Digabungkan oleh Pengelola ke laporan induk ${parentReport.ticketNo}`,
-        },
+  return withTransaction(async (tx) => {
+    await transitionReport(tx, {
+      reportId: childReport.id,
+      from: childReport.status,
+      to: "DIGABUNG",
+      actor: { id: actor.id, role: actor.role },
+      data: {
+        parentReportId: parentReport.id,
+        reason: `Digabung ke laporan induk ${parentReport.ticketNo}`,
       },
-    },
-  });
+      note: `Digabungkan oleh Pengelola ke laporan induk ${parentReport.ticketNo}`,
+    });
 
-  // Tambah rekam jejak valid karena laporan memang nyata (hanya duplikat)
-  await prisma.user.update({
-    where: { id: childReport.reporterId },
-    data: {
-      validReportCount: { increment: 1 },
-    },
-  });
+    // Cucu ikut pindah ke induk baru (P1-D)
+    await execute(
+      `UPDATE "Report"
+       SET "parentReportId" = $2, "updatedAt" = NOW()
+       WHERE "parentReportId" = $1 AND "archivedAt" IS NULL`,
+      [childReport.id, parentReport.id],
+      tx
+    );
 
-  await sendReportStatusEmail({
-    companyId: childReport.companyId,
-    toEmail: childReport.reporter.email,
-    reporterName: childReport.reporter.name,
-    ticketNo: childReport.ticketNo,
-    assetName: `${childReport.asset.name} (${childReport.asset.code})`,
-    triggerType: "DIGABUNG",
-    parentTicketNo: parentReport.ticketNo,
-  });
+    // Tambah rekam jejak valid karena laporan memang nyata (hanya duplikat)
+    await execute(
+      `UPDATE "User" SET "validReportCount" = "validReportCount" + 1, "updatedAt" = NOW() WHERE "id" = $1`,
+      [childReport.reporterId],
+      tx
+    );
 
-  return updated;
+    await enqueueReportStatusEmail(tx, {
+      companyId: childReport.companyId,
+      toEmail: childReport.reporterEmail,
+      reporterName: childReport.reporterName,
+      ticketNo: childReport.ticketNo,
+      statusToken: childReport.statusToken,
+      assetName: `${childReport.assetName} (${childReport.assetCode})`,
+      triggerType: "DIGABUNG",
+      parentTicketNo: parentReport.ticketNo,
+    });
+
+    const updated = await queryOne<ReportRow>(
+      `SELECT * FROM "Report" WHERE "id" = $1`,
+      [childReport.id],
+      tx
+    );
+    if (!updated) throw new Error("Laporan tidak ditemukan.");
+    return updated;
+  });
 }

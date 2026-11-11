@@ -1,48 +1,34 @@
-import type { Prisma } from "@prisma/client";
-
 /**
- * Filter penugasan Manager yang sedang berlaku saat `now`:
+ * Helper filter SQL berparameter untuk penugasan Manager yang sedang berlaku saat `now`:
  * sudah dimulai (validFrom <= now), belum berakhir (validUntil null / >= now), dan tidak dibatalkan.
  */
-export function activeAssignmentWhere(
-  now: Date = new Date()
-): Prisma.ClusterManagerAssignmentWhereInput {
-  return {
-    validFrom: { lte: now },
-    cancelledAt: null,
-    OR: [{ validUntil: null }, { validUntil: { gte: now } }],
-  };
+export function activeAssignmentSql(alias: string, nowParam: string): string {
+  return `(${alias}."validFrom" <= ${nowParam} AND ${alias}."cancelledAt" IS NULL AND (${alias}."validUntil" IS NULL OR ${alias}."validUntil" >= ${nowParam}))`;
 }
 
 /**
- * Filter pelapor (role PENGGUNA) dalam cakupan perusahaan.
+ * Helper filter SQL pelapor (role PENGGUNA) dalam cakupan perusahaan.
  * companyId pelapor bisa null (daftar mandiri), jadi pelapor juga dianggap
- * dalam cakupan bila pernah membuat laporan di perusahaan tersebut.
+ * dalam cakupan bila pernah membuat laporan non-arsip di perusahaan tersebut.
  */
-export function reporterInCompanyWhere(
-  companyId: string
-): Prisma.UserWhereInput {
-  return {
-    role: "PENGGUNA",
-    OR: [{ companyId }, { reports: { some: { companyId } } }],
-  };
+export function reporterInCompanySql(
+  userAlias: string,
+  companyParam: string
+): string {
+  return `(${userAlias}."role" = 'PENGGUNA'::"Role" AND (${userAlias}."companyId" = ${companyParam} OR EXISTS (SELECT 1 FROM "Report" _r WHERE _r."reporterId" = ${userAlias}."id" AND _r."companyId" = ${companyParam} AND _r."archivedAt" IS NULL)))`;
 }
 
 /**
- * Filter aset yang boleh dilaporkan: aset, taman, cluster, komplek, dan kategori semuanya aktif.
+ * Helper filter SQL aset yang boleh dilaporkan: aset, kategori, taman, cluster, dan komplek semuanya aktif.
  */
-export function reportableAssetWhere(): Prisma.AssetWhereInput {
-  return {
-    isActive: true,
-    category: { isActive: true },
-    park: {
-      isActive: true,
-      cluster: {
-        isActive: true,
-        complex: { isActive: true },
-      },
-    },
-  };
+export function reportableAssetSql(
+  assetAlias: string,
+  categoryAlias: string,
+  parkAlias: string,
+  clusterAlias: string,
+  complexAlias: string
+): string {
+  return `(${assetAlias}."isActive" = true AND ${categoryAlias}."isActive" = true AND ${parkAlias}."isActive" = true AND ${clusterAlias}."isActive" = true AND ${complexAlias}."isActive" = true)`;
 }
 
 type ReportableAssetShape = {

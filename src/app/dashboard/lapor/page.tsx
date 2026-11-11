@@ -1,8 +1,8 @@
 import { redirect } from "next/navigation";
 import { getCurrentSession } from "@/lib/auth";
 import { hasPermission, ROLE_METADATA } from "@/lib/permissions";
-import { prisma } from "@/lib/prisma";
-import { reportableAssetWhere } from "@/lib/scopes";
+import { query } from "@/lib/db";
+import { reportableAssetSql } from "@/lib/scopes";
 import {
   AccessDeniedNotice,
   DbErrorNotice,
@@ -21,19 +21,45 @@ export default async function BuatLaporanPage() {
     );
   }
 
-  let assets;
+  let assets: {
+    code: string;
+    name: string;
+    parkName: string;
+    clusterName: string;
+    categoryName: string;
+    damageTypes: string[];
+  }[];
   try {
-    assets = await prisma.asset.findMany({
-      where: {
-        ...reportableAssetWhere(),
-        ...(session.companyId ? { companyId: session.companyId } : {}),
-      },
-      include: {
-        park: { include: { cluster: true } },
-        category: true,
-      },
-      orderBy: { code: "asc" },
-    });
+    const params: unknown[] = [];
+    const companyClause = session.companyId
+      ? (() => {
+          params.push(session.companyId);
+          return ` AND a."companyId" = $${params.length}`;
+        })()
+      : "";
+    assets = await query<{
+      code: string;
+      name: string;
+      parkName: string;
+      clusterName: string;
+      categoryName: string;
+      damageTypes: string[];
+    }>(
+      `SELECT a."code",
+              a."name",
+              p."name" AS "parkName",
+              cl."name" AS "clusterName",
+              cat."name" AS "categoryName",
+              cat."damageTypes"
+       FROM "Asset" a
+       JOIN "Park" p ON p."id" = a."parkId"
+       JOIN "Cluster" cl ON cl."id" = p."clusterId"
+       JOIN "Complex" cx ON cx."id" = cl."complexId"
+       JOIN "Category" cat ON cat."id" = a."categoryId"
+       WHERE ${reportableAssetSql("a", "cat", "p", "cl", "cx")}${companyClause}
+       ORDER BY a."code" ASC`,
+      params
+    );
   } catch (error) {
     console.error("[lapor] gagal memuat aset:", error);
     return <DbErrorNotice />;
@@ -53,16 +79,7 @@ export default async function BuatLaporanPage() {
         </div>
       </div>
 
-      <ManualReportForm
-        assets={assets.map((a) => ({
-          code: a.code,
-          name: a.name,
-          parkName: a.park.name,
-          clusterName: a.park.cluster.name,
-          categoryName: a.category.name,
-          damageTypes: a.category.damageTypes,
-        }))}
-      />
+      <ManualReportForm assets={assets} />
     </div>
   );
 }

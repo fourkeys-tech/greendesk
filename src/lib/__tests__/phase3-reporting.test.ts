@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { prisma } from "../prisma";
+import { queryOne } from "../db";
+import type { EmailLogRow, UserRow } from "../db-types";
 import {
   cancelOwnReportByUser,
   submitCitizenReport,
@@ -7,9 +8,11 @@ import {
 
 describe("Fase 3 – Autentikasi Pengguna & Pelaporan Kerusakan (MVP Inti)", () => {
   it("menolak laporan tanpa foto atau tanpa deskripsi", async () => {
-    const warga = await prisma.user.findUniqueOrThrow({
-      where: { email: "warga@greenpark.id" },
-    });
+    const warga = await queryOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["warga@greenpark.id"]
+    );
+    if (!warga) throw new Error("Warga seed tidak ditemukan");
     const actor = {
       id: warga.id,
       name: warga.name,
@@ -42,19 +45,19 @@ describe("Fase 3 – Autentikasi Pengguna & Pelaporan Kerusakan (MVP Inti)", () 
   it("membuat laporan berstatus BARU, nomor tiket unik, mengirim email diterima, serta mengizinkan pembatalan saat BARU", async () => {
     // Buat pengguna baru agar kuota harian segar
     const uniqueEmail = `pelapor.fase3.${Date.now()}@greenpark.id`;
-    const company = await prisma.company.findUniqueOrThrow({
-      where: { code: "THN" },
-    });
-    const pelapor = await prisma.user.create({
-      data: {
-        companyId: company.id,
-        name: "Pelapor Uji Fase 3",
-        email: uniqueEmail,
-        role: "PENGGUNA",
-        loginMethod: "GOOGLE",
-        dataConsentAt: new Date(),
-      },
-    });
+    const company = await queryOne<{ id: string }>(
+      `SELECT "id" FROM "Company" WHERE "code" = $1`,
+      ["THN"]
+    );
+    if (!company) throw new Error("Company THN tidak ditemukan");
+
+    const pelapor = await queryOne<UserRow>(
+      `INSERT INTO "User" ("companyId", "name", "email", "role", "loginMethod", "dataConsentAt", "updatedAt")
+       VALUES ($1, $2, $3, 'PENGGUNA'::"Role", 'GOOGLE', NOW(), NOW())
+       RETURNING *`,
+      [company.id, "Pelapor Uji Fase 3", uniqueEmail]
+    );
+    if (!pelapor) throw new Error("Gagal membuat pelapor uji fase 3");
 
     const actor = {
       id: pelapor.id,
@@ -77,13 +80,12 @@ describe("Fase 3 – Autentikasi Pengguna & Pelaporan Kerusakan (MVP Inti)", () 
     expect(report.ticketNo).toMatch(/^TKT-\d{6}-\d{4}/);
 
     // Pastikan email LAPORAN_TERKIRIM tercatat
-    const receivedEmail = await prisma.emailLog.findFirst({
-      where: {
-        toEmail: uniqueEmail,
-        ticketNo: report.ticketNo,
-        triggerType: "LAPORAN_TERKIRIM",
-      },
-    });
+    const receivedEmail = await queryOne<EmailLogRow>(
+      `SELECT * FROM "EmailLog"
+       WHERE "toEmail" = $1 AND "ticketNo" = $2 AND "triggerType" = 'LAPORAN_TERKIRIM'
+       LIMIT 1`,
+      [uniqueEmail, report.ticketNo]
+    );
     expect(receivedEmail).not.toBeNull();
 
     // Batalkan laporan saat masih BARU
@@ -91,13 +93,12 @@ describe("Fase 3 – Autentikasi Pengguna & Pelaporan Kerusakan (MVP Inti)", () 
     expect(cancelled.status).toBe("DIBATALKAN");
 
     // Pastikan email DIBATALKAN tercatat
-    const cancelEmail = await prisma.emailLog.findFirst({
-      where: {
-        toEmail: uniqueEmail,
-        ticketNo: report.ticketNo,
-        triggerType: "DIBATALKAN",
-      },
-    });
+    const cancelEmail = await queryOne<EmailLogRow>(
+      `SELECT * FROM "EmailLog"
+       WHERE "toEmail" = $1 AND "ticketNo" = $2 AND "triggerType" = 'DIBATALKAN'
+       LIMIT 1`,
+      [uniqueEmail, report.ticketNo]
+    );
     expect(cancelEmail).not.toBeNull();
 
     // Tidak bisa membatalkan lagi karena sudah bukan BARU

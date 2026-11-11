@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import type { Prisma } from "@prisma/client";
 import { getCurrentSession } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { query } from "@/lib/db";
+import type { ReportStatus, VendorReplacementRequestRow } from "@/lib/db-types";
 import { formatWibDate } from "@/lib/dates";
 import { getManagerAssignedClusterIds } from "@/lib/services/phase5-decision";
 import {
@@ -28,17 +28,17 @@ const STATUS_FILTERS = [
 ] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number]["key"];
 
-const REQUEST_INCLUDE = {
-  asset: { include: { park: { include: { cluster: true } } } },
-  vendor: true,
-  submittedBy: { select: { name: true, email: true } },
-  managerDecidedBy: { select: { name: true } },
-  adminForwardedBy: { select: { name: true } },
-} satisfies Prisma.VendorReplacementRequestInclude;
-
-type ReplacementRequestRow = Prisma.VendorReplacementRequestGetPayload<{
-  include: typeof REQUEST_INCLUDE;
-}>;
+type ReplacementRequestRow = VendorReplacementRequestRow & {
+  asset: {
+    name: string;
+    code: string;
+    park: { name: string; cluster: { name: string } };
+  };
+  vendor: { name: string };
+  submittedBy: { name: string; email: string };
+  managerDecidedBy: { name: string } | null;
+  adminForwardedBy: { name: string } | null;
+};
 
 const STATUS_BADGES: Record<string, { label: string; badge: string }> = {
   DIAJUKAN: {
@@ -103,107 +103,202 @@ export default async function VendorReplacementPage({
   try {
     // 1. Data form pengajuan untuk Pengelola
     if (session.role === "PENGELOLA" && session.staffClusterId) {
-      const rawAssets = await prisma.asset.findMany({
-        where: {
-          park: { clusterId: session.staffClusterId },
-          companyId,
-        },
-        select: {
-          id: true,
-          name: true,
-          code: true,
-          park: { select: { name: true } },
-          reports: {
-            where: {
-              archivedAt: null,
-              status: { notIn: ["DIBATALKAN", "TIDAK_VALID", "DIGABUNG"] },
-            },
-            select: {
-              id: true,
-              ticketNo: true,
-              description: true,
-              status: true,
-              createdAt: true,
-              workOrder: {
-                select: {
-                  spkNo: true,
-                  vendorId: true,
-                  vendor: { select: { id: true, name: true } },
-                },
-              },
-              underWarrantyOfVendor: {
-                select: { id: true, name: true },
-              },
-            },
-            orderBy: { createdAt: "desc" },
-            take: 10,
-          },
-        },
-        orderBy: { name: "asc" },
-      });
+      const [rawAssets, assetReports, vendorRows] = await Promise.all([
+        query<{ id: string; name: string; code: string; parkName: string }>(
+          `SELECT a."id", a."name", a."code", p."name" AS "parkName"
+           FROM "Asset" a
+           JOIN "Park" p ON p."id" = a."parkId"
+           WHERE p."clusterId" = $1 AND a."companyId" = $2
+           ORDER BY a."name" ASC`,
+          [session.staffClusterId, companyId]
+        ),
+        query<{
+          id: string;
+          assetId: string;
+          ticketNo: string;
+          description: string;
+          status: ReportStatus;
+          createdAt: Date;
+          spkNo: string | null;
+          workOrderVendorId: string | null;
+          workOrderVendorName: string | null;
+          warrantyVendorId: string | null;
+          warrantyVendorName: string | null;
+        }>(
+          `SELECT sub."id", sub."assetId", sub."ticketNo", sub."description",
+                  sub."status", sub."createdAt", sub."spkNo",
+                  sub."workOrderVendorId", sub."workOrderVendorName",
+                  sub."warrantyVendorId", sub."warrantyVendorName"
+           FROM (
+             SELECT r."id", r."assetId", r."ticketNo", r."description",
+                    r."status", r."createdAt",
+                    wo."spkNo",
+                    wo."vendorId" AS "workOrderVendorId",
+                    wv."name" AS "workOrderVendorName",
+                    r."underWarrantyOfVendorId" AS "warrantyVendorId",
+                    uwv."name" AS "warrantyVendorName",
+                    ROW_NUMBER() OVER (PARTITION BY r."assetId" ORDER BY r."createdAt" DESC) AS rn
+             FROM "Report" r
+             JOIN "Asset" a ON a."id" = r."assetId"
+             JOIN "Park" p ON p."id" = a."parkId"
+             LEFT JOIN "WorkOrder" wo ON wo."reportId" = r."id"
+             LEFT JOIN "Vendor" wv ON wv."id" = wo."vendorId"
+             LEFT JOIN "Vendor" uwv ON uwv."id" = r."underWarrantyOfVendorId"
+             WHERE r."companyId" = $1
+               AND p."clusterId" = $2
+               AND r."archivedAt" IS NULL
+               AND r."status" NOT IN ('DIBATALKAN', 'TIDAK_VALID', 'DIGABUNG')
+           ) sub
+           WHERE sub.rn <= 10
+           ORDER BY sub."createdAt" DESC`,
+          [companyId, session.staffClusterId]
+        ),
+        query<VendorOptionItem>(
+          `SELECT "id", "name"
+           FROM "Vendor"
+           WHERE "companyId" = $1 AND "isActive" = true
+           ORDER BY "name" ASC`,
+          [companyId]
+        ),
+      ]);
+
+      const reportsByAsset = new Map<string, typeof assetReports>();
+      for (const r of assetReports) {
+        const list = reportsByAsset.get(r.assetId) ?? [];
+        list.push(r);
+        reportsByAsset.set(r.assetId, list);
+      }
 
       formattedAssets = rawAssets.map((ast) => {
+        const reports = reportsByAsset.get(ast.id) ?? [];
         const latestVendorId =
-          ast.reports.find((r) => r.workOrder?.vendorId)?.workOrder?.vendorId ||
-          ast.reports.find((r) => r.underWarrantyOfVendor?.id)
-            ?.underWarrantyOfVendor?.id ||
+          reports.find((r) => r.workOrderVendorId)?.workOrderVendorId ||
+          reports.find((r) => r.warrantyVendorId)?.warrantyVendorId ||
           null;
 
         return {
           id: ast.id,
           name: ast.name,
           code: ast.code,
-          parkName: ast.park.name,
+          parkName: ast.parkName,
           latestVendorId,
-          reports: ast.reports.map((r) => ({
+          reports: reports.map((r) => ({
             id: r.id,
             ticketNo: r.ticketNo,
             description: r.description,
             status: r.status,
             createdAt: r.createdAt.toISOString(),
-            vendorName:
-              r.workOrder?.vendor?.name || r.underWarrantyOfVendor?.name || null,
-            vendorId: r.workOrder?.vendorId || r.underWarrantyOfVendor?.id || null,
-            spkNo: r.workOrder?.spkNo || null,
+            vendorName: r.workOrderVendorName || r.warrantyVendorName || null,
+            vendorId: r.workOrderVendorId || r.warrantyVendorId || null,
+            spkNo: r.spkNo || null,
           })),
         };
       });
 
-      companyVendors = await prisma.vendor.findMany({
-        where: { companyId, isActive: true },
-        select: { id: true, name: true },
-        orderBy: { name: "asc" },
-      });
+      companyVendors = vendorRows;
     }
 
     // 2. Daftar pengajuan sesuai cakupan role
-    let where: Prisma.VendorReplacementRequestWhereInput;
+    type FlatRequestRow = VendorReplacementRequestRow & {
+      assetName: string;
+      assetCode: string;
+      parkName: string;
+      clusterName: string;
+      vendorName: string;
+      submittedByName: string;
+      submittedByEmail: string;
+      managerDecidedByName: string | null;
+      adminForwardedByName: string | null;
+    };
+
+    const requestSqlBase = `
+      SELECT vrr.*,
+             a."name" AS "assetName",
+             a."code" AS "assetCode",
+             p."name" AS "parkName",
+             cl."name" AS "clusterName",
+             v."name" AS "vendorName",
+             sub."name" AS "submittedByName",
+             sub."email" AS "submittedByEmail",
+             mgr."name" AS "managerDecidedByName",
+             adm."name" AS "adminForwardedByName"
+      FROM "VendorReplacementRequest" vrr
+      JOIN "Asset" a ON a."id" = vrr."assetId"
+      JOIN "Park" p ON p."id" = a."parkId"
+      JOIN "Cluster" cl ON cl."id" = p."clusterId"
+      JOIN "Vendor" v ON v."id" = vrr."vendorId"
+      JOIN "User" sub ON sub."id" = vrr."submittedById"
+      LEFT JOIN "User" mgr ON mgr."id" = vrr."managerDecidedById"
+      LEFT JOIN "User" adm ON adm."id" = vrr."adminForwardedById"
+    `;
+
+    let flatRows: FlatRequestRow[] = [];
     if (session.role === "PENGELOLA") {
-      where = { companyId, submittedById: session.id };
+      flatRows = await query<FlatRequestRow>(
+        `${requestSqlBase}
+         WHERE vrr."companyId" = $1 AND vrr."submittedById" = $2
+         ORDER BY vrr."createdAt" DESC`,
+        [companyId, session.id]
+      );
     } else if (session.role === "MANAGER") {
       const clusterIds = await getManagerAssignedClusterIds(session.id);
-      where = { companyId, clusterId: { in: clusterIds } };
+      if (clusterIds.length > 0) {
+        flatRows = await query<FlatRequestRow>(
+          `${requestSqlBase}
+           WHERE vrr."companyId" = $1 AND vrr."clusterId" = ANY($2::text[])
+           ORDER BY vrr."createdAt" DESC`,
+          [companyId, clusterIds]
+        );
+      }
     } else {
-      where = { companyId };
+      flatRows = await query<FlatRequestRow>(
+        `${requestSqlBase}
+         WHERE vrr."companyId" = $1
+         ORDER BY vrr."createdAt" DESC`,
+        [companyId]
+      );
     }
 
-    allReplacementRequests = await prisma.vendorReplacementRequest.findMany({
-      where,
-      include: REQUEST_INCLUDE,
-      orderBy: { createdAt: "desc" },
-    });
+    allReplacementRequests = flatRows.map(
+      ({
+        assetName,
+        assetCode,
+        parkName,
+        clusterName,
+        vendorName,
+        submittedByName,
+        submittedByEmail,
+        managerDecidedByName,
+        adminForwardedByName,
+        ...vrr
+      }) => ({
+        ...vrr,
+        asset: {
+          name: assetName,
+          code: assetCode,
+          park: {
+            name: parkName,
+            cluster: { name: clusterName },
+          },
+        },
+        vendor: { name: vendorName },
+        submittedBy: { name: submittedByName, email: submittedByEmail },
+        managerDecidedBy: managerDecidedByName ? { name: managerDecidedByName } : null,
+        adminForwardedBy: adminForwardedByName ? { name: adminForwardedByName } : null,
+      })
+    );
 
-    // 3. Nomor tiket laporan dasar
+    // 3. Nomor tiket laporan dasar (sengaja tanpa filter archivedAt agar tiket arsip tetap tampil)
     const allBasisIds = Array.from(
       new Set(allReplacementRequests.flatMap((req) => req.basisReportIds))
     );
     if (allBasisIds.length > 0) {
-      // archivedAt: undefined menimpa filter otomatis archivedAt: null dari
-      // extension Prisma, supaya nomor tiket yang sudah diarsip tetap tampil.
-      const basisReports = await prisma.report.findMany({
-        where: { id: { in: allBasisIds }, companyId, archivedAt: undefined },
-        select: { id: true, ticketNo: true },
-      });
+      const basisReports = await query<{ id: string; ticketNo: string }>(
+        `SELECT "id", "ticketNo"
+         FROM "Report"
+         WHERE "companyId" = $1 AND "id" = ANY($2::text[])`,
+        [companyId, allBasisIds]
+      );
       basisTicketMap = new Map(basisReports.map((r) => [r.id, r.ticketNo]));
     }
   } catch (error) {

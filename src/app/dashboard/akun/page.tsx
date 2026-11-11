@@ -6,8 +6,9 @@ import {
   REPORTER_REVIEW_THRESHOLD,
   ROLE_METADATA,
 } from "@/lib/permissions";
-import { prisma } from "@/lib/prisma";
-import { activeAssignmentWhere, reporterInCompanyWhere } from "@/lib/scopes";
+import { query, queryCount } from "@/lib/db";
+import type { Role } from "@/lib/db-types";
+import { activeAssignmentSql, reporterInCompanySql } from "@/lib/scopes";
 import { formatWibDate, wibDateInputValue } from "@/lib/dates";
 import {
   AccessDeniedNotice,
@@ -114,36 +115,108 @@ async function StaffTab({
   selfId: string;
 }) {
   const now = new Date();
-  let data;
+  let users: Array<{
+    id: string;
+    name: string;
+    email: string;
+    role: Role;
+    isActive: boolean;
+    staffClusterId: string | null;
+    staffCluster: { name: string } | null;
+    managerAssignments: Array<{
+      id: string;
+      clusterId: string;
+      isTemporary: boolean;
+      validUntil: Date | null;
+      cluster: { name: string };
+    }>;
+  }>;
+  let clusters: Array<{ id: string; name: string; isActive: boolean }>;
+
   try {
-    data = await Promise.all([
-      prisma.user.findMany({
-        where: {
-          companyId,
-          role: { in: ["ADMIN", "OWNER", "MANAGER", "PENGELOLA"] },
-        },
-        include: {
-          staffCluster: true,
-          managerAssignments: {
-            where: {
-              OR: [{ isTemporary: false }, { isTemporary: true, ...activeAssignmentWhere(now) }],
-            },
-            include: { cluster: true },
-          },
-        },
-        orderBy: [{ role: "asc" }, { name: "asc" }],
-      }),
-      prisma.cluster.findMany({
-        where: { companyId },
-        orderBy: { name: "asc" },
-        select: { id: true, name: true, isActive: true },
-      }),
+    const [userRows, assignmentRows, clusterRows] = await Promise.all([
+      query<{
+        id: string;
+        name: string;
+        email: string;
+        role: Role;
+        isActive: boolean;
+        staffClusterId: string | null;
+        staffClusterName: string | null;
+      }>(
+        `SELECT u."id", u."name", u."email", u."role", u."isActive",
+                u."staffClusterId", sc."name" AS "staffClusterName"
+         FROM "User" u
+         LEFT JOIN "Cluster" sc ON sc."id" = u."staffClusterId"
+         WHERE u."companyId" = $1
+           AND u."role"::text = ANY($2::text[])
+         ORDER BY u."role" ASC, u."name" ASC`,
+        [companyId, ["ADMIN", "OWNER", "MANAGER", "PENGELOLA"]]
+      ),
+      query<{
+        id: string;
+        userId: string;
+        clusterId: string;
+        isTemporary: boolean;
+        validUntil: Date | null;
+        clusterName: string;
+      }>(
+        `SELECT cma."id", cma."userId", cma."clusterId", cma."isTemporary", cma."validUntil",
+                cl."name" AS "clusterName"
+         FROM "ClusterManagerAssignment" cma
+         JOIN "User" u ON u."id" = cma."userId"
+         JOIN "Cluster" cl ON cl."id" = cma."clusterId"
+         WHERE u."companyId" = $1
+           AND u."role" IN ('ADMIN', 'OWNER', 'MANAGER', 'PENGELOLA')
+           AND (cma."isTemporary" = false OR (cma."isTemporary" = true AND ${activeAssignmentSql("cma", "$2")}))`,
+        [companyId, now]
+      ),
+      query<{ id: string; name: string; isActive: boolean }>(
+        `SELECT "id", "name", "isActive"
+         FROM "Cluster"
+         WHERE "companyId" = $1
+         ORDER BY "name" ASC`,
+        [companyId]
+      ),
     ]);
+
+    const assignmentsByUser = new Map<
+      string,
+      Array<{
+        id: string;
+        clusterId: string;
+        isTemporary: boolean;
+        validUntil: Date | null;
+        cluster: { name: string };
+      }>
+    >();
+    for (const a of assignmentRows) {
+      const list = assignmentsByUser.get(a.userId) ?? [];
+      list.push({
+        id: a.id,
+        clusterId: a.clusterId,
+        isTemporary: a.isTemporary,
+        validUntil: a.validUntil,
+        cluster: { name: a.clusterName },
+      });
+      assignmentsByUser.set(a.userId, list);
+    }
+
+    users = userRows.map((u) => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      role: u.role,
+      isActive: u.isActive,
+      staffClusterId: u.staffClusterId,
+      staffCluster: u.staffClusterName ? { name: u.staffClusterName } : null,
+      managerAssignments: assignmentsByUser.get(u.id) ?? [],
+    }));
+    clusters = clusterRows;
   } catch (error) {
     console.error("[akun/staf] gagal memuat data:", error);
     return <DbErrorNotice />;
   }
-  const [users, clusters] = data;
 
   return (
     <div className="space-y-6">
@@ -272,51 +345,62 @@ async function ReporterTab({
   q: string;
   page: number;
 }) {
-  const where = {
-    AND: [
-      reporterInCompanyWhere(companyId),
-      q
-        ? {
-            OR: [
-              { name: { contains: q, mode: "insensitive" as const } },
-              { email: { contains: q, mode: "insensitive" as const } },
-            ],
-          }
-        : {},
-    ],
+  type ReporterRow = {
+    id: string;
+    name: string;
+    email: string;
+    reporterStatus: string | null;
+    blockHouseNo: string | null;
+    validReportCount: number;
+    invalidReportCount: number;
+    isBlocked: boolean;
+    blockedReason: string | null;
+    createdAt: Date;
   };
 
-  let data;
+  let total: number;
+  let reporters: ReporterRow[];
+  let blockedCount: number;
+
   try {
-    data = await Promise.all([
-      prisma.user.count({ where }),
-      prisma.user.findMany({
-        where,
-        orderBy: [{ isBlocked: "desc" }, { invalidReportCount: "desc" }, { name: "asc" }],
-        skip: (page - 1) * PAGE_SIZE,
-        take: PAGE_SIZE,
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          reporterStatus: true,
-          blockHouseNo: true,
-          validReportCount: true,
-          invalidReportCount: true,
-          isBlocked: true,
-          blockedReason: true,
-          createdAt: true,
-        },
-      }),
-      prisma.user.count({
-        where: { ...reporterInCompanyWhere(companyId), isBlocked: true },
-      }),
+    const searchParamsList: unknown[] = [companyId];
+    const searchClause = q
+      ? (() => {
+          searchParamsList.push(`%${q}%`);
+          return ` AND (u."name" ILIKE $2 OR u."email" ILIKE $2)`;
+        })()
+      : "";
+    const baseWhere = `${reporterInCompanySql("u", "$1")}${searchClause}`;
+    const listParams = [...searchParamsList, PAGE_SIZE, (page - 1) * PAGE_SIZE];
+    const limitIdx = searchParamsList.length + 1;
+    const offsetIdx = searchParamsList.length + 2;
+
+    [total, reporters, blockedCount] = await Promise.all([
+      queryCount(
+        `SELECT COUNT(*)::int AS count FROM "User" u WHERE ${baseWhere}`,
+        searchParamsList
+      ),
+      query<ReporterRow>(
+        `SELECT u."id", u."name", u."email", u."reporterStatus", u."blockHouseNo",
+                u."validReportCount", u."invalidReportCount", u."isBlocked",
+                u."blockedReason", u."createdAt"
+         FROM "User" u
+         WHERE ${baseWhere}
+         ORDER BY u."isBlocked" DESC, u."invalidReportCount" DESC, u."name" ASC
+         LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+        listParams
+      ),
+      queryCount(
+        `SELECT COUNT(*)::int AS count
+         FROM "User" u
+         WHERE ${reporterInCompanySql("u", "$1")} AND u."isBlocked" = true`,
+        [companyId]
+      ),
     ]);
   } catch (error) {
     console.error("[akun/pelapor] gagal memuat data:", error);
     return <DbErrorNotice />;
   }
-  const [total, reporters, blockedCount] = data;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
@@ -452,42 +536,87 @@ function delegationStatus(a: {
 
 async function DelegationTab({ companyId }: { companyId: string }) {
   const now = new Date();
-  let data;
+  let managers: Array<{ id: string; name: string; email: string }>;
+  let permAssignments: Array<{ userId: string; clusterId: string }>;
+  let clusters: Array<{ id: string; name: string; isActive: boolean }>;
+  let history: Array<{
+    id: string;
+    validFrom: Date;
+    validUntil: Date | null;
+    cancelledAt: Date | null;
+    replacedManagerId: string | null;
+    cancelledById: string | null;
+    user: { id: string; name: string };
+    cluster: { name: string };
+  }>;
+
   try {
-    data = await Promise.all([
-      prisma.user.findMany({
-        where: { companyId, role: "MANAGER", isActive: true },
-        orderBy: { name: "asc" },
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          managerAssignments: {
-            where: { isTemporary: false },
-            select: { clusterId: true },
-          },
-        },
-      }),
-      prisma.cluster.findMany({
-        where: { companyId },
-        orderBy: { name: "asc" },
-        select: { id: true, name: true, isActive: true },
-      }),
-      prisma.clusterManagerAssignment.findMany({
-        where: { isTemporary: true, cluster: { companyId } },
-        orderBy: { createdAt: "desc" },
-        take: 50,
-        include: {
-          user: { select: { id: true, name: true } },
-          cluster: { select: { name: true } },
-        },
-      }),
+    const [managerRows, permRows, clusterRows, historyRows] = await Promise.all([
+      query<{ id: string; name: string; email: string }>(
+        `SELECT "id", "name", "email"
+         FROM "User"
+         WHERE "companyId" = $1 AND "role" = 'MANAGER'::"Role" AND "isActive" = true
+         ORDER BY "name" ASC`,
+        [companyId]
+      ),
+      query<{ userId: string; clusterId: string }>(
+        `SELECT cma."userId", cma."clusterId"
+         FROM "ClusterManagerAssignment" cma
+         JOIN "User" u ON u."id" = cma."userId"
+         WHERE u."companyId" = $1
+           AND u."role" = 'MANAGER'::"Role"
+           AND u."isActive" = true
+           AND cma."isTemporary" = false`,
+        [companyId]
+      ),
+      query<{ id: string; name: string; isActive: boolean }>(
+        `SELECT "id", "name", "isActive"
+         FROM "Cluster"
+         WHERE "companyId" = $1
+         ORDER BY "name" ASC`,
+        [companyId]
+      ),
+      query<{
+        id: string;
+        validFrom: Date;
+        validUntil: Date | null;
+        cancelledAt: Date | null;
+        replacedManagerId: string | null;
+        cancelledById: string | null;
+        userId: string;
+        userName: string;
+        clusterName: string;
+      }>(
+        `SELECT cma."id", cma."validFrom", cma."validUntil", cma."cancelledAt",
+                cma."replacedManagerId", cma."cancelledById",
+                u."id" AS "userId", u."name" AS "userName", cl."name" AS "clusterName"
+         FROM "ClusterManagerAssignment" cma
+         JOIN "Cluster" cl ON cl."id" = cma."clusterId"
+         JOIN "User" u ON u."id" = cma."userId"
+         WHERE cma."isTemporary" = true AND cl."companyId" = $1
+         ORDER BY cma."createdAt" DESC
+         LIMIT 50`,
+        [companyId]
+      ),
     ]);
+
+    managers = managerRows;
+    permAssignments = permRows;
+    clusters = clusterRows;
+    history = historyRows.map((h) => ({
+      id: h.id,
+      validFrom: h.validFrom,
+      validUntil: h.validUntil,
+      cancelledAt: h.cancelledAt,
+      replacedManagerId: h.replacedManagerId,
+      cancelledById: h.cancelledById,
+      user: { id: h.userId, name: h.userName },
+      cluster: { name: h.clusterName },
+    }));
   } catch (error) {
     console.error("[akun/delegasi] gagal memuat data:", error);
     return <DbErrorNotice />;
   }
-  const [managers, clusters, history] = data;
 
   const relatedIds = Array.from(
     new Set(
@@ -497,10 +626,10 @@ async function DelegationTab({ companyId }: { companyId: string }) {
   let nameById = new Map<string, string>();
   if (relatedIds.length > 0) {
     try {
-      const related = await prisma.user.findMany({
-        where: { id: { in: relatedIds } },
-        select: { id: true, name: true },
-      });
+      const related = await query<{ id: string; name: string }>(
+        `SELECT "id", "name" FROM "User" WHERE "id" = ANY($1::text[])`,
+        [relatedIds]
+      );
       nameById = new Map(related.map((u) => [u.id, u.name]));
     } catch {
       // nama tetap tampil sebagai "-"
@@ -509,7 +638,10 @@ async function DelegationTab({ companyId }: { companyId: string }) {
 
   const permanentClusterIdsByManager: Record<string, string[]> = {};
   for (const m of managers) {
-    permanentClusterIdsByManager[m.id] = m.managerAssignments.map((a) => a.clusterId);
+    permanentClusterIdsByManager[m.id] = [];
+  }
+  for (const a of permAssignments) {
+    permanentClusterIdsByManager[a.userId]?.push(a.clusterId);
   }
 
   return (

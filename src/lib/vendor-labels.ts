@@ -1,4 +1,4 @@
-import type { ApprovalStatus, TechnicianStatus, VendorType } from "@prisma/client";
+import type { ApprovalStatus, TechnicianStatus, VendorType } from "./db-types";
 
 /** Label & warna tampilan untuk data vendor dan teknisi (dipakai server & client). */
 
