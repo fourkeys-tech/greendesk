@@ -61,10 +61,22 @@ function SuccessContent() {
 
 export default function ReportSuccessPage() {
   return (
+    <>
+    {/* ===== MOBILE (unchanged) ===== */}
     <MobileContainer className="bg-[#F6F5F0] p-6">
       <Suspense fallback={<div className="p-8 text-center text-xs text-slate-400">Memuat hasil...</div>}>
         <SuccessContent />
       </Suspense>
     </MobileContainer>
+
+    {/* ===== DESKTOP / TABLET ===== */}
+    <div className="hidden md:flex min-h-screen bg-[#F6F5F0] items-center justify-center p-6 pb-28">
+      <div className="max-w-md w-full">
+        <Suspense fallback={<div className="p-8 text-center text-sm text-slate-400">Memuat hasil...</div>}>
+          <SuccessContent />
+        </Suspense>
+      </div>
+    </div>
+    </>
   );
 }

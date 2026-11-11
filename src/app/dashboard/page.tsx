@@ -22,13 +22,13 @@ export default async function DashboardHomePage() {
   const [assetCount, auditCount, vendorCount, technicianCount] =
     session.companyId
       ? await Promise.all([
-          prisma.asset.count({ where: { companyId: session.companyId } }),
-          prisma.auditLog.count({ where: { companyId: session.companyId } }),
-          prisma.vendor.count({ where: { companyId: session.companyId } }),
-          prisma.technician.count({
-            where: { companyId: session.companyId },
-          }),
-        ])
+        prisma.asset.count({ where: { companyId: session.companyId } }),
+        prisma.auditLog.count({ where: { companyId: session.companyId } }),
+        prisma.vendor.count({ where: { companyId: session.companyId } }),
+        prisma.technician.count({
+          where: { companyId: session.companyId },
+        }),
+      ])
       : [0, 0, 0, 0];
 
   // Render halaman khusus yang presisi sesuai hak akses & fungsi role
