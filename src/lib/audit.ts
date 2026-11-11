@@ -1,5 +1,5 @@
-import type { AuditAction, Prisma, Role } from "@prisma/client";
-import { prisma } from "./prisma";
+import type { AuditAction, AuditLogRow, Role } from "./db-types";
+import { pool, query, queryCount, queryOne, type DbClient } from "./db";
 import { assertPermission } from "./permissions";
 
 export interface AuditActor {
@@ -20,11 +20,20 @@ export interface RecordAuditParams {
   companyId?: string | null;
 }
 
+/** Aktor sistem untuk aksi otomatis (cron/maintenance). actorId null karena bukan user nyata. */
+export const SYSTEM_AUDIT_ACTOR_NAME = "Sistem";
+
 /**
  * Mencatat perubahan data master ke tabel AuditLog (siapa, apa, kapan, nilai lama dan baru).
  * Sesuai PRD Bagian 11: Riwayat perubahan tidak bisa diubah atau dihapus oleh role mana pun.
+ *
+ * Teruskan `db = tx` saat dipanggil di dalam `withTransaction` agar audit ikut commit/rollback
+ * bersama perubahan datanya.
  */
-export async function recordAuditLog(params: RecordAuditParams) {
+export async function recordAuditLog(
+  params: RecordAuditParams,
+  db: DbClient = pool
+): Promise<AuditLogRow> {
   const {
     actor,
     entityName,
@@ -36,24 +45,33 @@ export async function recordAuditLog(params: RecordAuditParams) {
     companyId,
   } = params;
 
-  return prisma.auditLog.create({
-    data: {
-      companyId: companyId ?? actor.companyId ?? null,
-      actorId: actor.id,
-      actorName: actor.name,
-      actorRole: actor.role,
+  const row = await queryOne<AuditLogRow>(
+    `INSERT INTO "AuditLog" (
+       "companyId", "actorId", "actorName", "actorRole",
+       "entityName", "entityId", "action", "summary",
+       "oldValues", "newValues"
+     )
+     VALUES ($1, $2, $3, $4::"Role", $5, $6, $7::"AuditAction", $8, $9::jsonb, $10::jsonb)
+     RETURNING *`,
+    [
+      companyId ?? actor.companyId ?? null,
+      actor.id || null,
+      actor.name,
+      actor.role,
       entityName,
       entityId,
       action,
       summary,
-      oldValues: oldValues
-        ? (JSON.parse(JSON.stringify(oldValues)) as Prisma.InputJsonValue)
-        : undefined,
-      newValues: newValues
-        ? (JSON.parse(JSON.stringify(newValues)) as Prisma.InputJsonValue)
-        : undefined,
-    },
-  });
+      oldValues == null ? null : JSON.stringify(oldValues),
+      newValues == null ? null : JSON.stringify(newValues),
+    ],
+    db
+  );
+
+  if (!row) {
+    throw new Error("Gagal mencatat AuditLog.");
+  }
+  return row;
 }
 
 export const AUDIT_PAGE_SIZE = 50;
@@ -78,31 +96,42 @@ export async function getCompanyAuditLogs(
   }
 
   const pageSize = Math.min(Math.max(options.pageSize ?? AUDIT_PAGE_SIZE, 1), 200);
-  const where: Prisma.AuditLogWhereInput = {
-    companyId: actor.companyId,
-    ...(options.entityName ? { entityName: options.entityName } : {}),
-    ...(options.action ? { action: options.action } : {}),
-  };
+  const conditions: string[] = [`"companyId" = $1`];
+  const params: unknown[] = [actor.companyId];
+
+  if (options.entityName) {
+    params.push(options.entityName);
+    conditions.push(`"entityName" = $${params.length}`);
+  }
+  if (options.action) {
+    params.push(options.action);
+    conditions.push(`"action" = $${params.length}::"AuditAction"`);
+  }
+
+  const whereSql = conditions.join(" AND ");
 
   const [total, entityGroups] = await Promise.all([
-    prisma.auditLog.count({ where }),
-    prisma.auditLog.groupBy({
-      by: ["entityName"],
-      where: { companyId: actor.companyId },
-      orderBy: { entityName: "asc" },
-    }),
+    queryCount(`SELECT COUNT(*)::int AS count FROM "AuditLog" WHERE ${whereSql}`, params),
+    query<{ entityName: string }>(
+      `SELECT DISTINCT "entityName" FROM "AuditLog" WHERE "companyId" = $1 ORDER BY "entityName" ASC`,
+      [actor.companyId]
+    ),
   ]);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const requestedPage = Number.isFinite(options.page) ? Math.floor(options.page ?? 1) : 1;
   const page = Math.min(Math.max(requestedPage, 1), totalPages);
+  const offset = (page - 1) * pageSize;
 
-  const logs = await prisma.auditLog.findMany({
-    where,
-    orderBy: { createdAt: "desc" },
-    skip: (page - 1) * pageSize,
-    take: pageSize,
-  });
+  const limitParam = `$${params.length + 1}`;
+  const offsetParam = `$${params.length + 2}`;
+  const logs = await query<AuditLogRow>(
+    `SELECT * FROM "AuditLog"
+     WHERE ${whereSql}
+     ORDER BY "createdAt" DESC
+     LIMIT ${limitParam} OFFSET ${offsetParam}`,
+    [...params, pageSize, offset]
+  );
 
   return {
     logs,

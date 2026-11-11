@@ -1,10 +1,23 @@
+import crypto from "crypto";
 import bcrypt from "bcryptjs";
-import type { ApprovalStatus, TechnicianStatus, VendorType } from "@prisma/client";
-import { prisma } from "../prisma";
+import { execute, query, queryCount, queryOne, withTransaction } from "../db";
+import type {
+  ApprovalStatus,
+  ClusterRow,
+  TechnicianRow,
+  TechnicianStatus,
+  UserRow,
+  VendorRow,
+  VendorType,
+} from "../db-types";
 import { assertPermission } from "../permissions";
-import { recordAuditLog } from "../audit";
-import { sendTransactionalEmail } from "../email";
+import { recordAuditLog, SYSTEM_AUDIT_ACTOR_NAME } from "../audit";
+import { enqueueEmail, escapeHtml } from "../email";
 import type { SessionUser } from "../auth";
+
+function generateTemporaryPassword(): string {
+  return crypto.randomBytes(9).toString("base64url");
+}
 
 /** Status laporan yang berarti SPK masih berjalan (vendor/teknisi sedang memegang pekerjaan). */
 export const OPEN_WORK_ORDER_REPORT_STATUSES = [
@@ -87,10 +100,16 @@ export async function createVendorWithPic(
 
   const uniqueClusterIds = Array.from(new Set(input.clusterIds));
   const [validClusters, existingUser] = await Promise.all([
-    prisma.cluster.findMany({
-      where: { id: { in: uniqueClusterIds }, companyId, isActive: true },
-    }),
-    prisma.user.findUnique({ where: { email: picEmail } }),
+    query<ClusterRow>(
+      `SELECT *
+       FROM "Cluster"
+       WHERE "id" = ANY($1::text[]) AND "companyId" = $2 AND "isActive" = true`,
+      [uniqueClusterIds, companyId]
+    ),
+    queryOne<{ id: string }>(
+      `SELECT "id" FROM "User" WHERE "email" = $1`,
+      [picEmail]
+    ),
   ]);
 
   if (validClusters.length !== uniqueClusterIds.length) {
@@ -102,89 +121,102 @@ export async function createVendorWithPic(
     throw new Error(`Email PIC ${picEmail} sudah terdaftar.`);
   }
 
-  const rawPassword =
-    input.picPassword?.trim() || process.env.SEED_DEFAULT_PASSWORD;
-  if (!rawPassword) {
-    throw new Error("Kata sandi awal PIC wajib diisi.");
-  }
+  const suppliedPassword = input.picPassword?.trim();
+  const temporaryPassword = suppliedPassword ? null : generateTemporaryPassword();
+  const rawPassword = suppliedPassword || temporaryPassword!;
   const passwordHash = await bcrypt.hash(rawPassword, 10);
 
-  // Akun PIC dan data vendor dibuat bersamaan: jika salah satu gagal, keduanya batal.
-  const { picUser, vendor } = await prisma.$transaction(async (tx) => {
-    const picUser = await tx.user.create({
-      data: {
+  // Akun PIC, data vendor, email outbox, dan audit dibuat dalam satu transaksi atomik.
+  const { picUser, vendor } = await withTransaction(async (tx) => {
+    const picUser = await queryOne<UserRow>(
+      `INSERT INTO "User" ("companyId", "name", "email", "passwordHash", "role", "isActive")
+       VALUES ($1, $2, $3, $4, 'PIC_VENDOR'::"Role", true)
+       RETURNING *`,
+      [companyId, picName, picEmail, passwordHash],
+      tx
+    );
+    if (!picUser) throw new Error("Gagal membuat akun PIC Vendor.");
+
+    const now = new Date();
+    const vendor = await queryOne<VendorRow>(
+      `INSERT INTO "Vendor" (
+         "companyId", "name", "type", "skills", "picUserId",
+         "cooperationScheme", "contractStart", "contractEnd",
+         "warrantyDays", "address", "npwp", "lastTechnicianConfirmedAt"
+       )
+       VALUES ($1, $2, $3::"VendorType", $4::text[], $5, $6, $7, $8, $9, $10, $11, $12)
+       RETURNING *`,
+      [
         companyId,
-        name: picName,
-        email: picEmail,
-        passwordHash,
-        role: "PIC_VENDOR",
-        isActive: true,
-      },
+        vendorName,
+        input.type,
+        cleanSkills,
+        picUser.id,
+        input.cooperationScheme?.trim() || null,
+        input.contractStart || null,
+        input.contractEnd || null,
+        input.warrantyDays > 0 ? input.warrantyDays : 30,
+        input.address?.trim() || null,
+        input.npwp?.trim() || null,
+        now,
+      ],
+      tx
+    );
+    if (!vendor) throw new Error("Gagal membuat vendor.");
+
+    await execute(
+      `INSERT INTO "VendorServiceArea" ("vendorId", "clusterId")
+       SELECT $1, cid FROM unnest($2::text[]) AS cid`,
+      [vendor.id, validClusters.map((c) => c.id)],
+      tx
+    );
+
+    await enqueueEmail(tx, {
+      companyId,
+      toEmail: picEmail,
+      subject: `Undangan Aktivasi Akun PIC Vendor – ${vendorName}`,
+      bodyHtml: `
+      <div style="font-family: sans-serif; line-height: 1.6;">
+        <p>Halo <strong>${escapeHtml(picName)}</strong>,</p>
+        <p>Perusahaan Anda (<strong>${escapeHtml(vendorName)}</strong>) telah didaftarkan sebagai vendor rekanan di platform GreenPark.</p>
+        <p>Area Layanan Cluster: <strong>${validClusters
+          .map((c) => escapeHtml(c.name))
+          .join(", ")}</strong></p>
+        <p>Silakan masuk menggunakan email <strong>${escapeHtml(picEmail)}</strong> untuk mendaftarkan teknisi lapangan Anda dan menerima SPK.</p>
+      </div>
+    `.trim(),
+      triggerType: "VENDOR_INVITE",
     });
 
-    const vendor = await tx.vendor.create({
-      data: {
-        companyId,
-        name: vendorName,
-        type: input.type,
-        skills: cleanSkills,
-        picUserId: picUser.id,
-        cooperationScheme: input.cooperationScheme?.trim() || null,
-        contractStart: input.contractStart || null,
-        contractEnd: input.contractEnd || null,
-        warrantyDays: input.warrantyDays > 0 ? input.warrantyDays : 30,
-        address: input.address?.trim() || null,
-        npwp: input.npwp?.trim() || null,
-        lastTechnicianConfirmedAt: new Date(),
-        serviceAreas: {
-          create: validClusters.map((c) => ({ clusterId: c.id })),
+    await recordAuditLog(
+      {
+        actor: {
+          id: actor.id,
+          name: actor.name,
+          role: actor.role,
+          companyId,
+        },
+        entityName: "Vendor",
+        entityId: vendor.id,
+        action: "CREATE",
+        summary: `Mendaftarkan vendor baru ${vendor.name} (${vendor.type}) dengan PIC ${picUser.name}`,
+        oldValues: null,
+        newValues: {
+          vendorName: vendor.name,
+          type: vendor.type,
+          skills: vendor.skills,
+          warrantyDays: vendor.warrantyDays,
+          picEmail: picUser.email,
+          serviceClusters: validClusters.map((c) => c.name),
         },
       },
-    });
+      tx
+    );
+
     return { picUser, vendor };
   });
 
-  // Kirim email undangan ke PIC Vendor (User story Fase 2)
-  await sendTransactionalEmail({
-    companyId,
-    toEmail: picEmail,
-    subject: `Undangan Aktivasi Akun PIC Vendor – ${vendorName}`,
-    bodyHtml: `
-      <div style="font-family: sans-serif; line-height: 1.6;">
-        <p>Halo <strong>${picName}</strong>,</p>
-        <p>Perusahaan Anda (<strong>${vendorName}</strong>) telah didaftarkan sebagai vendor rekanan di platform GreenPark.</p>
-        <p>Area Layanan Cluster: <strong>${validClusters
-          .map((c) => c.name)
-          .join(", ")}</strong></p>
-        <p>Silakan masuk menggunakan email <strong>${picEmail}</strong> untuk mendaftarkan teknisi lapangan Anda dan menerima SPK.</p>
-      </div>
-    `.trim(),
-    triggerType: "VENDOR_INVITE",
-  });
-
-  await recordAuditLog({
-    actor: {
-      id: actor.id,
-      name: actor.name,
-      role: actor.role,
-      companyId,
-    },
-    entityName: "Vendor",
-    entityId: vendor.id,
-    action: "CREATE",
-    summary: `Mendaftarkan vendor baru ${vendor.name} (${vendor.type}) dengan PIC ${picUser.name}`,
-    oldValues: null,
-    newValues: {
-      vendorName: vendor.name,
-      type: vendor.type,
-      skills: vendor.skills,
-      warrantyDays: vendor.warrantyDays,
-      picEmail: picUser.email,
-      serviceClusters: validClusters.map((c) => c.name),
-    },
-  });
-
-  return { vendor, picUser };
+  return { vendor, picUser, temporaryPassword };
 }
 
 /**
@@ -208,9 +240,10 @@ export async function registerTechnicianByPic(
   }
 
   const companyId = actor.companyId;
-  const vendor = await prisma.vendor.findUnique({
-    where: { picUserId: actor.id },
-  });
+  const vendor = await queryOne<VendorRow>(
+    `SELECT * FROM "Vendor" WHERE "picUserId" = $1`,
+    [actor.id]
+  );
   if (!vendor) {
     throw new Error("Data perusahaan vendor Anda tidak ditemukan.");
   }
@@ -233,86 +266,100 @@ export async function registerTechnicianByPic(
     );
   }
 
-  const existingUser = await prisma.user.findUnique({ where: { email } });
+  const existingUser = await queryOne<{ id: string }>(
+    `SELECT "id" FROM "User" WHERE "email" = $1`,
+    [email]
+  );
   if (existingUser) {
     throw new Error(`Email teknisi ${email} sudah terdaftar.`);
   }
 
-  const rawPassword =
-    input.password?.trim() || process.env.SEED_DEFAULT_PASSWORD;
-  if (!rawPassword) {
-    throw new Error("Kata sandi awal teknisi wajib diisi.");
-  }
+  const suppliedPassword = input.password?.trim();
+  const temporaryPassword = suppliedPassword ? null : generateTemporaryPassword();
+  const rawPassword = suppliedPassword || temporaryPassword!;
   const passwordHash = await bcrypt.hash(rawPassword, 10);
 
-  const technician = await prisma.$transaction(async (tx) => {
-    const techUser = await tx.user.create({
-      data: {
-        companyId,
-        name: fullName,
-        email,
-        passwordHash,
-        role: "TEKNISI",
-        isActive: true,
-      },
-    });
+  const technician = await withTransaction(async (tx) => {
+    const techUser = await queryOne<{ id: string }>(
+      `INSERT INTO "User" ("companyId", "name", "email", "passwordHash", "role", "isActive")
+       VALUES ($1, $2, $3, $4, 'TEKNISI'::"Role", true)
+       RETURNING "id"`,
+      [companyId, fullName, email, passwordHash],
+      tx
+    );
+    if (!techUser) throw new Error("Gagal membuat akun teknisi.");
 
-    return tx.technician.create({
-      data: {
+    const createdTech = await queryOne<TechnicianRow>(
+      `INSERT INTO "Technician" (
+         "companyId", "vendorId", "userId", "fullName", "whatsapp",
+         "email", "facePhotoUrl", "skills", "status", "approvalStatus"
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], 'ACTIVE'::"TechnicianStatus", 'PENDING'::"ApprovalStatus")
+       RETURNING *`,
+      [
         companyId,
-        vendorId: vendor.id,
-        userId: techUser.id,
+        vendor.id,
+        techUser.id,
         fullName,
         whatsapp,
         email,
-        facePhotoUrl: input.facePhotoUrl || null,
-        skills: cleanSkills,
-        status: "ACTIVE",
-        approvalStatus: "PENDING",
+        input.facePhotoUrl || null,
+        cleanSkills,
+      ],
+      tx
+    );
+    if (!createdTech) throw new Error("Gagal menyimpan profil teknisi.");
+
+    // Notifikasi web ke Admin & audit ikut transaksi
+    const admins = await query<{ id: string }>(
+      `SELECT "id" FROM "User" WHERE "companyId" = $1 AND "role" = 'ADMIN'::"Role" AND "isActive" = true`,
+      [companyId],
+      tx
+    );
+
+    if (admins.length > 0) {
+      await execute(
+        `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+         SELECT $1, uid, $2, $3, $4 FROM unnest($5::text[]) AS uid`,
+        [
+          companyId,
+          "Teknisi Baru Menunggu Persetujuan",
+          `PIC Vendor ${vendor.name} mendaftarkan teknisi baru: ${fullName} (${email}). Setujui agar teknisi dapat login dan menerima SPK.`,
+          "/dashboard/vendor",
+          admins.map((a) => a.id),
+        ],
+        tx
+      );
+    }
+
+    await recordAuditLog(
+      {
+        actor: {
+          id: actor.id,
+          name: actor.name,
+          role: actor.role,
+          companyId,
+        },
+        entityName: "Technician",
+        entityId: createdTech.id,
+        action: "CREATE",
+        summary: `PIC ${vendor.name} mendaftarkan teknisi baru: ${createdTech.fullName} (Menunggu Persetujuan Admin)`,
+        oldValues: null,
+        newValues: {
+          fullName: createdTech.fullName,
+          email: createdTech.email,
+          whatsapp: createdTech.whatsapp,
+          vendorName: vendor.name,
+          approvalStatus: createdTech.approvalStatus,
+        },
       },
-    });
+      tx
+    );
+
+    return createdTech;
   });
 
-  // Kriteria Penerimaan Fase 2: Notifikasi web ke Admin muncul saat ada teknisi baru menunggu persetujuan
-  const admins = await prisma.user.findMany({
-    where: { companyId, role: "ADMIN", isActive: true },
-    select: { id: true },
-  });
-
-  if (admins.length > 0) {
-    await prisma.notification.createMany({
-      data: admins.map((adm) => ({
-        companyId,
-        recipientId: adm.id,
-        title: "Teknisi Baru Menunggu Persetujuan",
-        message: `PIC Vendor ${vendor.name} mendaftarkan teknisi baru: ${fullName} (${email}). Setujui agar teknisi dapat login dan menerima SPK.`,
-        linkUrl: "/dashboard/vendor",
-      })),
-    });
-  }
-
-  await recordAuditLog({
-    actor: {
-      id: actor.id,
-      name: actor.name,
-      role: actor.role,
-      companyId,
-    },
-    entityName: "Technician",
-    entityId: technician.id,
-    action: "CREATE",
-    summary: `PIC ${vendor.name} mendaftarkan teknisi baru: ${technician.fullName} (Menunggu Persetujuan Admin)`,
-    oldValues: null,
-    newValues: {
-      fullName: technician.fullName,
-      email: technician.email,
-      whatsapp: technician.whatsapp,
-      vendorName: vendor.name,
-      approvalStatus: technician.approvalStatus,
-    },
-  });
-
-  return technician;
+  return { ...technician, temporaryPassword };
 }
 
 /**
@@ -332,16 +379,18 @@ export async function updateTechnicianStatusByPic(
     throw new Error("Akun PIC tidak terhubung ke perusahaan.");
   }
 
-  const vendor = await prisma.vendor.findUnique({
-    where: { picUserId: actor.id },
-  });
+  const vendor = await queryOne<VendorRow>(
+    `SELECT * FROM "Vendor" WHERE "picUserId" = $1`,
+    [actor.id]
+  );
   if (!vendor) {
     throw new Error("Vendor tidak ditemukan.");
   }
 
-  const tech = await prisma.technician.findFirst({
-    where: { id: technicianId, vendorId: vendor.id },
-  });
+  const tech = await queryOne<TechnicianRow>(
+    `SELECT * FROM "Technician" WHERE "id" = $1 AND "vendorId" = $2`,
+    [technicianId, vendor.id]
+  );
   if (!tech) {
     throw new Error("Teknisi tidak ditemukan di vendor Anda.");
   }
@@ -372,38 +421,50 @@ export async function updateTechnicianStatusByPic(
 
   const deactivationReason =
     newStatus === "INACTIVE" ? "MANUAL_BY_PIC" : null;
+  const nextDeactivationReason =
+    newStatus === "ACTIVE" || newStatus === "ON_LEAVE"
+      ? null
+      : deactivationReason;
+  const nextLastActiveAt = newStatus === "ACTIVE" ? new Date() : tech.lastActiveAt;
+  const companyId = actor.companyId;
 
-  const updated = await prisma.technician.update({
-    where: { id: tech.id },
-    data: {
-      status: newStatus,
-      deactivationReason:
-        newStatus === "ACTIVE" || newStatus === "ON_LEAVE"
-          ? null
-          : deactivationReason,
-      reactivationRequested: false,
-      lastActiveAt: newStatus === "ACTIVE" ? new Date() : tech.lastActiveAt,
-    },
+  return withTransaction(async (tx) => {
+    const updated = await queryOne<TechnicianRow>(
+      `UPDATE "Technician"
+       SET "status" = $2::"TechnicianStatus",
+           "deactivationReason" = $3,
+           "reactivationRequested" = false,
+           "lastActiveAt" = $4,
+           "updatedAt" = NOW()
+       WHERE "id" = $1
+       RETURNING *`,
+      [tech.id, newStatus, nextDeactivationReason, nextLastActiveAt],
+      tx
+    );
+    if (!updated) throw new Error("Gagal mengubah status teknisi.");
+
+    await recordAuditLog(
+      {
+        actor: {
+          id: actor.id,
+          name: actor.name,
+          role: actor.role,
+          companyId,
+        },
+        entityName: "Technician",
+        entityId: tech.id,
+        action: "UPDATE",
+        summary: `PIC mengubah status teknisi ${tech.fullName} menjadi ${newStatus}${
+          newStatus === "INACTIVE" ? " (Manual oleh PIC)" : ""
+        }`,
+        oldValues: { status: tech.status, deactivationReason: tech.deactivationReason },
+        newValues: { status: updated.status, deactivationReason: updated.deactivationReason },
+      },
+      tx
+    );
+
+    return updated;
   });
-
-  await recordAuditLog({
-    actor: {
-      id: actor.id,
-      name: actor.name,
-      role: actor.role,
-      companyId: actor.companyId,
-    },
-    entityName: "Technician",
-    entityId: tech.id,
-    action: "UPDATE",
-    summary: `PIC mengubah status teknisi ${tech.fullName} menjadi ${newStatus}${
-      newStatus === "INACTIVE" ? " (Manual oleh PIC)" : ""
-    }`,
-    oldValues: { status: tech.status, deactivationReason: tech.deactivationReason },
-    newValues: { status: updated.status, deactivationReason: updated.deactivationReason },
-  });
-
-  return updated;
 }
 
 /**
@@ -420,16 +481,18 @@ export async function requestTechnicianReactivationByPic(
     throw new Error("Akun PIC tidak terhubung ke perusahaan.");
   }
 
-  const vendor = await prisma.vendor.findUnique({
-    where: { picUserId: actor.id },
-  });
+  const vendor = await queryOne<VendorRow>(
+    `SELECT * FROM "Vendor" WHERE "picUserId" = $1`,
+    [actor.id]
+  );
   if (!vendor) {
     throw new Error("Vendor tidak ditemukan.");
   }
 
-  const tech = await prisma.technician.findFirst({
-    where: { id: technicianId, vendorId: vendor.id },
-  });
+  const tech = await queryOne<TechnicianRow>(
+    `SELECT * FROM "Technician" WHERE "id" = $1 AND "vendorId" = $2`,
+    [technicianId, vendor.id]
+  );
   if (!tech) {
     throw new Error("Teknisi tidak ditemukan di vendor Anda.");
   }
@@ -440,50 +503,70 @@ export async function requestTechnicianReactivationByPic(
     throw new Error("Pengajuan aktif kembali teknisi ini masih menunggu keputusan Admin.");
   }
 
-  const updated = await prisma.technician.update({
-    where: { id: tech.id },
-    data: {
-      reactivationRequested: true,
-      reactivationNote: note?.trim() || "Pengajuan aktif kembali oleh PIC Vendor",
-    },
+  const companyId = actor.companyId;
+  const cleanNote = note?.trim() || "Pengajuan aktif kembali oleh PIC Vendor";
+
+  return withTransaction(async (tx) => {
+    const updatedCount = await execute(
+      `UPDATE "Technician"
+       SET "reactivationRequested" = true, "reactivationNote" = $2, "updatedAt" = NOW()
+       WHERE "id" = $1 AND "reactivationRequested" = false AND "status" = 'INACTIVE'::"TechnicianStatus"`,
+      [tech.id, cleanNote],
+      tx
+    );
+    if (updatedCount !== 1) {
+      throw new Error("Status pengajuan aktif kembali teknisi sudah berubah, muat ulang halaman.");
+    }
+
+    const admins = await query<{ id: string }>(
+      `SELECT "id" FROM "User" WHERE "companyId" = $1 AND "role" = 'ADMIN'::"Role" AND "isActive" = true`,
+      [companyId],
+      tx
+    );
+
+    if (admins.length > 0) {
+      await execute(
+        `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+         SELECT $1, uid, $2, $3, $4 FROM unnest($5::text[]) AS uid`,
+        [
+          companyId,
+          "Pengajuan Aktif Kembali Teknisi",
+          `PIC Vendor ${vendor.name} mengajukan pengaktifan kembali teknisi ${tech.fullName} yang dinonaktifkan sistem. Catatan: ${
+            note?.trim() || "-"
+          }`,
+          "/dashboard/vendor",
+          admins.map((a) => a.id),
+        ],
+        tx
+      );
+    }
+
+    await recordAuditLog(
+      {
+        actor: {
+          id: actor.id,
+          name: actor.name,
+          role: actor.role,
+          companyId,
+        },
+        entityName: "Technician",
+        entityId: tech.id,
+        action: "UPDATE",
+        summary: `PIC mengajukan aktif kembali teknisi ${tech.fullName} ke Admin`,
+        oldValues: { reactivationRequested: false },
+        newValues: { reactivationRequested: true, reactivationNote: note },
+      },
+      tx
+    );
+
+    const updated = await queryOne<TechnicianRow>(
+      `SELECT * FROM "Technician" WHERE "id" = $1`,
+      [tech.id],
+      tx
+    );
+    if (!updated) throw new Error("Data teknisi tidak ditemukan.");
+    return updated;
   });
-
-  // Notifikasi ke seluruh Admin di perusahaan (PRD 7.1)
-  const admins = await prisma.user.findMany({
-    where: { companyId: actor.companyId, role: "ADMIN", isActive: true },
-    select: { id: true },
-  });
-
-  if (admins.length > 0) {
-    await prisma.notification.createMany({
-      data: admins.map((adm) => ({
-        companyId: actor.companyId!,
-        recipientId: adm.id,
-        title: "Pengajuan Aktif Kembali Teknisi",
-        message: `PIC Vendor ${vendor.name} mengajukan pengaktifan kembali teknisi ${tech.fullName} yang dinonaktifkan sistem. Catatan: ${
-          note?.trim() || "-"
-        }`,
-        linkUrl: "/dashboard/vendor",
-      })),
-    });
-  }
-
-  await recordAuditLog({
-    actor: {
-      id: actor.id,
-      name: actor.name,
-      role: actor.role,
-      companyId: actor.companyId,
-    },
-    entityName: "Technician",
-    entityId: tech.id,
-    action: "UPDATE",
-    summary: `PIC mengajukan aktif kembali teknisi ${tech.fullName} ke Admin`,
-    oldValues: { reactivationRequested: false },
-    newValues: { reactivationRequested: true, reactivationNote: note },
-  });
-
-  return updated;
 }
 
 /**
@@ -498,10 +581,15 @@ export async function approveOrRejectTechnicianByAdmin(
   assertPermission(actor.role, "APPROVE_TECHNICIANS");
   const companyId = requireCompany(actor);
 
-  const tech = await prisma.technician.findFirst({
-    where: { id: technicianId, companyId },
-    include: { vendor: true },
-  });
+  const tech = await queryOne<
+    TechnicianRow & { vendorName: string; vendorPicUserId: string | null }
+  >(
+    `SELECT t.*, v."name" AS "vendorName", v."picUserId" AS "vendorPicUserId"
+     FROM "Technician" t
+     JOIN "Vendor" v ON v."id" = t."vendorId"
+     WHERE t."id" = $1 AND t."companyId" = $2`,
+    [technicianId, companyId]
+  );
   if (!tech) {
     throw new Error("Data teknisi tidak ditemukan di perusahaan Anda.");
   }
@@ -517,62 +605,91 @@ export async function approveOrRejectTechnicianByAdmin(
     throw new Error("Alasan penolakan wajib diisi agar PIC Vendor tahu apa yang perlu diperbaiki.");
   }
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const res = await tx.technician.update({
-      where: { id: tech.id },
-      data: {
-        approvalStatus: decision,
-        approvedById: actor.id,
-        approvedAt: new Date(),
-        rejectionReason: decision === "REJECTED" ? cleanReason : null,
-        status: decision === "REJECTED" ? "INACTIVE" : tech.status,
-        lastActiveAt: decision === "APPROVED" ? new Date() : tech.lastActiveAt,
-      },
-    });
-    if (decision === "REJECTED") {
-      await tx.user.update({
-        where: { id: tech.userId },
-        data: { isActive: false },
-      });
-    }
-    return res;
-  });
+  const now = new Date();
+  return withTransaction(async (tx) => {
+    const nextStatus = decision === "REJECTED" ? "INACTIVE" : tech.status;
+    const nextLastActive = decision === "APPROVED" ? now : tech.lastActiveAt;
 
-  if (tech.vendor.picUserId) {
-    await prisma.notification.create({
-      data: {
-        companyId,
-        recipientId: tech.vendor.picUserId,
-        title:
+    const guardCount = await execute(
+      `UPDATE "Technician"
+       SET "approvalStatus" = $2::"ApprovalStatus",
+           "approvedById" = $3,
+           "approvedAt" = $4,
+           "rejectionReason" = $5,
+           "status" = $6::"TechnicianStatus",
+           "lastActiveAt" = $7,
+           "updatedAt" = $4
+       WHERE "id" = $1 AND "approvalStatus" = 'PENDING'::"ApprovalStatus"`,
+      [
+        tech.id,
+        decision,
+        actor.id,
+        now,
+        decision === "REJECTED" ? cleanReason : null,
+        nextStatus,
+        nextLastActive,
+      ],
+      tx
+    );
+    if (guardCount !== 1) {
+      throw new Error("Persetujuan teknisi sudah diproses sebelumnya.");
+    }
+
+    if (decision === "REJECTED") {
+      await execute(
+        `UPDATE "User" SET "isActive" = false, "updatedAt" = NOW() WHERE "id" = $1`,
+        [tech.userId],
+        tx
+      );
+    }
+
+    if (tech.vendorPicUserId) {
+      await execute(
+        `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          companyId,
+          tech.vendorPicUserId,
           decision === "APPROVED"
             ? "Teknisi Disetujui Admin"
             : "Pendaftaran Teknisi Ditolak",
-        message:
           decision === "APPROVED"
             ? `Teknisi ${tech.fullName} disetujui dan kini bisa login serta menerima SPK.`
             : `Pendaftaran teknisi ${tech.fullName} ditolak Admin. Alasan: ${cleanReason}`,
-        linkUrl: "/dashboard/teknisi",
+          "/dashboard/teknisi",
+        ],
+        tx
+      );
+    }
+
+    const updated = await queryOne<TechnicianRow>(
+      `SELECT * FROM "Technician" WHERE "id" = $1`,
+      [tech.id],
+      tx
+    );
+    if (!updated) throw new Error("Data teknisi tidak ditemukan.");
+
+    await recordAuditLog(
+      {
+        actor: auditActorOf(actor, companyId),
+        entityName: "Technician",
+        entityId: tech.id,
+        action: "UPDATE",
+        summary: `Admin ${decision === "APPROVED" ? "menyetujui" : "menolak"} teknisi ${tech.fullName} (${tech.vendorName})${
+          decision === "REJECTED" ? `: ${cleanReason}` : ""
+        }`,
+        oldValues: { approvalStatus: tech.approvalStatus },
+        newValues: {
+          approvalStatus: updated.approvalStatus,
+          approvedBy: actor.name,
+          ...(decision === "REJECTED" ? { rejectionReason: cleanReason } : {}),
+        },
       },
-    });
-  }
+      tx
+    );
 
-  await recordAuditLog({
-    actor: auditActorOf(actor, companyId),
-    entityName: "Technician",
-    entityId: tech.id,
-    action: "UPDATE",
-    summary: `Admin ${decision === "APPROVED" ? "menyetujui" : "menolak"} teknisi ${tech.fullName} (${tech.vendor.name})${
-      decision === "REJECTED" ? `: ${cleanReason}` : ""
-    }`,
-    oldValues: { approvalStatus: tech.approvalStatus },
-    newValues: {
-      approvalStatus: updated.approvalStatus,
-      approvedBy: actor.name,
-      ...(decision === "REJECTED" ? { rejectionReason: cleanReason } : {}),
-    },
+    return updated;
   });
-
-  return updated;
 }
 
 /**
@@ -590,43 +707,68 @@ export async function rejectTechnicianReactivationByAdmin(
     throw new Error("Alasan penolakan pengajuan aktif kembali wajib diisi.");
   }
 
-  const tech = await prisma.technician.findFirst({
-    where: { id: technicianId, companyId },
-    include: { vendor: true },
-  });
+  const tech = await queryOne<
+    TechnicianRow & { vendorPicUserId: string | null }
+  >(
+    `SELECT t.*, v."picUserId" AS "vendorPicUserId"
+     FROM "Technician" t
+     JOIN "Vendor" v ON v."id" = t."vendorId"
+     WHERE t."id" = $1 AND t."companyId" = $2`,
+    [technicianId, companyId]
+  );
   if (!tech) throw new Error("Data teknisi tidak ditemukan.");
   if (!tech.reactivationRequested) {
     throw new Error("Tidak ada pengajuan aktif kembali yang menunggu untuk teknisi ini.");
   }
 
-  const updated = await prisma.technician.update({
-    where: { id: tech.id },
-    data: { reactivationRequested: false, reactivationNote: null },
-  });
+  return withTransaction(async (tx) => {
+    const guardCount = await execute(
+      `UPDATE "Technician"
+       SET "reactivationRequested" = false, "reactivationNote" = NULL, "updatedAt" = NOW()
+       WHERE "id" = $1 AND "reactivationRequested" = true`,
+      [tech.id],
+      tx
+    );
+    if (guardCount !== 1) {
+      throw new Error("Status pengajuan aktif kembali sudah berubah, muat ulang halaman.");
+    }
 
-  if (tech.vendor.picUserId) {
-    await prisma.notification.create({
-      data: {
-        companyId,
-        recipientId: tech.vendor.picUserId,
-        title: "Pengajuan Aktif Kembali Ditolak",
-        message: `Admin menolak pengajuan aktif kembali teknisi ${tech.fullName}. Alasan: ${cleanNote}`,
-        linkUrl: "/dashboard/teknisi",
+    if (tech.vendorPicUserId) {
+      await execute(
+        `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          companyId,
+          tech.vendorPicUserId,
+          "Pengajuan Aktif Kembali Ditolak",
+          `Admin menolak pengajuan aktif kembali teknisi ${tech.fullName}. Alasan: ${cleanNote}`,
+          "/dashboard/teknisi",
+        ],
+        tx
+      );
+    }
+
+    await recordAuditLog(
+      {
+        actor: auditActorOf(actor, companyId),
+        entityName: "Technician",
+        entityId: tech.id,
+        action: "UPDATE",
+        summary: `Admin menolak pengajuan aktif kembali teknisi ${tech.fullName}: ${cleanNote}`,
+        oldValues: { reactivationRequested: true, reactivationNote: tech.reactivationNote },
+        newValues: { reactivationRequested: false, rejectionNote: cleanNote },
       },
-    });
-  }
+      tx
+    );
 
-  await recordAuditLog({
-    actor: auditActorOf(actor, companyId),
-    entityName: "Technician",
-    entityId: tech.id,
-    action: "UPDATE",
-    summary: `Admin menolak pengajuan aktif kembali teknisi ${tech.fullName}: ${cleanNote}`,
-    oldValues: { reactivationRequested: true, reactivationNote: tech.reactivationNote },
-    newValues: { reactivationRequested: false, rejectionNote: cleanNote },
+    const updated = await queryOne<TechnicianRow>(
+      `SELECT * FROM "Technician" WHERE "id" = $1`,
+      [tech.id],
+      tx
+    );
+    if (!updated) throw new Error("Data teknisi tidak ditemukan.");
+    return updated;
   });
-
-  return updated;
 }
 
 /**
@@ -643,16 +785,15 @@ export async function deactivateTechnicianByAdmin(
   const cleanReason = reason.trim();
   if (!cleanReason) throw new Error("Alasan penonaktifan wajib diisi.");
 
-  const tech = await prisma.technician.findFirst({
-    where: { id: technicianId, companyId },
-    include: {
-      vendor: true,
-      workOrders: {
-        where: { report: { status: { in: [...OPEN_WORK_ORDER_REPORT_STATUSES] } } },
-        select: { spkNo: true },
-      },
-    },
-  });
+  const tech = await queryOne<
+    TechnicianRow & { vendorName: string; vendorPicUserId: string | null }
+  >(
+    `SELECT t.*, v."name" AS "vendorName", v."picUserId" AS "vendorPicUserId"
+     FROM "Technician" t
+     JOIN "Vendor" v ON v."id" = t."vendorId"
+     WHERE t."id" = $1 AND t."companyId" = $2`,
+    [technicianId, companyId]
+  );
   if (!tech) throw new Error("Data teknisi tidak ditemukan.");
   if (tech.approvalStatus !== "APPROVED") {
     throw new Error("Hanya teknisi yang sudah disetujui yang bisa dinonaktifkan.");
@@ -660,47 +801,76 @@ export async function deactivateTechnicianByAdmin(
   if (tech.status === "INACTIVE") {
     throw new Error("Teknisi ini sudah nonaktif.");
   }
-  if (tech.workOrders.length > 0) {
+
+  const openWorkOrders = await query<{ spkNo: string }>(
+    `SELECT wo."spkNo"
+     FROM "WorkOrder" wo
+     JOIN "Report" r ON r."id" = wo."reportId"
+     WHERE wo."technicianId" = $1
+       AND r."archivedAt" IS NULL
+       AND r."status" = ANY($2::"ReportStatus"[])`,
+    [tech.id, [...OPEN_WORK_ORDER_REPORT_STATUSES]]
+  );
+  if (openWorkOrders.length > 0) {
     throw new Error(
-      `Teknisi masih memegang SPK berjalan (${tech.workOrders
+      `Teknisi masih memegang SPK berjalan (${openWorkOrders
         .map((w) => w.spkNo)
         .join(", ")}). Selesaikan atau alihkan SPK terlebih dahulu.`
     );
   }
 
-  const updated = await prisma.technician.update({
-    where: { id: tech.id },
-    data: {
-      status: "INACTIVE",
-      deactivationReason: "MANUAL_BY_ADMIN",
-      reactivationRequested: false,
-      reactivationNote: cleanReason,
-    },
-  });
+  return withTransaction(async (tx) => {
+    const guardCount = await execute(
+      `UPDATE "Technician"
+       SET "status" = 'INACTIVE'::"TechnicianStatus",
+           "deactivationReason" = 'MANUAL_BY_ADMIN',
+           "reactivationRequested" = false,
+           "reactivationNote" = $2,
+           "updatedAt" = NOW()
+       WHERE "id" = $1 AND "status" <> 'INACTIVE'::"TechnicianStatus"`,
+      [tech.id, cleanReason],
+      tx
+    );
+    if (guardCount !== 1) {
+      throw new Error("Status teknisi sudah berubah, muat ulang halaman.");
+    }
 
-  if (tech.vendor.picUserId) {
-    await prisma.notification.create({
-      data: {
-        companyId,
-        recipientId: tech.vendor.picUserId,
-        title: "Teknisi Dinonaktifkan Admin",
-        message: `Admin menonaktifkan teknisi ${tech.fullName}. Alasan: ${cleanReason}`,
-        linkUrl: "/dashboard/teknisi",
+    if (tech.vendorPicUserId) {
+      await execute(
+        `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          companyId,
+          tech.vendorPicUserId,
+          "Teknisi Dinonaktifkan Admin",
+          `Admin menonaktifkan teknisi ${tech.fullName}. Alasan: ${cleanReason}`,
+          "/dashboard/teknisi",
+        ],
+        tx
+      );
+    }
+
+    await recordAuditLog(
+      {
+        actor: auditActorOf(actor, companyId),
+        entityName: "Technician",
+        entityId: tech.id,
+        action: "UPDATE",
+        summary: `Admin menonaktifkan teknisi ${tech.fullName} (${tech.vendorName}): ${cleanReason}`,
+        oldValues: { status: tech.status, deactivationReason: tech.deactivationReason },
+        newValues: { status: "INACTIVE", deactivationReason: "MANUAL_BY_ADMIN", reason: cleanReason },
       },
-    });
-  }
+      tx
+    );
 
-  await recordAuditLog({
-    actor: auditActorOf(actor, companyId),
-    entityName: "Technician",
-    entityId: tech.id,
-    action: "UPDATE",
-    summary: `Admin menonaktifkan teknisi ${tech.fullName} (${tech.vendor.name}): ${cleanReason}`,
-    oldValues: { status: tech.status, deactivationReason: tech.deactivationReason },
-    newValues: { status: "INACTIVE", deactivationReason: "MANUAL_BY_ADMIN", reason: cleanReason },
+    const updated = await queryOne<TechnicianRow>(
+      `SELECT * FROM "Technician" WHERE "id" = $1`,
+      [tech.id],
+      tx
+    );
+    if (!updated) throw new Error("Data teknisi tidak ditemukan.");
+    return updated;
   });
-
-  return updated;
 }
 
 /**
@@ -725,11 +895,23 @@ export async function updateVendor(
   assertPermission(actor.role, "MANAGE_VENDORS");
   const companyId = requireCompany(actor);
 
-  const vendor = await prisma.vendor.findFirst({
-    where: { id: vendorId, companyId },
-    include: { serviceAreas: { include: { cluster: true } } },
-  });
+  const vendor = await queryOne<VendorRow>(
+    `SELECT * FROM "Vendor" WHERE "id" = $1 AND "companyId" = $2`,
+    [vendorId, companyId]
+  );
   if (!vendor) throw new Error("Vendor tidak ditemukan di perusahaan Anda.");
+
+  const serviceAreas = await query<{
+    id: string;
+    clusterId: string;
+    clusterName: string;
+  }>(
+    `SELECT vsa."id", vsa."clusterId", cl."name" AS "clusterName"
+     FROM "VendorServiceArea" vsa
+     JOIN "Cluster" cl ON cl."id" = vsa."clusterId"
+     WHERE vsa."vendorId" = $1`,
+    [vendor.id]
+  );
 
   const name = input.name.trim();
   const skills = input.skills.map((s) => s.trim()).filter(Boolean);
@@ -744,10 +926,11 @@ export async function updateVendor(
   if (clusterIds.length === 0) {
     throw new Error("Pilih minimal satu cluster sebagai area layanan vendor.");
   }
-  const existingClusterIds = new Set(vendor.serviceAreas.map((a) => a.clusterId));
-  const clusters = await prisma.cluster.findMany({
-    where: { id: { in: clusterIds }, companyId },
-  });
+  const existingClusterIds = new Set(serviceAreas.map((a) => a.clusterId));
+  const clusters = await query<ClusterRow>(
+    `SELECT * FROM "Cluster" WHERE "id" = ANY($1::text[]) AND "companyId" = $2`,
+    [clusterIds, companyId]
+  );
   if (clusters.length !== clusterIds.length) {
     throw new Error("Satu atau lebih cluster area layanan tidak valid.");
   }
@@ -762,70 +945,96 @@ export async function updateVendor(
     );
   }
 
-  const toRemove = vendor.serviceAreas.filter((a) => !clusterIds.includes(a.clusterId));
+  const toRemoveIds = serviceAreas
+    .filter((a) => !clusterIds.includes(a.clusterId))
+    .map((a) => a.id);
   const toAdd = clusterIds.filter((id) => !existingClusterIds.has(id));
+  const clusterNameById = new Map(clusters.map((c) => [c.id, c.name]));
 
-  const updated = await prisma.$transaction(async (tx) => {
-    if (toRemove.length > 0) {
-      await tx.vendorServiceArea.deleteMany({
-        where: { id: { in: toRemove.map((a) => a.id) } },
-      });
+  return withTransaction(async (tx) => {
+    if (toRemoveIds.length > 0) {
+      await execute(
+        `DELETE FROM "VendorServiceArea" WHERE "id" = ANY($1::text[])`,
+        [toRemoveIds],
+        tx
+      );
     }
     if (toAdd.length > 0) {
-      await tx.vendorServiceArea.createMany({
-        data: toAdd.map((clusterId) => ({ vendorId: vendor.id, clusterId })),
-      });
+      await execute(
+        `INSERT INTO "VendorServiceArea" ("vendorId", "clusterId")
+         SELECT $1, cid FROM unnest($2::text[]) AS cid`,
+        [vendor.id, toAdd],
+        tx
+      );
     }
-    return tx.vendor.update({
-      where: { id: vendor.id },
-      data: {
+
+    const updated = await queryOne<VendorRow>(
+      `UPDATE "Vendor"
+       SET "name" = $2,
+           "type" = $3::"VendorType",
+           "skills" = $4::text[],
+           "cooperationScheme" = $5,
+           "contractStart" = $6,
+           "contractEnd" = $7,
+           "warrantyDays" = $8,
+           "address" = $9,
+           "npwp" = $10,
+           "updatedAt" = NOW()
+       WHERE "id" = $1
+       RETURNING *`,
+      [
+        vendor.id,
         name,
-        type: input.type,
+        input.type,
         skills,
-        cooperationScheme: input.cooperationScheme?.trim() || null,
-        contractStart: input.contractStart ?? null,
-        contractEnd: input.contractEnd ?? null,
-        warrantyDays: Math.round(input.warrantyDays),
-        address: input.address?.trim() || null,
-        npwp: input.npwp?.trim() || null,
+        input.cooperationScheme?.trim() || null,
+        input.contractStart ?? null,
+        input.contractEnd ?? null,
+        Math.round(input.warrantyDays),
+        input.address?.trim() || null,
+        input.npwp?.trim() || null,
+      ],
+      tx
+    );
+    if (!updated) throw new Error("Gagal memperbarui vendor.");
+
+    await recordAuditLog(
+      {
+        actor: auditActorOf(actor, companyId),
+        entityName: "Vendor",
+        entityId: vendor.id,
+        action: "UPDATE",
+        summary: `Memperbarui data vendor ${updated.name}`,
+        oldValues: {
+          name: vendor.name,
+          type: vendor.type,
+          skills: vendor.skills,
+          cooperationScheme: vendor.cooperationScheme,
+          contractStart: vendor.contractStart?.toISOString() ?? null,
+          contractEnd: vendor.contractEnd?.toISOString() ?? null,
+          warrantyDays: vendor.warrantyDays,
+          address: vendor.address,
+          npwp: vendor.npwp,
+          serviceClusters: serviceAreas.map((a) => a.clusterName),
+        },
+        newValues: {
+          name: updated.name,
+          type: updated.type,
+          skills: updated.skills,
+          cooperationScheme: updated.cooperationScheme,
+          contractStart: updated.contractStart?.toISOString() ?? null,
+          contractEnd: updated.contractEnd?.toISOString() ?? null,
+          warrantyDays: updated.warrantyDays,
+          address: updated.address,
+          npwp: updated.npwp,
+          serviceClusters: clusterIds.map((id) => clusterNameById.get(id) ?? id),
+        },
       },
-    });
-  });
+      tx
+    );
 
-  const clusterNameById = new Map(clusters.map((c) => [c.id, c.name]));
-  await recordAuditLog({
-    actor: auditActorOf(actor, companyId),
-    entityName: "Vendor",
-    entityId: vendor.id,
-    action: "UPDATE",
-    summary: `Memperbarui data vendor ${updated.name}`,
-    oldValues: {
-      name: vendor.name,
-      type: vendor.type,
-      skills: vendor.skills,
-      cooperationScheme: vendor.cooperationScheme,
-      contractStart: vendor.contractStart?.toISOString() ?? null,
-      contractEnd: vendor.contractEnd?.toISOString() ?? null,
-      warrantyDays: vendor.warrantyDays,
-      address: vendor.address,
-      npwp: vendor.npwp,
-      serviceClusters: vendor.serviceAreas.map((a) => a.cluster.name),
-    },
-    newValues: {
-      name: updated.name,
-      type: updated.type,
-      skills: updated.skills,
-      cooperationScheme: updated.cooperationScheme,
-      contractStart: updated.contractStart?.toISOString() ?? null,
-      contractEnd: updated.contractEnd?.toISOString() ?? null,
-      warrantyDays: updated.warrantyDays,
-      address: updated.address,
-      npwp: updated.npwp,
-      serviceClusters: clusterIds.map((id) => clusterNameById.get(id) ?? id),
-    },
+    return updated;
   });
-
-  return updated;
 }
 
 /**
@@ -840,21 +1049,25 @@ export async function setVendorActive(
   assertPermission(actor.role, "MANAGE_VENDORS");
   const companyId = requireCompany(actor);
 
-  const vendor = await prisma.vendor.findFirst({
-    where: { id: vendorId, companyId },
-  });
+  const vendor = await queryOne<VendorRow>(
+    `SELECT * FROM "Vendor" WHERE "id" = $1 AND "companyId" = $2`,
+    [vendorId, companyId]
+  );
   if (!vendor) throw new Error("Vendor tidak ditemukan di perusahaan Anda.");
   if (vendor.isActive === isActive) {
     throw new Error(`Vendor ini sudah ${isActive ? "aktif" : "nonaktif"}.`);
   }
 
   if (!isActive) {
-    const openCount = await prisma.workOrder.count({
-      where: {
-        vendorId: vendor.id,
-        report: { status: { in: [...OPEN_WORK_ORDER_REPORT_STATUSES] } },
-      },
-    });
+    const openCount = await queryCount(
+      `SELECT COUNT(*)::int AS count
+       FROM "WorkOrder" wo
+       JOIN "Report" r ON r."id" = wo."reportId"
+       WHERE wo."vendorId" = $1
+         AND r."archivedAt" IS NULL
+         AND r."status" = ANY($2::"ReportStatus"[])`,
+      [vendor.id, [...OPEN_WORK_ORDER_REPORT_STATUSES]]
+    );
     if (openCount > 0) {
       throw new Error(
         `Vendor masih memegang ${openCount} SPK berjalan. Selesaikan atau alihkan SPK terlebih dahulu.`
@@ -862,36 +1075,46 @@ export async function setVendorActive(
     }
   }
 
-  const updated = await prisma.vendor.update({
-    where: { id: vendor.id },
-    data: { isActive },
-  });
+  return withTransaction(async (tx) => {
+    const updated = await queryOne<VendorRow>(
+      `UPDATE "Vendor" SET "isActive" = $2, "updatedAt" = NOW() WHERE "id" = $1 RETURNING *`,
+      [vendor.id, isActive],
+      tx
+    );
+    if (!updated) throw new Error("Gagal mengubah status vendor.");
 
-  if (vendor.picUserId) {
-    await prisma.notification.create({
-      data: {
-        companyId,
-        recipientId: vendor.picUserId,
-        title: isActive ? "Vendor Diaktifkan Kembali" : "Vendor Dinonaktifkan",
-        message: isActive
-          ? `Admin mengaktifkan kembali ${vendor.name}. Vendor dapat menerima SPK lagi.`
-          : `Admin menonaktifkan ${vendor.name}. Vendor tidak akan menerima SPK baru.`,
-        linkUrl: "/dashboard/teknisi",
+    if (vendor.picUserId) {
+      await execute(
+        `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          companyId,
+          vendor.picUserId,
+          isActive ? "Vendor Diaktifkan Kembali" : "Vendor Dinonaktifkan",
+          isActive
+            ? `Admin mengaktifkan kembali ${vendor.name}. Vendor dapat menerima SPK lagi.`
+            : `Admin menonaktifkan ${vendor.name}. Vendor tidak akan menerima SPK baru.`,
+          "/dashboard/teknisi",
+        ],
+        tx
+      );
+    }
+
+    await recordAuditLog(
+      {
+        actor: auditActorOf(actor, companyId),
+        entityName: "Vendor",
+        entityId: vendor.id,
+        action: "UPDATE",
+        summary: `${isActive ? "Mengaktifkan" : "Menonaktifkan"} vendor ${vendor.name}`,
+        oldValues: { isActive: vendor.isActive },
+        newValues: { isActive },
       },
-    });
-  }
+      tx
+    );
 
-  await recordAuditLog({
-    actor: auditActorOf(actor, companyId),
-    entityName: "Vendor",
-    entityId: vendor.id,
-    action: "UPDATE",
-    summary: `${isActive ? "Mengaktifkan" : "Menonaktifkan"} vendor ${vendor.name}`,
-    oldValues: { isActive: vendor.isActive },
-    newValues: { isActive },
+    return updated;
   });
-
-  return updated;
 }
 
 /**
@@ -906,10 +1129,15 @@ export async function approveTechnicianReactivationByAdmin(
     throw new Error("Akun Admin tidak terhubung ke perusahaan.");
   }
 
-  const tech = await prisma.technician.findFirst({
-    where: { id: technicianId, companyId: actor.companyId },
-    include: { vendor: true },
-  });
+  const tech = await queryOne<
+    TechnicianRow & { vendorPicUserId: string | null }
+  >(
+    `SELECT t.*, v."picUserId" AS "vendorPicUserId"
+     FROM "Technician" t
+     JOIN "Vendor" v ON v."id" = t."vendorId"
+     WHERE t."id" = $1 AND t."companyId" = $2`,
+    [technicianId, actor.companyId]
+  );
   if (!tech) {
     throw new Error("Data teknisi tidak ditemukan.");
   }
@@ -925,52 +1153,73 @@ export async function approveTechnicianReactivationByAdmin(
     throw new Error("Teknisi ini tidak sedang nonaktif.");
   }
 
-  const updated = await prisma.technician.update({
-    where: { id: tech.id },
-    data: {
-      status: "ACTIVE",
-      approvalStatus: "APPROVED",
-      reactivationRequested: false,
-      reactivationNote: null,
-      deactivationReason: null,
-      lastActiveAt: new Date(),
-    },
-  });
+  const companyId = actor.companyId;
+  const now = new Date();
+  return withTransaction(async (tx) => {
+    const guardCount = await execute(
+      `UPDATE "Technician"
+       SET "status" = 'ACTIVE'::"TechnicianStatus",
+           "approvalStatus" = 'APPROVED'::"ApprovalStatus",
+           "reactivationRequested" = false,
+           "reactivationNote" = NULL,
+           "deactivationReason" = NULL,
+           "lastActiveAt" = $2,
+           "updatedAt" = $2
+       WHERE "id" = $1 AND "status" = 'INACTIVE'::"TechnicianStatus"`,
+      [tech.id, now],
+      tx
+    );
+    if (guardCount !== 1) {
+      throw new Error("Status teknisi sudah berubah, muat ulang halaman.");
+    }
 
-  await prisma.user.update({
-    where: { id: tech.userId },
-    data: { isActive: true },
-  });
+    await execute(
+      `UPDATE "User" SET "isActive" = true, "updatedAt" = NOW() WHERE "id" = $1`,
+      [tech.userId],
+      tx
+    );
 
-  // Notifikasi Web ke PIC Vendor (PRD 7.1)
-  if (tech.vendor.picUserId) {
-    await prisma.notification.create({
-      data: {
-        companyId: actor.companyId,
-        recipientId: tech.vendor.picUserId,
-        title: "Pengaktifan Kembali Teknisi Disetujui",
-        message: `Admin ${actor.name} menyetujui pengaktifan kembali teknisi ${tech.fullName}. Teknisi kini aktif dan dapat ditugaskan kembali.`,
-        linkUrl: "/dashboard/teknisi",
+    if (tech.vendorPicUserId) {
+      await execute(
+        `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          companyId,
+          tech.vendorPicUserId,
+          "Pengaktifan Kembali Teknisi Disetujui",
+          `Admin ${actor.name} menyetujui pengaktifan kembali teknisi ${tech.fullName}. Teknisi kini aktif dan dapat ditugaskan kembali.`,
+          "/dashboard/teknisi",
+        ],
+        tx
+      );
+    }
+
+    await recordAuditLog(
+      {
+        actor: {
+          id: actor.id,
+          name: actor.name,
+          role: actor.role,
+          companyId,
+        },
+        entityName: "Technician",
+        entityId: tech.id,
+        action: "UPDATE",
+        summary: `Admin ${actor.name} menyetujui pengaktifan kembali teknisi ${tech.fullName}`,
+        oldValues: { status: tech.status, reactivationRequested: true },
+        newValues: { status: "ACTIVE", reactivationRequested: false },
       },
-    });
-  }
+      tx
+    );
 
-  await recordAuditLog({
-    actor: {
-      id: actor.id,
-      name: actor.name,
-      role: actor.role,
-      companyId: actor.companyId,
-    },
-    entityName: "Technician",
-    entityId: tech.id,
-    action: "UPDATE",
-    summary: `Admin ${actor.name} menyetujui pengaktifan kembali teknisi ${tech.fullName}`,
-    oldValues: { status: tech.status, reactivationRequested: true },
-    newValues: { status: "ACTIVE", reactivationRequested: false },
+    const updated = await queryOne<TechnicianRow>(
+      `SELECT * FROM "Technician" WHERE "id" = $1`,
+      [tech.id],
+      tx
+    );
+    if (!updated) throw new Error("Data teknisi tidak ditemukan.");
+    return updated;
   });
-
-  return updated;
 }
 
 /**
@@ -978,40 +1227,49 @@ export async function approveTechnicianReactivationByAdmin(
  */
 export async function confirmTechnicianRosterByPic(actor: SessionUser) {
   assertPermission(actor.role, "MANAGE_OWN_TECHNICIANS");
-  const vendor = await prisma.vendor.findUnique({
-    where: { picUserId: actor.id },
-  });
+  const vendor = await queryOne<VendorRow>(
+    `SELECT * FROM "Vendor" WHERE "picUserId" = $1`,
+    [actor.id]
+  );
   if (!vendor) {
     throw new Error("Data vendor tidak ditemukan.");
   }
 
-  const updated = await prisma.vendor.update({
-    where: { id: vendor.id },
-    data: { lastTechnicianConfirmedAt: new Date() },
-  });
+  const now = new Date();
+  return withTransaction(async (tx) => {
+    const updated = await queryOne<VendorRow>(
+      `UPDATE "Vendor" SET "lastTechnicianConfirmedAt" = $2, "updatedAt" = $2 WHERE "id" = $1 RETURNING *`,
+      [vendor.id, now],
+      tx
+    );
+    if (!updated) throw new Error("Data vendor tidak ditemukan.");
 
-  await recordAuditLog({
-    actor: {
-      id: actor.id,
-      name: actor.name,
-      role: actor.role,
-      companyId: actor.companyId,
-    },
-    entityName: "Vendor",
-    entityId: vendor.id,
-    action: "UPDATE",
-    summary: `PIC ${vendor.name} mengonfirmasi daftar teknisi berkala (3 bulanan)`,
-    oldValues: {
-      lastTechnicianConfirmedAt:
-        vendor.lastTechnicianConfirmedAt?.toISOString() ?? null,
-    },
-    newValues: {
-      lastTechnicianConfirmedAt:
-        updated.lastTechnicianConfirmedAt?.toISOString() ?? null,
-    },
-  });
+    await recordAuditLog(
+      {
+        actor: {
+          id: actor.id,
+          name: actor.name,
+          role: actor.role,
+          companyId: actor.companyId,
+        },
+        entityName: "Vendor",
+        entityId: vendor.id,
+        action: "UPDATE",
+        summary: `PIC ${vendor.name} mengonfirmasi daftar teknisi berkala (3 bulanan)`,
+        oldValues: {
+          lastTechnicianConfirmedAt:
+            vendor.lastTechnicianConfirmedAt?.toISOString() ?? null,
+        },
+        newValues: {
+          lastTechnicianConfirmedAt:
+            updated.lastTechnicianConfirmedAt?.toISOString() ?? null,
+        },
+      },
+      tx
+    );
 
-  return updated;
+    return updated;
+  });
 }
 
 /**
@@ -1030,97 +1288,130 @@ export async function runPhase2MaintenanceJob(companyId: string) {
   const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
 
   // PRD 5.2: Cari teknisi ACTIVE yang lastActiveAt < 60 hari lalu (status ON_LEAVE tidak dihitung)
-  const staleTechnicians = await prisma.technician.findMany({
-    where: {
-      companyId,
-      status: "ACTIVE",
-      approvalStatus: "APPROVED",
-      lastActiveAt: { lt: sixtyDaysAgo },
-    },
-    include: {
-      vendor: true,
-      workOrders: {
-        where: {
-          report: {
-            status: { in: [...OPEN_WORK_ORDER_REPORT_STATUSES] },
-          },
-        },
-      },
-    },
-  });
+  const staleTechnicians = await query<
+    TechnicianRow & { vendorName: string; vendorPicUserId: string | null }
+  >(
+    `SELECT t.*, v."name" AS "vendorName", v."picUserId" AS "vendorPicUserId"
+     FROM "Technician" t
+     JOIN "Vendor" v ON v."id" = t."vendorId"
+     WHERE t."companyId" = $1
+       AND t."status" = 'ACTIVE'::"TechnicianStatus"
+       AND t."approvalStatus" = 'APPROVED'::"ApprovalStatus"
+       AND t."lastActiveAt" < $2`,
+    [companyId, sixtyDaysAgo]
+  );
 
   let deactivatedCount = 0;
   for (const tech of staleTechnicians) {
     // Keputusan 7: Sistem TIDAK menonaktifkan teknisi yang masih memegang SPK aktif
-    if (tech.workOrders && tech.workOrders.length > 0) {
+    const openWoCount = await queryCount(
+      `SELECT COUNT(*)::int AS count
+       FROM "WorkOrder" wo
+       JOIN "Report" r ON r."id" = wo."reportId"
+       WHERE wo."technicianId" = $1
+         AND r."archivedAt" IS NULL
+         AND r."status" = ANY($2::"ReportStatus"[])`,
+      [tech.id, [...OPEN_WORK_ORDER_REPORT_STATUSES]]
+    );
+    if (openWoCount > 0) {
       continue;
     }
 
-    const recentWorkOrder = await prisma.workOrder.findFirst({
-      where: {
-        technicianId: tech.id,
-        assignedAt: { gte: sixtyDaysAgo },
-      },
-    });
+    const recentWorkOrder = await queryOne<{ id: string }>(
+      `SELECT "id" FROM "WorkOrder" WHERE "technicianId" = $1 AND "assignedAt" >= $2 LIMIT 1`,
+      [tech.id, sixtyDaysAgo]
+    );
 
     if (!recentWorkOrder) {
-      await prisma.technician.update({
-        where: { id: tech.id },
-        data: {
-          status: "INACTIVE",
-          deactivationReason: "AUTO_60_DAYS",
-        },
+      const didDeactivate = await withTransaction(async (tx) => {
+        const guardCount = await execute(
+          `UPDATE "Technician"
+           SET "status" = 'INACTIVE'::"TechnicianStatus",
+               "deactivationReason" = 'AUTO_60_DAYS',
+               "updatedAt" = NOW()
+           WHERE "id" = $1 AND "status" = 'ACTIVE'::"TechnicianStatus"`,
+          [tech.id],
+          tx
+        );
+        if (guardCount !== 1) return false;
+
+        if (tech.vendorPicUserId) {
+          await execute(
+            `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+             VALUES ($1, $2, $3, $4, $5)`,
+            [
+              companyId,
+              tech.vendorPicUserId,
+              "Teknisi Dinonaktifkan Otomatis (60 Hari)",
+              `Teknisi ${tech.fullName} dinonaktifkan otomatis oleh sistem karena tidak aktif atau tidak menerima tugas selama 60 hari. Anda dapat mengajukan aktif kembali ke Admin melalui menu Teknisi Saya.`,
+              "/dashboard/teknisi",
+            ],
+            tx
+          );
+        }
+
+        await recordAuditLog(
+          {
+            companyId,
+            actor: {
+              id: "",
+              name: SYSTEM_AUDIT_ACTOR_NAME,
+              role: "ADMIN",
+              companyId,
+            },
+            entityName: "Technician",
+            entityId: tech.id,
+            action: "UPDATE",
+            summary: `Sistem menonaktifkan otomatis teknisi ${tech.fullName} (${tech.vendorName}) karena tidak aktif >= 60 hari`,
+            oldValues: { status: "ACTIVE" },
+            newValues: { status: "INACTIVE", deactivationReason: "AUTO_60_DAYS" },
+          },
+          tx
+        );
+
+        return true;
       });
 
-      // Kirim pemberitahuan ke PIC Vendor
-      if (tech.vendor.picUserId) {
-        await prisma.notification.create({
-          data: {
-            companyId,
-            recipientId: tech.vendor.picUserId,
-            title: "Teknisi Dinonaktifkan Otomatis (60 Hari)",
-            message: `Teknisi ${tech.fullName} dinonaktifkan otomatis oleh sistem karena tidak aktif atau tidak menerima tugas selama 60 hari. Anda dapat mengajukan aktif kembali ke Admin melalui menu Teknisi Saya.`,
-            linkUrl: "/dashboard/teknisi",
-          },
-        });
-      }
-
-      deactivatedCount++;
+      if (didDeactivate) deactivatedCount++;
     }
   }
 
   // Cari vendor yang belum konfirmasi daftar teknisi >= 90 hari (3 bulan)
-  const vendorsNeedingConfirmation = await prisma.vendor.findMany({
-    where: {
-      companyId,
-      isActive: true,
-      picUserId: { not: null },
-      OR: [
-        { lastTechnicianConfirmedAt: null },
-        { lastTechnicianConfirmedAt: { lt: ninetyDaysAgo } },
-      ],
-    },
-  });
+  const vendorsNeedingConfirmation = await query<VendorRow>(
+    `SELECT *
+     FROM "Vendor"
+     WHERE "companyId" = $1
+       AND "isActive" = true
+       AND "picUserId" IS NOT NULL
+       AND ("lastTechnicianConfirmedAt" IS NULL OR "lastTechnicianConfirmedAt" < $2)`,
+    [companyId, ninetyDaysAgo]
+  );
 
-  let reminderSentCount = 0;
-  for (const v of vendorsNeedingConfirmation) {
-    if (v.picUserId) {
-      await prisma.notification.create({
-        data: {
-          companyId,
-          recipientId: v.picUserId,
-          title: "Pengingat 3 Bulanan: Konfirmasi Daftar Teknisi",
-          message: `Mohon periksa dan konfirmasi daftar teknisi aktif untuk ${v.name} (pemeriksaan rutin tiap 3 bulan).`,
-          linkUrl: "/dashboard/teknisi",
-        },
-      });
-      reminderSentCount++;
-    }
+  const reminderTargets = vendorsNeedingConfirmation.filter(
+    (v): v is VendorRow & { picUserId: string } => Boolean(v.picUserId)
+  );
+
+  if (reminderTargets.length > 0) {
+    await execute(
+      `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+       SELECT $1, rec_id, $2, msg, $3
+       FROM unnest($4::text[], $5::text[]) AS t(rec_id, msg)`,
+      [
+        companyId,
+        "Pengingat 3 Bulanan: Konfirmasi Daftar Teknisi",
+        "/dashboard/teknisi",
+        reminderTargets.map((v) => v.picUserId),
+        reminderTargets.map(
+          (v) =>
+            `Mohon periksa dan konfirmasi daftar teknisi aktif untuk ${v.name} (pemeriksaan rutin tiap 3 bulan).`
+        ),
+      ]
+    );
   }
 
   return {
     deactivatedCount,
-    reminderSentCount,
+    reminderSentCount: reminderTargets.length,
   };
 }
 

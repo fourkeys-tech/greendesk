@@ -1,8 +1,8 @@
 import { redirect } from "next/navigation";
-import type { Prisma } from "@prisma/client";
 import { getCurrentSession } from "@/lib/auth";
 import { hasPermission, ROLE_METADATA } from "@/lib/permissions";
-import { prisma } from "@/lib/prisma";
+import { query } from "@/lib/db";
+import type { TechnicianRow, VendorRow } from "@/lib/db-types";
 import { getVendorReportCard } from "@/lib/services/vendor-replacement";
 import { formatWibDate, wibDateInputValue } from "@/lib/dates";
 import {
@@ -23,15 +23,16 @@ import {
   VendorManagePanel,
 } from "./vendor-manage-forms";
 
-const VENDOR_INCLUDE = {
-  picUser: { select: { name: true, email: true } },
-  serviceAreas: {
-    include: { cluster: { select: { id: true, name: true, isActive: true } } },
-  },
-  technicians: { orderBy: { createdAt: "desc" } },
-} satisfies Prisma.VendorInclude;
-
-type VendorWithRelations = Prisma.VendorGetPayload<{ include: typeof VENDOR_INCLUDE }>;
+type VendorWithRelations = VendorRow & {
+  picUser: { name: string; email: string } | null;
+  serviceAreas: Array<{
+    id: string;
+    clusterId: string;
+    cluster: { id: string; name: string; isActive: boolean };
+  }>;
+  technicians: TechnicianRow[];
+};
+type TechnicianWithVendorName = TechnicianRow & { vendor: { name: string } };
 type ReportCardMetrics = Awaited<ReturnType<typeof getVendorReportCard>>["metrics"];
 
 const DAY_MS = 86400000;
@@ -78,42 +79,91 @@ export default async function VendorPage() {
 
   let vendors: Array<VendorWithRelations & { reportCard: ReportCardMetrics | null }>;
   let clusters: Array<{ id: string; name: string; isActive: boolean }>;
-  let pendingTechs: Prisma.TechnicianGetPayload<{
-    include: { vendor: { select: { name: true } } };
-  }>[];
-  let reactivationTechs: Prisma.TechnicianGetPayload<{
-    include: { vendor: { select: { name: true } } };
-  }>[];
+  let pendingTechs: TechnicianWithVendorName[];
+  let reactivationTechs: TechnicianWithVendorName[];
 
   try {
-    const [rawVendors, clusterRows, pendingRows, reactivationRows] = await Promise.all([
-      prisma.vendor.findMany({
-        where: isPic ? { companyId, picUserId: session.id } : { companyId },
-        include: VENDOR_INCLUDE,
-        orderBy: [{ isActive: "desc" }, { name: "asc" }],
-      }),
+    const vendorFilterSql = isPic
+      ? `v."companyId" = $1 AND v."picUserId" = $2`
+      : `v."companyId" = $1`;
+    const vendorParams = isPic ? [companyId, session.id] : [companyId];
+
+    const [rawVendorRows, serviceAreaRows, techRows, clusterRows] = await Promise.all([
+      query<VendorRow & { picName: string | null; picEmail: string | null }>(
+        `SELECT v.*, u."name" AS "picName", u."email" AS "picEmail"
+         FROM "Vendor" v
+         LEFT JOIN "User" u ON u."id" = v."picUserId"
+         WHERE ${vendorFilterSql}
+         ORDER BY v."isActive" DESC, v."name" ASC`,
+        vendorParams
+      ),
+      query<{
+        id: string;
+        vendorId: string;
+        clusterId: string;
+        clusterName: string;
+        clusterIsActive: boolean;
+      }>(
+        `SELECT vsa."id", vsa."vendorId", vsa."clusterId",
+                cl."name" AS "clusterName", cl."isActive" AS "clusterIsActive"
+         FROM "VendorServiceArea" vsa
+         JOIN "Vendor" v ON v."id" = vsa."vendorId"
+         JOIN "Cluster" cl ON cl."id" = vsa."clusterId"
+         WHERE ${vendorFilterSql}`,
+        vendorParams
+      ),
+      query<TechnicianRow & { vendorName: string }>(
+        `SELECT t.*, v."name" AS "vendorName"
+         FROM "Technician" t
+         JOIN "Vendor" v ON v."id" = t."vendorId"
+         WHERE t."companyId" = $1${isPic && !canApproveTech ? ` AND v."picUserId" = $2` : ""}
+         ORDER BY t."createdAt" DESC`,
+        isPic && !canApproveTech ? [companyId, session.id] : [companyId]
+      ),
       canManage
-        ? prisma.cluster.findMany({
-            where: { companyId },
-            select: { id: true, name: true, isActive: true },
-            orderBy: { name: "asc" },
-          })
-        : Promise.resolve([]),
-      canApproveTech
-        ? prisma.technician.findMany({
-            where: { companyId, approvalStatus: "PENDING" },
-            include: { vendor: { select: { name: true } } },
-            orderBy: { createdAt: "asc" },
-          })
-        : Promise.resolve([]),
-      canApproveTech
-        ? prisma.technician.findMany({
-            where: { companyId, reactivationRequested: true },
-            include: { vendor: { select: { name: true } } },
-            orderBy: { updatedAt: "desc" },
-          })
+        ? query<{ id: string; name: string; isActive: boolean }>(
+            `SELECT "id", "name", "isActive"
+             FROM "Cluster"
+             WHERE "companyId" = $1
+             ORDER BY "name" ASC`,
+            [companyId]
+          )
         : Promise.resolve([]),
     ]);
+
+    const areasByVendor = new Map<string, VendorWithRelations["serviceAreas"]>();
+    for (const sa of serviceAreaRows) {
+      const list = areasByVendor.get(sa.vendorId) ?? [];
+      list.push({
+        id: sa.id,
+        clusterId: sa.clusterId,
+        cluster: {
+          id: sa.clusterId,
+          name: sa.clusterName,
+          isActive: sa.clusterIsActive,
+        },
+      });
+      areasByVendor.set(sa.vendorId, list);
+    }
+
+    const techsByVendor = new Map<string, TechnicianRow[]>();
+    for (const { vendorName: _vendorName, ...t } of techRows) {
+      const list = techsByVendor.get(t.vendorId) ?? [];
+      list.push(t);
+      techsByVendor.set(t.vendorId, list);
+    }
+
+    const rawVendors: VendorWithRelations[] = rawVendorRows.map(
+      ({ picName, picEmail, ...v }) => ({
+        ...v,
+        picUser:
+          picName !== null && picEmail !== null
+            ? { name: picName, email: picEmail }
+            : null,
+        serviceAreas: areasByVendor.get(v.id) ?? [],
+        technicians: techsByVendor.get(v.id) ?? [],
+      })
+    );
 
     vendors = await Promise.all(
       rawVendors.map(async (v) => {
@@ -127,8 +177,20 @@ export default async function VendorPage() {
       })
     );
     clusters = clusterRows;
-    pendingTechs = pendingRows;
-    reactivationTechs = reactivationRows;
+
+    if (canApproveTech) {
+      pendingTechs = techRows
+        .filter((t) => t.approvalStatus === "PENDING")
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+        .map(({ vendorName, ...t }) => ({ ...t, vendor: { name: vendorName } }));
+      reactivationTechs = techRows
+        .filter((t) => t.reactivationRequested)
+        .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+        .map(({ vendorName, ...t }) => ({ ...t, vendor: { name: vendorName } }));
+    } else {
+      pendingTechs = [];
+      reactivationTechs = [];
+    }
   } catch (error) {
     console.error("[vendor] gagal memuat data vendor:", error);
     return <DbErrorNotice />;

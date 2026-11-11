@@ -1,8 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import type { ApprovalStatus, TechnicianStatus, VendorType } from "@prisma/client";
+import { after } from "next/server";
+import type { ApprovalStatus, TechnicianStatus, VendorType } from "@/lib/db-types";
 import { getCurrentSession } from "@/lib/auth";
+import { flushEmailOutboxSafely } from "@/lib/email";
 import { saveUploadedPhoto } from "@/lib/storage";
 import { parseWibDateEnd, parseWibDateStart } from "@/lib/dates";
 import {
@@ -57,7 +59,7 @@ export async function createVendorAction(formData: FormData) {
     const picEmail = (formData.get("picEmail") as string) ?? "";
     const picPassword = (formData.get("picPassword") as string) ?? "";
 
-    const { vendor } = await createVendorWithPic(session, {
+    const { vendor, temporaryPassword } = await createVendorWithPic(session, {
       name,
       type,
       skills: skillsRaw.split(","),
@@ -73,10 +75,14 @@ export async function createVendorAction(formData: FormData) {
       picPassword,
     });
 
+    after(() => flushEmailOutboxSafely());
     revalidateVendorPaths();
+    const tempPassNote = temporaryPassword
+      ? ` Sandi sementara PIC (ditampilkan sekali, segera catat & berikan ke PIC): ${temporaryPassword}`
+      : "";
     return {
       success: true,
-      message: `Vendor "${vendor.name}" beserta akun PIC (${picEmail}) berhasil dibuat. Email undangan sudah dikirim.`,
+      message: `Vendor "${vendor.name}" beserta akun PIC (${picEmail}) berhasil dibuat. Email undangan sedang dikirim.${tempPassNote}`,
     };
   } catch (err) {
     return {
@@ -113,9 +119,12 @@ export async function registerTechnicianAction(formData: FormData) {
     });
 
     revalidateVendorPaths();
+    const tempPassNote = tech.temporaryPassword
+      ? ` Sandi sementara teknisi (ditampilkan sekali, segera catat): ${tech.temporaryPassword}`
+      : "";
     return {
       success: true,
-      message: `Teknisi "${tech.fullName}" berhasil didaftarkan dan menunggu persetujuan Admin.`,
+      message: `Teknisi "${tech.fullName}" berhasil didaftarkan dan menunggu persetujuan Admin.${tempPassNote}`,
     };
   } catch (err) {
     return {

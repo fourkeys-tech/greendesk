@@ -1,7 +1,9 @@
 import { redirect } from "next/navigation";
 import { getCurrentSession } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
-import { prisma } from "@/lib/prisma";
+import { query, queryOne } from "@/lib/db";
+import type { TechnicianRow, VendorRow } from "@/lib/db-types";
+import { DbErrorNotice } from "@/components/dashboard/db-error-notice";
 import {
   PicTechnicianForms,
   TechnicianStatusSelect,
@@ -25,22 +27,45 @@ export default async function TeknisiManagementPage() {
 
   const isPicVendor = hasPermission(session.role, "MANAGE_OWN_TECHNICIANS");
 
-  const ownVendor = isPicVendor
-    ? await prisma.vendor.findUnique({
-        where: { picUserId: session.id },
-      })
-    : null;
+  let ownVendor: VendorRow | null = null;
+  let technicians: Array<TechnicianRow & { vendor: { name: string } }> = [];
 
-  const technicians = session.companyId
-    ? await prisma.technician.findMany({
-        where:
-          isPicVendor && ownVendor
-            ? { companyId: session.companyId, vendorId: ownVendor.id }
-            : { companyId: session.companyId },
-        include: { vendor: true },
-        orderBy: { createdAt: "desc" },
-      })
-    : [];
+  try {
+    ownVendor = isPicVendor
+      ? await queryOne<VendorRow>(
+          `SELECT * FROM "Vendor" WHERE "picUserId" = $1`,
+          [session.id]
+        )
+      : null;
+
+    if (session.companyId) {
+      const rows =
+        isPicVendor && ownVendor
+          ? await query<TechnicianRow & { vendorName: string }>(
+              `SELECT t.*, v."name" AS "vendorName"
+               FROM "Technician" t
+               JOIN "Vendor" v ON v."id" = t."vendorId"
+               WHERE t."companyId" = $1 AND t."vendorId" = $2
+               ORDER BY t."createdAt" DESC`,
+              [session.companyId, ownVendor.id]
+            )
+          : await query<TechnicianRow & { vendorName: string }>(
+              `SELECT t.*, v."name" AS "vendorName"
+               FROM "Technician" t
+               JOIN "Vendor" v ON v."id" = t."vendorId"
+               WHERE t."companyId" = $1
+               ORDER BY t."createdAt" DESC`,
+              [session.companyId]
+            );
+      technicians = rows.map(({ vendorName, ...t }) => ({
+        ...t,
+        vendor: { name: vendorName },
+      }));
+    }
+  } catch (error) {
+    console.error("[teknisi] gagal memuat data teknisi:", error);
+    return <DbErrorNotice />;
+  }
 
   return (
     <div className="space-y-6">
@@ -93,13 +118,12 @@ export default async function TeknisiManagementPage() {
                 </div>
               </div>
               <span
-                className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
-                  t.approvalStatus === "APPROVED"
+                className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${t.approvalStatus === "APPROVED"
                     ? "bg-emerald-100 text-emerald-800"
                     : t.approvalStatus === "PENDING"
-                    ? "bg-amber-100 text-amber-900"
-                    : "bg-rose-100 text-rose-800"
-                }`}
+                      ? "bg-amber-100 text-amber-900"
+                      : "bg-rose-100 text-rose-800"
+                  }`}
               >
                 {t.approvalStatus}
               </span>

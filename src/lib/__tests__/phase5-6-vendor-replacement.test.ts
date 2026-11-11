@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { prisma } from "../prisma";
+import { query, queryOne } from "../db";
+import type {
+  AssetRow,
+  TechnicianRow,
+  UserRow,
+  VendorRow,
+} from "../db-types";
 import { submitCitizenReport } from "../services/phase3-reporting";
 import { verifyReportAsValid } from "../services/phase4-verification";
 import {
@@ -21,41 +27,66 @@ import {
 } from "../services/vendor-replacement";
 import type { SessionUser } from "../auth";
 
+async function mustOne<T extends object>(
+  sql: string,
+  params: unknown[],
+  label: string
+): Promise<T> {
+  const row = await queryOne<T>(sql, params);
+  if (!row) throw new Error(`Record tidak ditemukan: ${label}`);
+  return row;
+}
+
 describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi Hasil & Pengajuan Ganti Vendor", () => {
   it(
     "menjalankan siklus lengkap Keputusan Manager (Tolak & Setuju+SPK), Eksekusi Teknisi, Revisi, Selesai, serta Rapor Vendor",
     async () => {
     const [pengelolaUser, managerUser, picUser, teknisiUser, adminUser] =
       await Promise.all([
-        prisma.user.findUniqueOrThrow({
-          where: { email: "pengelola.bgv@greenpark.id" },
-        }),
-        prisma.user.findUniqueOrThrow({
-          where: { email: "manager@greenpark.id" },
-        }),
-        prisma.user.findUniqueOrThrow({
-          where: { email: "pic@vendorjaya.id" },
-        }),
-        prisma.user.findUniqueOrThrow({
-          where: { email: "teknisi.budi@vendorjaya.id" },
-        }),
-        prisma.user.findUniqueOrThrow({
-          where: { email: "admin@greenpark.id" },
-        }),
+        mustOne<UserRow>(
+          `SELECT * FROM "User" WHERE "email" = $1`,
+          ["pengelola.bgv@greenpark.id"],
+          "pengelolaUser"
+        ),
+        mustOne<UserRow>(
+          `SELECT * FROM "User" WHERE "email" = $1`,
+          ["manager@greenpark.id"],
+          "managerUser"
+        ),
+        mustOne<UserRow>(
+          `SELECT * FROM "User" WHERE "email" = $1`,
+          ["pic@vendorjaya.id"],
+          "picUser"
+        ),
+        mustOne<UserRow>(
+          `SELECT * FROM "User" WHERE "email" = $1`,
+          ["teknisi.budi@vendorjaya.id"],
+          "teknisiUser"
+        ),
+        mustOne<UserRow>(
+          `SELECT * FROM "User" WHERE "email" = $1`,
+          ["admin@greenpark.id"],
+          "adminUser"
+        ),
       ]);
 
-    const assetBgv = await prisma.asset.findUniqueOrThrow({
-      where: { code: "AST-BGV-001" },
-      include: { park: true },
-    });
+    const assetBgv = await mustOne<AssetRow>(
+      `SELECT * FROM "Asset" WHERE "code" = $1`,
+      ["AST-BGV-001"],
+      "assetBgv"
+    );
 
-    const vendorJaya = await prisma.vendor.findFirstOrThrow({
-      where: { picUserId: picUser.id },
-    });
+    const vendorJaya = await mustOne<VendorRow>(
+      `SELECT * FROM "Vendor" WHERE "picUserId" = $1 LIMIT 1`,
+      [picUser.id],
+      "vendorJaya"
+    );
 
-    const techProfile = await prisma.technician.findUniqueOrThrow({
-      where: { userId: teknisiUser.id },
-    });
+    const techProfile = await mustOne<TechnicianRow>(
+      `SELECT * FROM "Technician" WHERE "userId" = $1`,
+      [teknisiUser.id],
+      "techProfile"
+    );
 
     const pengelolaActor: SessionUser = {
       id: pengelolaUser.id,
@@ -99,15 +130,13 @@ describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi H
 
     const suffix = Date.now();
 
-    const pelapor = await prisma.user.create({
-      data: {
-        companyId: adminUser.companyId,
-        name: "Warga Penguji Fase 5",
-        email: `warga.f5.${suffix}@greenpark.id`,
-        role: "PENGGUNA",
-        dataConsentAt: new Date(),
-      },
-    });
+    const pelapor = await mustOne<UserRow>(
+      `INSERT INTO "User" ("companyId", "name", "email", "role", "dataConsentAt", "updatedAt")
+       VALUES ($1, $2, $3, 'PENGGUNA'::"Role", NOW(), NOW())
+       RETURNING *`,
+      [adminUser.companyId, "Warga Penguji Fase 5", `warga.f5.${suffix}@greenpark.id`],
+      "pelapor"
+    );
 
     const pelaporActor: SessionUser = {
       id: pelapor.id,
@@ -231,27 +260,35 @@ describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi H
 
     // 8b. PIC Vendor mengganti teknisi pelaksana saat SPK berjalan (Keputusan 4 & 5)
     const suffix2 = Date.now().toString().slice(-4);
-    const userTech2 = await prisma.user.create({
-      data: {
-        companyId: adminUser.companyId!,
-        name: `Teknisi Pengganti ${suffix2}`,
-        email: `pengganti.${suffix2}@vendorjaya.id`,
-        role: "TEKNISI",
-      },
-    });
-    const tech2 = await prisma.technician.create({
-      data: {
-        companyId: adminUser.companyId!,
-        vendorId: vendorJaya.id,
-        userId: userTech2.id,
-        fullName: `Teknisi Pengganti ${suffix2}`,
-        whatsapp: "081233445566",
-        email: `pengganti.${suffix2}@vendorjaya.id`,
-        skills: ["Lampu", "Kelistrikan"],
-        status: "ACTIVE",
-        approvalStatus: "APPROVED",
-      },
-    });
+    const userTech2 = await mustOne<UserRow>(
+      `INSERT INTO "User" ("companyId", "name", "email", "role", "updatedAt")
+       VALUES ($1, $2, $3, 'TEKNISI'::"Role", NOW())
+       RETURNING *`,
+      [
+        adminUser.companyId!,
+        `Teknisi Pengganti ${suffix2}`,
+        `pengganti.${suffix2}@vendorjaya.id`,
+      ],
+      "userTech2"
+    );
+    const tech2 = await mustOne<TechnicianRow>(
+      `INSERT INTO "Technician" (
+         "companyId", "vendorId", "userId", "fullName", "whatsapp", "email",
+         "skills", "status", "approvalStatus", "updatedAt"
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7::text[], 'ACTIVE'::"TechnicianStatus", 'APPROVED'::"ApprovalStatus", NOW())
+       RETURNING *`,
+      [
+        adminUser.companyId!,
+        vendorJaya.id,
+        userTech2.id,
+        `Teknisi Pengganti ${suffix2}`,
+        "081233445566",
+        `pengganti.${suffix2}@vendorjaya.id`,
+        ["Lampu", "Kelistrikan"],
+      ],
+      "tech2"
+    );
 
     const replaceRes = await replaceTechnicianForWorkOrder(picActor, {
       workOrderId: woId,
@@ -300,30 +337,44 @@ describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi H
     async () => {
     const [pengelolaUser, managerUser, adminUser, ownerUser, picUser] =
       await Promise.all([
-        prisma.user.findUniqueOrThrow({
-          where: { email: "pengelola.bgv@greenpark.id" },
-        }),
-        prisma.user.findUniqueOrThrow({
-          where: { email: "manager@greenpark.id" },
-        }),
-        prisma.user.findUniqueOrThrow({
-          where: { email: "admin@greenpark.id" },
-        }),
-        prisma.user.findUniqueOrThrow({
-          where: { email: "owner@greenpark.id" },
-        }),
-        prisma.user.findUniqueOrThrow({
-          where: { email: "pic@vendorjaya.id" },
-        }),
+        mustOne<UserRow>(
+          `SELECT * FROM "User" WHERE "email" = $1`,
+          ["pengelola.bgv@greenpark.id"],
+          "pengelolaUser"
+        ),
+        mustOne<UserRow>(
+          `SELECT * FROM "User" WHERE "email" = $1`,
+          ["manager@greenpark.id"],
+          "managerUser"
+        ),
+        mustOne<UserRow>(
+          `SELECT * FROM "User" WHERE "email" = $1`,
+          ["admin@greenpark.id"],
+          "adminUser"
+        ),
+        mustOne<UserRow>(
+          `SELECT * FROM "User" WHERE "email" = $1`,
+          ["owner@greenpark.id"],
+          "ownerUser"
+        ),
+        mustOne<UserRow>(
+          `SELECT * FROM "User" WHERE "email" = $1`,
+          ["pic@vendorjaya.id"],
+          "picUser"
+        ),
       ]);
 
-    const assetBgv = await prisma.asset.findUniqueOrThrow({
-      where: { code: "AST-BGV-001" },
-    });
+    const assetBgv = await mustOne<AssetRow>(
+      `SELECT * FROM "Asset" WHERE "code" = $1`,
+      ["AST-BGV-001"],
+      "assetBgv"
+    );
 
-    const vendorJaya = await prisma.vendor.findFirstOrThrow({
-      where: { picUserId: picUser.id },
-    });
+    const vendorJaya = await mustOne<VendorRow>(
+      `SELECT * FROM "Vendor" WHERE "picUserId" = $1 LIMIT 1`,
+      [picUser.id],
+      "vendorJaya"
+    );
 
     const pengelolaActor: SessionUser = {
       id: pengelolaUser.id,
@@ -366,13 +417,14 @@ describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi H
     };
 
     // Ambil 2 laporan pada AST-BGV-001 sebagai bukti kerusakan berulang
-    const assetReports = await prisma.report.findMany({
-      where: {
-        assetId: assetBgv.id,
-        status: { notIn: ["DIBATALKAN", "TIDAK_VALID"] },
-      },
-      take: 2,
-    });
+    const assetReports = await query<{ id: string }>(
+      `SELECT "id" FROM "Report"
+       WHERE "assetId" = $1
+         AND "archivedAt" IS NULL
+         AND "status" NOT IN ('DIBATALKAN', 'TIDAK_VALID', 'DIGABUNG')
+       LIMIT 2`,
+      [assetBgv.id]
+    );
     expect(assetReports.length).toBeGreaterThanOrEqual(2);
 
     // 1. Menolak jika kurang dari 2 laporan bukti

@@ -1,43 +1,33 @@
-import crypto from "crypto";
-import type { Channel } from "@prisma/client";
-import { prisma } from "../prisma";
-import { validateStatusTransition } from "../permissions";
+import { execute, query, queryCount, queryOne, withTransaction } from "../db";
+import type {
+  AssetRow,
+  CategoryRow,
+  Channel,
+  ClusterRow,
+  ComplexRow,
+  ParkRow,
+  ReportPhotoRow,
+  ReportRow,
+} from "../db-types";
+import { assertPermission, validateStatusTransition } from "../permissions";
 import { assetUnreportableReason } from "../scopes";
-import { sendReportStatusEmail } from "../email";
+import { enqueueReportStatusEmail } from "../email";
+import { nextTicketNumber } from "../numbering";
+import { transitionReport } from "../report-transition";
 import type { SessionUser } from "../auth";
 
 export const MAX_DAILY_REPORTS_PER_USER = 5;
 
 /**
- * Menghasilkan nomor tiket unik berformat TKT-YYYYMM-XXXX
- */
-async function generateTicketNumber(): Promise<string> {
-  const now = new Date();
-  const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(
-    2,
-    "0"
-  )}`;
-  const count = await prisma.report.count();
-  const seq = String(count + 1).padStart(4, "0");
-  const candidate = `TKT-${ym}-${seq}`;
-
-  const exists = await prisma.report.findUnique({
-    where: { ticketNo: candidate },
-  });
-  if (!exists) return candidate;
-
-  const rand = crypto.randomBytes(2).toString("hex").toUpperCase();
-  return `TKT-${ym}-${seq}-${rand}`;
-}
-
-/**
  * 1. Pengiriman Laporan Kerusakan oleh Pengguna (lewat QR atau Dashboard).
  * Memeriksa:
+ * - Hanya role PENGGUNA (matriks §4, CREATE_REPORT).
  * - Minimal 1 foto dan deskripsi wajib ada.
  * - Aset wajib aktif.
  * - Batas jumlah laporan per akun per hari (MAX_DAILY_REPORTS_PER_USER).
  * - Penandaan otomatis jika aset masih dalam masa garansi vendor dari pekerjaan selesai sebelumnya.
- * - Pengiriman email laporan diterima ke pelapor & notifikasi web ke Pengelola cluster.
+ * - Email "laporan diterima" (outbox) & notifikasi web ke Pengelola cluster — dalam satu transaksi
+ *   bersama penomoran tiket dan pembuatan laporan.
  */
 export async function submitCitizenReport(
   actor: SessionUser,
@@ -48,6 +38,8 @@ export async function submitCitizenReport(
     photoUrls: string[];
   }
 ) {
+  assertPermission(actor.role, "CREATE_REPORT");
+
   const description = input.description.trim();
   const cleanPhotos = input.photoUrls.filter((u) => u && u.trim().length > 0);
 
@@ -61,9 +53,18 @@ export async function submitCitizenReport(
   }
 
   // Periksa status blokir pengguna
-  const dbUser = await prisma.user.findUnique({
-    where: { id: actor.id },
-  });
+  const dbUser = await queryOne<{
+    id: string;
+    name: string;
+    email: string;
+    isActive: boolean;
+    isBlocked: boolean;
+  }>(
+    `SELECT "id", "name", "email", "isActive", "isBlocked"
+     FROM "User"
+     WHERE "id" = $1`,
+    [actor.id]
+  );
   if (!dbUser || !dbUser.isActive || dbUser.isBlocked) {
     throw new Error("Akun Anda tidak dapat mengirim laporan saat ini.");
   }
@@ -72,12 +73,12 @@ export async function submitCitizenReport(
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
 
-  const reportsToday = await prisma.report.count({
-    where: {
-      reporterId: actor.id,
-      createdAt: { gte: startOfToday },
-    },
-  });
+  const reportsToday = await queryCount(
+    `SELECT COUNT(*)::int AS count
+     FROM "Report"
+     WHERE "reporterId" = $1 AND "createdAt" >= $2 AND "archivedAt" IS NULL`,
+    [actor.id, startOfToday]
+  );
 
   if (reportsToday >= MAX_DAILY_REPORTS_PER_USER) {
     throw new Error(
@@ -85,143 +86,205 @@ export async function submitCitizenReport(
     );
   }
 
-  const asset = await prisma.asset.findUnique({
-    where: { code: input.assetCode.trim().toUpperCase() },
-    include: {
-      category: true,
-      park: {
-        include: {
-          cluster: { include: { complex: true } },
-        },
-      },
-    },
-  });
+  const assetRow = await queryOne<
+    AssetRow & {
+      categoryActive: boolean;
+      parkName: string;
+      parkActive: boolean;
+      clusterId: string;
+      clusterActive: boolean;
+      complexActive: boolean;
+    }
+  >(
+    `SELECT
+       a.*,
+       cat."isActive" AS "categoryActive",
+       p."name" AS "parkName",
+       p."isActive" AS "parkActive",
+       p."clusterId" AS "clusterId",
+       cl."isActive" AS "clusterActive",
+       cmp."isActive" AS "complexActive"
+     FROM "Asset" a
+     JOIN "Category" cat ON cat."id" = a."categoryId"
+     JOIN "Park" p ON p."id" = a."parkId"
+     JOIN "Cluster" cl ON cl."id" = p."clusterId"
+     JOIN "Complex" cmp ON cmp."id" = cl."complexId"
+     WHERE a."code" = $1`,
+    [input.assetCode.trim().toUpperCase()]
+  );
 
-  if (!asset) {
+  if (!assetRow) {
     throw new Error("Aset tidak ditemukan.");
   }
-  const unreportableReason = assetUnreportableReason(asset);
+
+  const reportableAsset = {
+    isActive: assetRow.isActive,
+    category: { isActive: assetRow.categoryActive } as Pick<CategoryRow, "isActive">,
+    park: {
+      isActive: assetRow.parkActive,
+      cluster: {
+        isActive: assetRow.clusterActive,
+        complex: { isActive: assetRow.complexActive } as Pick<ComplexRow, "isActive">,
+      } as Pick<ClusterRow, "isActive"> & { complex: Pick<ComplexRow, "isActive"> },
+    } as Pick<ParkRow, "isActive"> & {
+      cluster: Pick<ClusterRow, "isActive"> & { complex: Pick<ComplexRow, "isActive"> };
+    },
+  };
+
+  const unreportableReason = assetUnreportableReason(reportableAsset);
   if (unreportableReason) {
     throw new Error(
-      `Aset ${asset.code} tidak dapat dilaporkan saat ini. ${unreportableReason}`
+      `Aset ${assetRow.code} tidak dapat dilaporkan saat ini. ${unreportableReason}`
     );
   }
 
   // Cek apakah aset ini baru selesai diperbaiki dan masih dalam masa garansi vendor (PRD Fase 6 / Bagian 8)
   let underWarrantyOfVendorId: string | null = null;
-  const lastCompletedReport = await prisma.report.findFirst({
-    where: {
-      assetId: asset.id,
-      status: "SELESAI",
-      workOrder: {
-        isNot: null,
-      },
-    },
-    include: {
-      workOrder: {
-        include: { vendor: true },
-      },
-    },
-    orderBy: { updatedAt: "desc" },
-  });
+  const lastCompleted = await queryOne<{
+    completedAt: Date | null;
+    vendorId: string;
+    warrantyDays: number;
+  }>(
+    `SELECT wo."completedAt", wo."vendorId", v."warrantyDays"
+     FROM "Report" r
+     JOIN "WorkOrder" wo ON wo."reportId" = r."id"
+     JOIN "Vendor" v ON v."id" = wo."vendorId"
+     WHERE r."assetId" = $1
+       AND r."status" = 'SELESAI'::"ReportStatus"
+       AND r."archivedAt" IS NULL
+     ORDER BY r."updatedAt" DESC
+     LIMIT 1`,
+    [assetRow.id]
+  );
 
-  if (
-    lastCompletedReport?.workOrder?.completedAt &&
-    lastCompletedReport.workOrder.vendor
-  ) {
-    const completedAt = new Date(lastCompletedReport.workOrder.completedAt);
-    const warrantyDays = lastCompletedReport.workOrder.vendor.warrantyDays || 30;
+  if (lastCompleted?.completedAt) {
+    const completedAt = new Date(lastCompleted.completedAt);
+    const warrantyDays = lastCompleted.warrantyDays || 30;
     const warrantyExpiresAt = new Date(
       completedAt.getTime() + warrantyDays * 24 * 60 * 60 * 1000
     );
     if (new Date() <= warrantyExpiresAt) {
-      underWarrantyOfVendorId = lastCompletedReport.workOrder.vendorId;
+      underWarrantyOfVendorId = lastCompleted.vendorId;
     }
   }
 
-  const ticketNo = await generateTicketNumber();
+  const clusterStaffList = await query<{ id: string }>(
+    `SELECT "id"
+     FROM "User"
+     WHERE "companyId" = $1
+       AND "role" = 'PENGELOLA'::"Role"
+       AND "staffClusterId" = $2
+       AND "isActive" = true`,
+    [assetRow.companyId, assetRow.clusterId]
+  );
 
-  const createdReport = await prisma.report.create({
-    data: {
-      companyId: asset.companyId,
-      ticketNo,
-      assetId: asset.id,
-      reporterId: actor.id,
-      channel: input.channel,
-      description,
-      status: "BARU",
-      underWarrantyOfVendorId,
-      stageEnteredAt: new Date(),
-      photos: {
-        create: cleanPhotos.map((url) => ({ url })),
-      },
-      statusLogs: {
-        create: {
-          fromStatus: null,
-          toStatus: "BARU",
-          changedById: actor.id,
-          note: `Laporan dikirim melalui saluran ${input.channel}`,
-        },
-      },
-    },
-    include: {
-      photos: true,
-    },
-  });
+  const assetLabel = `${assetRow.name} (${assetRow.code})`;
 
-  // Kirim Email Laporan Diterima ke Pelapor (Bagian 9 PRD)
-  await sendReportStatusEmail({
-    companyId: asset.companyId,
-    toEmail: actor.email,
-    reporterName: actor.name,
-    ticketNo: createdReport.ticketNo,
-    assetName: `${asset.name} (${asset.code})`,
-    triggerType: "LAPORAN_TERKIRIM",
-  });
+  return withTransaction(async (tx) => {
+    const ticketNo = await nextTicketNumber(tx);
 
-  // Buat Notifikasi Web ke semua Pengelola di Cluster terkait (Bagian 9 PRD)
-  const clusterStaffList = await prisma.user.findMany({
-    where: {
-      companyId: asset.companyId,
-      role: "PENGELOLA",
-      staffClusterId: asset.park.clusterId,
-      isActive: true,
-    },
-    select: { id: true },
-  });
+    const createdReport = await queryOne<ReportRow>(
+      `INSERT INTO "Report" (
+         "companyId", "ticketNo", "assetId", "reporterId", "channel",
+         "description", "status", "underWarrantyOfVendorId", "stageEnteredAt"
+       )
+       VALUES ($1, $2, $3, $4, $5::"Channel", $6, 'BARU'::"ReportStatus", $7, NOW())
+       RETURNING *`,
+      [
+        assetRow.companyId,
+        ticketNo,
+        assetRow.id,
+        actor.id,
+        input.channel,
+        description,
+        underWarrantyOfVendorId,
+      ],
+      tx
+    );
 
-  if (clusterStaffList.length > 0) {
-    await prisma.notification.createMany({
-      data: clusterStaffList.map((staff) => ({
-        companyId: asset.companyId,
-        recipientId: staff.id,
-        title: `Laporan Baru Masuk (${createdReport.ticketNo})`,
-        message: `Laporan baru untuk aset ${asset.name} (${asset.code}) di ${asset.park.name} menunggu verifikasi Anda.`,
-        linkUrl: "/dashboard/laporan",
-      })),
+    if (!createdReport) {
+      throw new Error("Gagal membuat laporan.");
+    }
+
+    const photos = await query<ReportPhotoRow>(
+      `INSERT INTO "ReportPhoto" ("reportId", "url")
+       SELECT $1, u FROM unnest($2::text[]) AS u
+       RETURNING *`,
+      [createdReport.id, cleanPhotos],
+      tx
+    );
+
+    await execute(
+      `INSERT INTO "ReportStatusLog" ("reportId", "fromStatus", "toStatus", "changedById", "note")
+       VALUES ($1, NULL, 'BARU'::"ReportStatus", $2, $3)`,
+      [
+        createdReport.id,
+        actor.id,
+        `Laporan dikirim melalui saluran ${input.channel}`,
+      ],
+      tx
+    );
+
+    // Email Laporan Diterima ke Pelapor (§10.1) — outbox, ikut rollback bila transaksi gagal
+    await enqueueReportStatusEmail(tx, {
+      companyId: assetRow.companyId,
+      toEmail: dbUser.email,
+      reporterName: dbUser.name,
+      ticketNo: createdReport.ticketNo,
+      statusToken: createdReport.statusToken,
+      assetName: assetLabel,
+      triggerType: "LAPORAN_TERKIRIM",
     });
-  }
 
-  return createdReport;
+    // Notifikasi Web ke semua Pengelola di Cluster terkait (Bagian 9 PRD)
+    if (clusterStaffList.length > 0) {
+      await execute(
+        `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+         SELECT $1, uid, $2, $3, $4 FROM unnest($5::text[]) AS uid`,
+        [
+          assetRow.companyId,
+          `Laporan Baru Masuk (${createdReport.ticketNo})`,
+          `Laporan baru untuk aset ${assetLabel} di ${assetRow.parkName} menunggu verifikasi Anda.`,
+          "/dashboard/laporan",
+          clusterStaffList.map((s) => s.id),
+        ],
+        tx
+      );
+    }
+
+    return { ...createdReport, photos };
+  });
 }
 
 /**
  * 2. Pembatalan Laporan oleh Pengguna (Hanya bisa saat status masih BARU).
- * Mengirim email konfirmasi pembatalan ke pelapor.
+ * Transisi dengan guard status (dua klik bersamaan → hanya satu lolos),
+ * email konfirmasi pembatalan masuk outbox dalam transaksi yang sama.
  */
 export async function cancelOwnReportByUser(
   actor: SessionUser,
   reportId: string
 ) {
-  const report = await prisma.report.findFirst({
-    where: {
-      id: reportId,
-      reporterId: actor.id,
-    },
-    include: {
-      asset: true,
-    },
-  });
+  const report = await queryOne<
+    ReportRow & {
+      assetName: string;
+      assetCode: string;
+      reporterName: string;
+      reporterEmail: string;
+    }
+  >(
+    `SELECT
+       r.*,
+       a."name" AS "assetName",
+       a."code" AS "assetCode",
+       u."name" AS "reporterName",
+       u."email" AS "reporterEmail"
+     FROM "Report" r
+     JOIN "Asset" a ON a."id" = r."assetId"
+     JOIN "User" u ON u."id" = r."reporterId"
+     WHERE r."id" = $1 AND r."reporterId" = $2 AND r."archivedAt" IS NULL`,
+    [reportId, actor.id]
+  );
 
   if (!report) {
     throw new Error("Laporan tidak ditemukan atau bukan milik Anda.");
@@ -238,31 +301,31 @@ export async function cancelOwnReportByUser(
     );
   }
 
-  const updated = await prisma.report.update({
-    where: { id: report.id },
-    data: {
-      status: "DIBATALKAN",
-      stageEnteredAt: new Date(),
-      statusLogs: {
-        create: {
-          fromStatus: report.status,
-          toStatus: "DIBATALKAN",
-          changedById: actor.id,
-          note: "Dibatalkan sendiri oleh pelapor",
-        },
-      },
-    },
-  });
+  return withTransaction(async (tx) => {
+    await transitionReport(tx, {
+      reportId: report.id,
+      from: report.status,
+      to: "DIBATALKAN",
+      actor: { id: actor.id, role: "PENGGUNA" },
+      note: "Dibatalkan sendiri oleh pelapor",
+    });
 
-  await sendReportStatusEmail({
-    companyId: report.companyId,
-    toEmail: actor.email,
-    reporterName: actor.name,
-    ticketNo: report.ticketNo,
-    assetName: `${report.asset.name} (${report.asset.code})`,
-    triggerType: "DIBATALKAN",
-  });
+    await enqueueReportStatusEmail(tx, {
+      companyId: report.companyId,
+      toEmail: report.reporterEmail,
+      reporterName: report.reporterName,
+      ticketNo: report.ticketNo,
+      statusToken: report.statusToken,
+      assetName: `${report.assetName} (${report.assetCode})`,
+      triggerType: "DIBATALKAN",
+    });
 
-  return updated;
+    const updated = await queryOne<ReportRow>(
+      `SELECT * FROM "Report" WHERE "id" = $1`,
+      [report.id],
+      tx
+    );
+    if (!updated) throw new Error("Laporan tidak ditemukan.");
+    return updated;
+  });
 }
-

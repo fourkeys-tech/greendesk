@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentSession } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { query } from "@/lib/db";
+import type { NotificationRow } from "@/lib/db-types";
+import { DbErrorNotice } from "@/components/dashboard/db-error-notice";
 import {
   markAllNotificationsAsReadAction,
   markNotificationAsReadAction,
@@ -11,11 +13,20 @@ export default async function NotificationsPage() {
   const session = await getCurrentSession();
   if (!session) redirect("/login");
 
-  const notifications = await prisma.notification.findMany({
-    where: { recipientId: session.id },
-    orderBy: { createdAt: "desc" },
-    take: 50,
-  });
+  let notifications: NotificationRow[];
+  try {
+    notifications = await query<NotificationRow>(
+      `SELECT "id", "companyId", "recipientId", "title", "message", "linkUrl", "isRead", "createdAt"
+       FROM "Notification"
+       WHERE "recipientId" = $1
+       ORDER BY "createdAt" DESC
+       LIMIT 50`,
+      [session.id]
+    );
+  } catch (error) {
+    console.error("[notifikasi] gagal memuat notifikasi:", error);
+    return <DbErrorNotice />;
+  }
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
 

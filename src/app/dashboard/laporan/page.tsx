@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Archive, Plus } from "lucide-react";
 import { getCurrentSession } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { query } from "@/lib/db";
 import { hasPermission, ROLE_METADATA } from "@/lib/permissions";
 import { getScopedReportsForUser } from "@/lib/services/foundation";
 import { DbErrorNotice } from "@/components/dashboard/db-error-notice";
@@ -48,26 +48,41 @@ export default async function LaporanPage({
 
   try {
     if (isManager && session.companyId) {
-      allVendorsWithAreas = await prisma.vendor.findMany({
-        where: { companyId: session.companyId, isActive: true },
-        select: {
-          id: true,
-          name: true,
-          warrantyDays: true,
-          serviceAreas: { select: { clusterId: true } },
-        },
-      });
+      const [vendorRows, areaRows] = await Promise.all([
+        query<{ id: string; name: string; warrantyDays: number }>(
+          `SELECT "id", "name", "warrantyDays"
+           FROM "Vendor"
+           WHERE "companyId" = $1 AND "isActive" = true`,
+          [session.companyId]
+        ),
+        query<{ vendorId: string; clusterId: string }>(
+          `SELECT vsa."vendorId", vsa."clusterId"
+           FROM "VendorServiceArea" vsa
+           JOIN "Vendor" v ON v."id" = vsa."vendorId"
+           WHERE v."companyId" = $1 AND v."isActive" = true`,
+          [session.companyId]
+        ),
+      ]);
+      const areasByVendor = new Map<string, Array<{ clusterId: string }>>();
+      for (const a of areaRows) {
+        const list = areasByVendor.get(a.vendorId) ?? [];
+        list.push({ clusterId: a.clusterId });
+        areasByVendor.set(a.vendorId, list);
+      }
+      allVendorsWithAreas = vendorRows.map((v) => ({
+        ...v,
+        serviceAreas: areasByVendor.get(v.id) ?? [],
+      }));
     } else if (session.role === "PIC_VENDOR") {
-      const vendor = await prisma.vendor.findUnique({
-        where: { picUserId: session.id },
-        include: {
-          technicians: {
-            where: { status: "ACTIVE", approvalStatus: "APPROVED" },
-            select: { id: true, fullName: true },
-          },
-        },
-      });
-      picTechnicians = vendor?.technicians || [];
+      picTechnicians = await query<{ id: string; fullName: string }>(
+        `SELECT t."id", t."fullName"
+         FROM "Technician" t
+         JOIN "Vendor" v ON v."id" = t."vendorId"
+         WHERE v."picUserId" = $1
+           AND t."status" = 'ACTIVE'::"TechnicianStatus"
+           AND t."approvalStatus" = 'APPROVED'::"ApprovalStatus"`,
+        [session.id]
+      );
     }
   } catch (err) {
     console.error("Error loading vendor/technician data:", err);

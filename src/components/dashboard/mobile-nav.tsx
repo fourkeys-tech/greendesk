@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Menu, X, Shield, Building2 } from "lucide-react";
 import { DashboardNav } from "./dashboard-nav";
 import type { NavItem } from "@/lib/permissions";
-import type { Role } from "@prisma/client";
+import type { Role } from "@/lib/db-types";
 
 interface MobileNavProps {
   items: NavItem[];

@@ -1,6 +1,6 @@
 "use client";
 
-import type { VendorType } from "@prisma/client";
+import type { VendorType } from "@/lib/db-types";
 
 export interface VendorClusterOption {
   id: string;

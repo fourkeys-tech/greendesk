@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { prisma } from "../prisma";
+import { queryOne } from "../db";
+import type { UserRow } from "../db-types";
 import { submitCitizenReport } from "../services/phase3-reporting";
 import {
   markReportAsInvalid,
@@ -9,23 +10,24 @@ import {
 
 describe("Fase 4 – Verifikasi Pengelola (Valid & Prioritas, Tidak Valid, Gabung Laporan)", () => {
   it("memastikan hanya Pengelola dari cluster terkait yang dapat memverifikasi laporan", async () => {
-    const pengelolaBgv = await prisma.user.findUniqueOrThrow({
-      where: { email: "pengelola.bgv@greenpark.id" },
-    });
-    const company = await prisma.company.findUniqueOrThrow({
-      where: { code: "THN" },
-    });
+    const pengelolaBgv = await queryOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["pengelola.bgv@greenpark.id"]
+    );
+    const company = await queryOne<{ id: string }>(
+      `SELECT "id" FROM "Company" WHERE "code" = $1`,
+      ["THN"]
+    );
+    if (!pengelolaBgv || !company) throw new Error("Seed Fase 4 tidak ditemukan");
 
     // Buat pelapor baru untuk mengirim laporan di Cluster Edelweiss (AST-EDW-001)
-    const pelapor = await prisma.user.create({
-      data: {
-        companyId: company.id,
-        name: "Pelapor Edelweiss",
-        email: `pelapor.edw.${Date.now()}@greenpark.id`,
-        role: "PENGGUNA",
-        dataConsentAt: new Date(),
-      },
-    });
+    const pelapor = await queryOne<UserRow>(
+      `INSERT INTO "User" ("companyId", "name", "email", "role", "dataConsentAt", "updatedAt")
+       VALUES ($1, $2, $3, 'PENGGUNA'::"Role", NOW(), NOW())
+       RETURNING *`,
+      [company.id, "Pelapor Edelweiss", `pelapor.edw.${Date.now()}@greenpark.id`]
+    );
+    if (!pelapor) throw new Error("Gagal membuat pelapor Edelweiss");
 
     const reportEdelweiss = await submitCitizenReport(
       {
@@ -66,22 +68,23 @@ describe("Fase 4 – Verifikasi Pengelola (Valid & Prioritas, Tidak Valid, Gabun
   });
 
   it("memproses laporan Valid (+Prioritas), Tidak Valid (wajib alasan), dan Gabung Laporan Ganda beserta rekam jejak pelapor", async () => {
-    const pengelolaBgv = await prisma.user.findUniqueOrThrow({
-      where: { email: "pengelola.bgv@greenpark.id" },
-    });
-    const company = await prisma.company.findUniqueOrThrow({
-      where: { code: "THN" },
-    });
+    const pengelolaBgv = await queryOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["pengelola.bgv@greenpark.id"]
+    );
+    const company = await queryOne<{ id: string }>(
+      `SELECT "id" FROM "Company" WHERE "code" = $1`,
+      ["THN"]
+    );
+    if (!pengelolaBgv || !company) throw new Error("Seed Fase 4 tidak ditemukan");
 
-    const pelapor = await prisma.user.create({
-      data: {
-        companyId: company.id,
-        name: "Pelapor Uji Fase 4",
-        email: `pelapor.fase4.${Date.now()}@greenpark.id`,
-        role: "PENGGUNA",
-        dataConsentAt: new Date(),
-      },
-    });
+    const pelapor = await queryOne<UserRow>(
+      `INSERT INTO "User" ("companyId", "name", "email", "role", "dataConsentAt", "updatedAt")
+       VALUES ($1, $2, $3, 'PENGGUNA'::"Role", NOW(), NOW())
+       RETURNING *`,
+      [company.id, "Pelapor Uji Fase 4", `pelapor.fase4.${Date.now()}@greenpark.id`]
+    );
+    if (!pelapor) throw new Error("Gagal membuat pelapor fase 4");
 
     const pelaporActor = {
       id: pelapor.id,
@@ -158,10 +161,11 @@ describe("Fase 4 – Verifikasi Pengelola (Valid & Prioritas, Tidak Valid, Gabun
     expect(invalidResult.status).toBe("TIDAK_VALID");
 
     // Cek rekam jejak laporan valid (2: 1 valid + 1 digabung) & tidak valid (1) pada akun pelapor
-    const updatedPelapor = await prisma.user.findUniqueOrThrow({
-      where: { id: pelapor.id },
-    });
-    expect(updatedPelapor.validReportCount).toBe(2);
-    expect(updatedPelapor.invalidReportCount).toBe(1);
+    const updatedPelapor = await queryOne<UserRow>(
+      `SELECT * FROM "User" WHERE "id" = $1`,
+      [pelapor.id]
+    );
+    expect(updatedPelapor?.validReportCount).toBe(2);
+    expect(updatedPelapor?.invalidReportCount).toBe(1);
   });
 });

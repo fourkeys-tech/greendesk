@@ -3,14 +3,38 @@
 import bcrypt from "bcryptjs";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { prisma } from "@/lib/prisma";
+import { after } from "next/server";
+import { execute, queryOne, withTransaction } from "@/lib/db";
+import type { Role, UserRow } from "@/lib/db-types";
 import {
   clearSessionCookie,
   getCurrentSession,
   setSessionCookie,
   type SessionUser,
 } from "@/lib/auth";
-import { sendTransactionalEmail } from "@/lib/email";
+import { recordAuditLog } from "@/lib/audit";
+import { flushEmailOutboxSafely } from "@/lib/email";
+import {
+  issueOtp,
+  OTP_GENERIC_INVALID_MESSAGE,
+  otpLoginEmail,
+  verifyOtp,
+} from "@/lib/services/otp";
+
+interface AuthUserLookupRow {
+  id: string;
+  name: string;
+  email: string;
+  passwordHash: string | null;
+  role: Role;
+  companyId: string | null;
+  staffClusterId: string | null;
+  isActive: boolean;
+  isBlocked: boolean;
+  companyName: string | null;
+  techApprovalStatus: string | null;
+  techStatus: string | null;
+}
 
 /**
  * Login menggunakan email dan password.
@@ -28,23 +52,27 @@ export async function loginWithPasswordAction(formData: FormData) {
   const genericError =
     "Kredensial tidak valid atau akun belum dapat digunakan. Silakan periksa kembali.";
 
-  const user = await prisma.user.findUnique({
-    where: { email },
-    include: {
-      company: { select: { name: true } },
-      technicianProfile: { select: { approvalStatus: true } },
-    },
-  });
+  const user = await queryOne<AuthUserLookupRow>(
+    `SELECT u."id", u."name", u."email", u."passwordHash", u."role",
+            u."companyId", u."staffClusterId", u."isActive", u."isBlocked",
+            c."name" AS "companyName",
+            t."approvalStatus" AS "techApprovalStatus",
+            t."status" AS "techStatus"
+     FROM "User" u
+     LEFT JOIN "Company" c ON c."id" = u."companyId"
+     LEFT JOIN "Technician" t ON t."userId" = u."id"
+     WHERE u."email" = $1`,
+    [email]
+  );
 
   if (!user || !user.passwordHash || !user.isActive || user.isBlocked) {
     return { error: genericError };
   }
 
-  // Teknisi belum disetujui tidak bisa login
+  // Teknisi belum disetujui atau berstatus INACTIVE tidak bisa login (§8.3.7)
   if (
     user.role === "TEKNISI" &&
-    user.technicianProfile &&
-    user.technicianProfile.approvalStatus !== "APPROVED"
+    (user.techApprovalStatus !== "APPROVED" || user.techStatus === "INACTIVE")
   ) {
     return { error: genericError };
   }
@@ -54,9 +82,20 @@ export async function loginWithPasswordAction(formData: FormData) {
     return { error: genericError };
   }
 
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { lastLoginAt: new Date() },
+  const now = new Date();
+  await withTransaction(async (tx) => {
+    await execute(
+      `UPDATE "User" SET "lastLoginAt" = $2, "updatedAt" = NOW() WHERE "id" = $1`,
+      [user.id, now],
+      tx
+    );
+    if (user.role === "TEKNISI" && user.techApprovalStatus !== null) {
+      await execute(
+        `UPDATE "Technician" SET "lastActiveAt" = $2, "updatedAt" = NOW() WHERE "userId" = $1`,
+        [user.id, now],
+        tx
+      );
+    }
   });
 
   const sessionUser: SessionUser = {
@@ -65,7 +104,7 @@ export async function loginWithPasswordAction(formData: FormData) {
     email: user.email,
     role: user.role,
     companyId: user.companyId,
-    companyName: user.company?.name ?? null,
+    companyName: user.companyName ?? null,
     staffClusterId: user.staffClusterId,
   };
 
@@ -82,36 +121,45 @@ export async function requestOtpAction(emailInput: string) {
     return { error: "Masukkan alamat email yang valid." };
   }
 
-  const user = await prisma.user.findUnique({
-    where: { email },
-  });
+  const user = await queryOne<{
+    id: string;
+    companyId: string | null;
+    role: Role;
+    isActive: boolean;
+    isBlocked: boolean;
+    techApprovalStatus: string | null;
+    techStatus: string | null;
+  }>(
+    `SELECT u."id", u."companyId", u."role", u."isActive", u."isBlocked",
+            t."approvalStatus" AS "techApprovalStatus",
+            t."status" AS "techStatus"
+     FROM "User" u
+     LEFT JOIN "Technician" t ON t."userId" = u."id"
+     WHERE u."email" = $1`,
+    [email]
+  );
 
-  if (user && user.isActive && !user.isBlocked) {
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 menit
+  const isTechEligible =
+    user?.role !== "TEKNISI" ||
+    (user.techApprovalStatus === "APPROVED" && user.techStatus !== "INACTIVE");
 
-    await prisma.otpCode.create({
-      data: {
-        email,
-        code,
-        expiresAt,
-      },
-    });
-
-    await sendTransactionalEmail({
+  if (user && user.isActive && !user.isBlocked && isTechEligible) {
+    const res = await issueOtp({
+      email,
       companyId: user.companyId,
-      toEmail: email,
-      subject: `Kode OTP Masuk GreenPark: ${code}`,
-      bodyHtml: `<p>Kode verifikasi satu kali (OTP) Anda adalah: <strong style="font-size:18px;">${code}</strong> (berlaku 10 menit).</p>`,
-      triggerType: "OTP_LOGIN",
+      subject: otpLoginEmail("000000").subject,
+      bodyHtml: (code) => otpLoginEmail(code).bodyHtml,
     });
+    if (res.issued) {
+      after(() => flushEmailOutboxSafely());
+    }
   }
 
   // Respons identik baik email terdaftar maupun belum (Anti-enumerasi PRD 14.5)
   return {
     success: true,
     message:
-      "Jika alamat email terdaftar dan aktif, kode OTP telah dikirimkan ke email tersebut (cek juga log Email Outbox di dev).",
+      "Jika alamat email terdaftar dan aktif, kode OTP telah dikirimkan ke email tersebut.",
   };
 }
 
@@ -122,37 +170,48 @@ export async function verifyOtpAction(emailInput: string, codeInput: string) {
   const email = emailInput.trim().toLowerCase();
   const code = codeInput.trim();
 
-  const otp = await prisma.otpCode.findFirst({
-    where: {
-      email,
-      code,
-      usedAt: null,
-      expiresAt: { gte: new Date() },
-    },
-    orderBy: { createdAt: "desc" },
-  });
-
-  if (!otp) {
-    return { error: "Kode OTP tidak valid atau sudah kedaluwarsa." };
+  const verified = await verifyOtp({ email, code });
+  if (!verified.ok) {
+    return { error: OTP_GENERIC_INVALID_MESSAGE };
   }
 
-  const user = await prisma.user.findUnique({
-    where: { email },
-    include: { company: { select: { name: true } } },
-  });
+  const user = await queryOne<AuthUserLookupRow>(
+    `SELECT u."id", u."name", u."email", u."passwordHash", u."role",
+            u."companyId", u."staffClusterId", u."isActive", u."isBlocked",
+            c."name" AS "companyName",
+            t."approvalStatus" AS "techApprovalStatus",
+            t."status" AS "techStatus"
+     FROM "User" u
+     LEFT JOIN "Company" c ON c."id" = u."companyId"
+     LEFT JOIN "Technician" t ON t."userId" = u."id"
+     WHERE u."email" = $1`,
+    [email]
+  );
 
-  if (!user || !user.isActive || user.isBlocked) {
-    return { error: "Kode OTP tidak valid atau sudah kedaluwarsa." };
+  if (
+    !user ||
+    !user.isActive ||
+    user.isBlocked ||
+    (user.role === "TEKNISI" &&
+      (user.techApprovalStatus !== "APPROVED" || user.techStatus === "INACTIVE"))
+  ) {
+    return { error: OTP_GENERIC_INVALID_MESSAGE };
   }
 
-  await prisma.otpCode.update({
-    where: { id: otp.id },
-    data: { usedAt: new Date() },
-  });
-
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { lastLoginAt: new Date() },
+  const now = new Date();
+  await withTransaction(async (tx) => {
+    await execute(
+      `UPDATE "User" SET "lastLoginAt" = $2, "updatedAt" = NOW() WHERE "id" = $1`,
+      [user.id, now],
+      tx
+    );
+    if (user.role === "TEKNISI" && user.techApprovalStatus !== null) {
+      await execute(
+        `UPDATE "Technician" SET "lastActiveAt" = $2, "updatedAt" = NOW() WHERE "userId" = $1`,
+        [user.id, now],
+        tx
+      );
+    }
   });
 
   await setSessionCookie({
@@ -161,187 +220,96 @@ export async function verifyOtpAction(emailInput: string, codeInput: string) {
     email: user.email,
     role: user.role,
     companyId: user.companyId,
-    companyName: user.company?.name ?? null,
+    companyName: user.companyName ?? null,
     staffClusterId: user.staffClusterId,
   });
 
   redirect("/dashboard");
 }
 
-const FALLBACK_DEMO_PROFILES: Record<string, SessionUser> = {
-  "admin@greenpark.id": {
-    id: "usr-admin-demo",
-    name: "Arfin Mardiyanto",
-    email: "admin@greenpark.id",
-    role: "ADMIN",
-    companyId: "seed-company-thn",
-    companyName: "PT Taman Hijau Nusantara",
-    staffClusterId: null,
-  },
-  ADMIN: {
-    id: "usr-admin-demo",
-    name: "Arfin Mardiyanto",
-    email: "admin@greenpark.id",
-    role: "ADMIN",
-    companyId: "seed-company-thn",
-    companyName: "PT Taman Hijau Nusantara",
-    staffClusterId: null,
-  },
-  "owner@greenpark.id": {
-    id: "usr-owner-demo",
-    name: "Ir. Surya Darmawan",
-    email: "owner@greenpark.id",
-    role: "OWNER",
-    companyId: "seed-company-thn",
-    companyName: "PT Taman Hijau Nusantara",
-    staffClusterId: null,
-  },
-  OWNER: {
-    id: "usr-owner-demo",
-    name: "Ir. Surya Darmawan",
-    email: "owner@greenpark.id",
-    role: "OWNER",
-    companyId: "seed-company-thn",
-    companyName: "PT Taman Hijau Nusantara",
-    staffClusterId: null,
-  },
-  "manager@greenpark.id": {
-    id: "usr-manager-demo",
-    name: "Diana Kusuma",
-    email: "manager@greenpark.id",
-    role: "MANAGER",
-    companyId: "seed-company-thn",
-    companyName: "PT Taman Hijau Nusantara",
-    staffClusterId: null,
-  },
-  MANAGER: {
-    id: "usr-manager-demo",
-    name: "Diana Kusuma",
-    email: "manager@greenpark.id",
-    role: "MANAGER",
-    companyId: "seed-company-thn",
-    companyName: "PT Taman Hijau Nusantara",
-    staffClusterId: null,
-  },
-  "pengelola.bgv@greenpark.id": {
-    id: "usr-pengelola-demo",
-    name: "Hendro Wibowo",
-    email: "pengelola.bgv@greenpark.id",
-    role: "PENGELOLA",
-    companyId: "seed-company-thn",
-    companyName: "PT Taman Hijau Nusantara",
-    staffClusterId: null,
-  },
-  PENGELOLA: {
-    id: "usr-pengelola-demo",
-    name: "Hendro Wibowo",
-    email: "pengelola.bgv@greenpark.id",
-    role: "PENGELOLA",
-    companyId: "seed-company-thn",
-    companyName: "PT Taman Hijau Nusantara",
-    staffClusterId: null,
-  },
-  "pic@vendorjaya.id": {
-    id: "usr-pic-demo",
-    name: "Agus Pratama",
-    email: "pic@vendorjaya.id",
-    role: "PIC_VENDOR",
-    companyId: "seed-company-thn",
-    companyName: "PT Taman Hijau Nusantara",
-    staffClusterId: null,
-  },
-  PIC_VENDOR: {
-    id: "usr-pic-demo",
-    name: "Agus Pratama",
-    email: "pic@vendorjaya.id",
-    role: "PIC_VENDOR",
-    companyId: "seed-company-thn",
-    companyName: "PT Taman Hijau Nusantara",
-    staffClusterId: null,
-  },
-  "teknisi.budi@vendorjaya.id": {
-    id: "usr-teknisi-demo",
-    name: "Budi Santoso",
-    email: "teknisi.budi@vendorjaya.id",
-    role: "TEKNISI",
-    companyId: "seed-company-thn",
-    companyName: "PT Taman Hijau Nusantara",
-    staffClusterId: null,
-  },
-  TEKNISI: {
-    id: "usr-teknisi-demo",
-    name: "Budi Santoso",
-    email: "teknisi.budi@vendorjaya.id",
-    role: "TEKNISI",
-    companyId: "seed-company-thn",
-    companyName: "PT Taman Hijau Nusantara",
-    staffClusterId: null,
-  },
-  "warga@greenpark.id": {
-    id: "usr-warga-demo",
-    name: "Rina Kartika",
-    email: "warga@greenpark.id",
-    role: "PENGGUNA",
-    companyId: "seed-company-thn",
-    companyName: "PT Taman Hijau Nusantara",
-    staffClusterId: null,
-  },
-  PENGGUNA: {
-    id: "usr-warga-demo",
-    name: "Rina Kartika",
-    email: "warga@greenpark.id",
-    role: "PENGGUNA",
-    companyId: "seed-company-thn",
-    companyName: "PT Taman Hijau Nusantara",
-    staffClusterId: null,
-  },
-};
-
 /**
- * Fitur khusus pengujian: Pindah cepat antar 7 role dengan 1 klik (Mendukung mode DB & offline statis).
+ * Fitur khusus pengujian: Pindah cepat antar 7 role & multi-perusahaan dengan 1 klik.
+ *
+ * TODO(pre-prod) P0-1 — Wajib sebelum production:
+ * 1. Guard dengan `process.env.NODE_ENV !== "production"` + env flag eksplisit, atau hapus action ini.
+ * 2. Blokir fallback `quickSwitchRoleAction` ketika kata sandi login dikosongkan.
+ * 3. Ganti pendaftaran cepat tanpa verifikasi dengan alur OTP terverifikasi.
+ * 4. Integrasikan Google OAuth asli untuk tombol Google atau sembunyikan tombolnya.
  */
 export async function quickSwitchRoleAction(roleOrEmail: string) {
-  let sessionUser: SessionUser | null = null;
-
-  try {
-    const user = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { email: roleOrEmail },
-          { role: roleOrEmail as any },
-        ],
-      },
-      include: { company: { select: { name: true } } },
-    });
-
-    if (user) {
-      sessionUser = {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        companyId: user.companyId,
-        companyName: user.company?.name ?? null,
-        staffClusterId: user.staffClusterId,
-      };
-    }
-  } catch {
-    // Database offline / dev fallback
+  const target = roleOrEmail?.trim();
+  if (!target) {
+    return { error: "Identitas akun tidak boleh kosong." };
   }
 
-  if (!sessionUser) {
-    sessionUser = FALLBACK_DEMO_PROFILES[roleOrEmail] || {
-      id: "usr-admin-demo",
-      name: "Arfin Mardiyanto",
-      email: "admin@greenpark.id",
-      role: "ADMIN",
-      companyId: "seed-company-thn",
-      companyName: "PT Taman Hijau Nusantara",
-      staffClusterId: null,
+  let user: AuthUserLookupRow | null = null;
+
+  try {
+    user = await queryOne<AuthUserLookupRow>(
+      `SELECT u."id", u."name", u."email", u."passwordHash", u."role",
+              u."companyId", u."staffClusterId", u."isActive", u."isBlocked",
+              c."name" AS "companyName",
+              t."approvalStatus" AS "techApprovalStatus",
+              t."status" AS "techStatus"
+       FROM "User" u
+       LEFT JOIN "Company" c ON c."id" = u."companyId"
+       LEFT JOIN "Technician" t ON t."userId" = u."id"
+       WHERE LOWER(u."email") = LOWER($1) OR u."role"::text = $1
+       ORDER BY CASE WHEN LOWER(u."email") = LOWER($1) THEN 0 ELSE 1 END, u."createdAt" ASC
+       LIMIT 1`,
+      [target]
+    );
+
+    if (!user) {
+      return { error: `Akun "${target}" tidak ditemukan di database.` };
+    }
+
+    if (!user.isActive || user.isBlocked) {
+      return {
+        error: `Akun ${user.email} sedang tidak aktif atau diblokir.`,
+      };
+    }
+
+    if (
+      user.role === "TEKNISI" &&
+      (user.techApprovalStatus !== "APPROVED" || user.techStatus === "INACTIVE")
+    ) {
+      return {
+        error: `Akun teknisi ${user.email} belum disetujui atau berstatus nonaktif.`,
+      };
+    }
+
+    const now = new Date();
+    await withTransaction(async (tx) => {
+      await execute(
+        `UPDATE "User" SET "lastLoginAt" = $2, "updatedAt" = NOW() WHERE "id" = $1`,
+        [user!.id, now],
+        tx
+      );
+      if (user!.role === "TEKNISI" && user!.techApprovalStatus !== null) {
+        await execute(
+          `UPDATE "Technician" SET "lastActiveAt" = $2, "updatedAt" = NOW() WHERE "userId" = $1`,
+          [user!.id, now],
+          tx
+        );
+      }
+    });
+  } catch (err) {
+    console.error("[quickSwitchRoleAction] Database error:", err);
+    return {
+      error: "Gagal mengakses database saat berganti akun. Pastikan PostgreSQL aktif.",
     };
   }
 
-  await setSessionCookie(sessionUser);
+  await setSessionCookie({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    companyId: user.companyId,
+    companyName: user.companyName ?? null,
+    staffClusterId: user.staffClusterId,
+  });
   revalidatePath("/dashboard");
   redirect("/dashboard");
 }
@@ -365,14 +333,68 @@ export async function updateUserProfileAction(formData: FormData) {
       return { error: "Nama lengkap tidak boleh kosong." };
     }
 
-    const updated = await prisma.user.update({
-      where: { id: session.id },
-      data: {
-        name,
-        reporterStatus: reporterStatus ? reporterStatus : null,
-        blockHouseNo,
-        ...(dataConsent ? { dataConsentAt: new Date() } : {}),
-      },
+    const existing = await queryOne<{
+      id: string;
+      companyId: string | null;
+      name: string;
+      reporterStatus: string | null;
+      blockHouseNo: string | null;
+      dataConsentAt: Date | null;
+    }>(
+      `SELECT "id", "companyId", "name", "reporterStatus", "blockHouseNo", "dataConsentAt"
+       FROM "User"
+       WHERE "id" = $1`,
+      [session.id]
+    );
+    if (!existing) {
+      return { error: "Akun tidak ditemukan." };
+    }
+
+    const nextReporterStatus = reporterStatus ? reporterStatus : null;
+    const nextConsentAt = dataConsent ? new Date() : existing.dataConsentAt;
+
+    const updated = await withTransaction(async (tx) => {
+      const saved = await queryOne<UserRow>(
+        `UPDATE "User"
+         SET "name" = $2,
+             "reporterStatus" = $3,
+             "blockHouseNo" = $4,
+             "dataConsentAt" = $5,
+             "updatedAt" = NOW()
+         WHERE "id" = $1
+         RETURNING *`,
+        [session.id, name, nextReporterStatus, blockHouseNo, nextConsentAt],
+        tx
+      );
+      if (!saved) throw new Error("Gagal memperbarui profil.");
+
+      if (existing.companyId) {
+        await recordAuditLog(
+          {
+            companyId: existing.companyId,
+            actor: session,
+            entityName: "User",
+            entityId: saved.id,
+            action: "UPDATE",
+            summary: `${session.name} memperbarui profil akun sendiri`,
+            oldValues: {
+              name: existing.name,
+              reporterStatus: existing.reporterStatus,
+              blockHouseNo: existing.blockHouseNo,
+              dataConsentAt: existing.dataConsentAt,
+            },
+            newValues: {
+              name: saved.name,
+              reporterStatus: saved.reporterStatus,
+              blockHouseNo: saved.blockHouseNo,
+              dataConsentAt: saved.dataConsentAt,
+            },
+          },
+          tx
+        );
+      }
+
+      return saved;
     });
 
     // Perbarui session cookie jika nama berubah

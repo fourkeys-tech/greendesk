@@ -75,7 +75,7 @@ export default function WelcomePage() {
           </div>
 
           <Link
-            href="/beranda"
+            href="/login"
             className="relative overflow-hidden w-full h-[64px] rounded-3xl bg-white text-[#1b5e45] font-bold text-[22px] shadow-[0_4px_14px_rgba(0,0,0,0.10)] flex items-center justify-center transition-transform active:scale-[0.98]"
           >
             <img

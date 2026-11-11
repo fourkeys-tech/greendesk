@@ -1,8 +1,11 @@
-import { prisma } from "./prisma";
+import { pool, execute, query, queryOne, type DbClient } from "./db";
+import type { EmailLogRow } from "./db-types";
+import { getMailer } from "./mailer";
 
 export type EmailTriggerType =
   | "OTP_LOGIN"
   | "VENDOR_INVITE"
+  | "ACCOUNT_INVITE"
   | "LAPORAN_TERKIRIM"
   | "TIDAK_VALID"
   | "DIGABUNG"
@@ -13,194 +16,287 @@ export type EmailTriggerType =
   | "SELESAI"
   | "DIBATALKAN";
 
-export interface SendEmailParams {
+export type ReportEmailTriggerType = Exclude<
+  EmailTriggerType,
+  "OTP_LOGIN" | "VENDOR_INVITE" | "ACCOUNT_INVITE"
+>;
+
+export interface EnqueueEmailParams {
   companyId?: string | null;
   toEmail: string;
   subject: string;
   bodyHtml: string;
   triggerType: EmailTriggerType;
-  ticketNo?: string;
+  ticketNo?: string | null;
+}
+
+/** Status baris outbox EmailLog. */
+export const EMAIL_STATUS = {
+  QUEUED: "QUEUED",
+  SENDING: "SENDING",
+  SENT: "SENT",
+  FAILED: "FAILED",
+  DEAD: "DEAD",
+} as const;
+
+export const EMAIL_MAX_RETRIES = 5;
+/** Backoff percobaan ulang (menit) untuk retryCount ke-1..n. */
+const RETRY_BACKOFF_MINUTES = [1, 5, 15, 60, 60];
+
+export function escapeHtml(value: string | null | undefined): string {
+  if (!value) return "";
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+export function getAppBaseUrl(): string {
+  const raw = process.env.APP_BASE_URL?.trim() || "http://localhost:3000";
+  return raw.replace(/\/+$/, "");
+}
+
+export function buildStatusUrl(ticketNo: string, statusToken: string): string {
+  return `${getAppBaseUrl()}/status/${encodeURIComponent(ticketNo)}?k=${encodeURIComponent(statusToken)}`;
+}
+
+function toAbsoluteUrl(url: string): string {
+  if (/^https?:\/\//i.test(url)) return url;
+  return `${getAppBaseUrl()}${url.startsWith("/") ? "" : "/"}${url}`;
 }
 
 /**
- * Layanan pengiriman email transaksional (Fase 0).
- * Di mode pengembangan: mencatat email ke tabel EmailLog dan menampilkan di console
- * sehingga tim pengembang / penguji dapat melihat isi email & OTP langsung dari dashboard.
+ * Menulis email ke outbox (EmailLog berstatus QUEUED).
+ * Teruskan `tx` saat dipanggil di dalam transaksi: bila transaksi di-rollback, email ikut batal
+ * — pelapor tidak pernah menerima kabar untuk transisi yang gagal.
+ * Pengiriman nyata dilakukan `processEmailOutbox()`.
  */
-export async function sendTransactionalEmail(params: SendEmailParams) {
-  const { companyId, toEmail, subject, bodyHtml, triggerType, ticketNo } =
-    params;
-
-  console.info(
-    `\n📧 [EMAIL OUTBOX - ${triggerType}] To: ${toEmail} | Subject: ${subject}${
-      ticketNo ? ` | Tiket: ${ticketNo}` : ""
-    }`
-  );
-
-  const log = await prisma.emailLog.create({
-    data: {
-      companyId: companyId ?? null,
+export async function enqueueEmail(
+  db: DbClient,
+  params: EnqueueEmailParams
+): Promise<EmailLogRow> {
+  const { companyId, toEmail, subject, bodyHtml, triggerType, ticketNo } = params;
+  const row = await queryOne<EmailLogRow>(
+    `INSERT INTO "EmailLog" (
+       "companyId", "toEmail", "subject", "bodyHtml", "triggerType",
+       "ticketNo", "status", "retryCount", "nextAttemptAt"
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 0, NOW())
+     RETURNING *`,
+    [
+      companyId ?? null,
       toEmail,
       subject,
       bodyHtml,
       triggerType,
-      ticketNo: ticketNo ?? null,
-      status: "SENT",
-      retryCount: 0,
-    },
-  });
+      ticketNo ?? null,
+      EMAIL_STATUS.QUEUED,
+    ],
+    db
+  );
+  if (!row) {
+    throw new Error("Gagal memasukkan email ke outbox.");
+  }
+  return row;
+}
 
-  return log;
+export interface ReportStatusEmailInput {
+  reporterName: string;
+  /** Nomor tiket milik PENERIMA email (untuk laporan anak: tiket anak, bukan induk). */
+  ticketNo: string;
+  statusToken: string;
+  assetName: string;
+  triggerType: ReportEmailTriggerType;
+  reason?: string | null;
+  /** Nomor tiket induk (bila penerima adalah pelapor laporan yang digabung). */
+  parentTicketNo?: string | null;
+  afterPhotoUrls?: string[];
 }
 
 /**
- * Helper pembentuk email status laporan ke pelapor sesuai Bagian 9 PRD
- * (selalu memuat nomor tiket dan tautan cek status).
+ * Template email status laporan ke pelapor (§10.1).
+ * Semua nilai dari pengguna di-escape; tautan cek status absolut dan membawa token.
  */
-export async function sendReportStatusEmail(params: {
-  companyId: string;
-  toEmail: string;
-  reporterName: string;
-  ticketNo: string;
-  assetName: string;
-  triggerType: Exclude<EmailTriggerType, "OTP_LOGIN" | "VENDOR_INVITE">;
-  reason?: string | null;
-  parentTicketNo?: string | null;
-  afterPhotoUrls?: string[];
-}) {
-  const {
-    companyId,
-    toEmail,
-    reporterName,
-    ticketNo,
-    assetName,
-    triggerType,
-    reason,
-    parentTicketNo,
-    afterPhotoUrls,
-  } = params;
+export function buildReportStatusEmail(input: ReportStatusEmailInput): {
+  subject: string;
+  bodyHtml: string;
+} {
+  const name = escapeHtml(input.reporterName);
+  const ticket = escapeHtml(input.ticketNo);
+  const asset = escapeHtml(input.assetName);
+  const reason = escapeHtml(input.reason) || "-";
+  const parent = escapeHtml(input.parentTicketNo);
+  const statusUrl = buildStatusUrl(input.ticketNo, input.statusToken);
 
-  const statusUrl = `/status/${encodeURIComponent(ticketNo)}`;
-
-  const templates: Record<
-    Exclude<EmailTriggerType, "OTP_LOGIN" | "VENDOR_INVITE">,
-    { subject: string; message: string }
-  > = {
+  const templates: Record<ReportEmailTriggerType, { subject: string; message: string }> = {
     LAPORAN_TERKIRIM: {
-      subject: `[${ticketNo}] Laporan Kerusakan Diterima - ${assetName}`,
-      message: `Terima kasih ${reporterName}, laporan Anda untuk aset <strong>${assetName}</strong> telah kami terima dengan nomor tiket <strong>${ticketNo}</strong> dan sedang menunggu verifikasi pengelola.`,
+      subject: `[${input.ticketNo}] Laporan Kerusakan Diterima - ${input.assetName}`,
+      message: `Terima kasih ${name}, laporan Anda untuk aset <strong>${asset}</strong> telah kami terima dengan nomor tiket <strong>${ticket}</strong> dan sedang menunggu verifikasi pengelola.`,
     },
     TIDAK_VALID: {
-      subject: `[${ticketNo}] Laporan Tidak Dapat Dilanjutkan - ${assetName}`,
-      message: `Halo ${reporterName}, laporan Anda (<strong>${ticketNo}</strong>) untuk aset <strong>${assetName}</strong> tidak dapat dilanjutkan oleh pengelola.<br/><strong>Alasan:</strong> ${
-        reason || "-"
-      }`,
+      subject: `[${input.ticketNo}] Laporan Tidak Dapat Dilanjutkan - ${input.assetName}`,
+      message: `Halo ${name}, laporan Anda (<strong>${ticket}</strong>) untuk aset <strong>${asset}</strong> tidak dapat dilanjutkan oleh pengelola.<br/><strong>Alasan:</strong> ${reason}`,
     },
     DIGABUNG: {
-      subject: `[${ticketNo}] Laporan Digabung ke Tiket ${parentTicketNo || "Induk"}`,
-      message: `Halo ${reporterName}, laporan Anda (<strong>${ticketNo}</strong>) untuk aset <strong>${assetName}</strong> digabung dengan laporan aktif sebelumnya (<strong>${
-        parentTicketNo || "-"
-      }</strong>). Kabar perkembangan berikutnya akan mengikuti laporan induk tersebut.`,
+      subject: `[${input.ticketNo}] Laporan Digabung ke Tiket ${input.parentTicketNo || "Induk"}`,
+      message: `Halo ${name}, laporan Anda (<strong>${ticket}</strong>) untuk aset <strong>${asset}</strong> digabung dengan laporan aktif sebelumnya (<strong>${parent || "-"}</strong>). Kabar perkembangan berikutnya akan mengikuti laporan induk tersebut.`,
     },
     VALID_MENUNGGU_KEPUTUSAN: {
-      subject: `[${ticketNo}] Laporan Terverifikasi - ${assetName}`,
-      message: `Halo ${reporterName}, laporan Anda (<strong>${ticketNo}</strong>) untuk aset <strong>${assetName}</strong> telah diverifikasi oleh pengelola dan diteruskan ke Manager untuk segera ditindaklanjuti.`,
+      subject: `[${input.ticketNo}] Laporan Terverifikasi - ${input.assetName}`,
+      message: `Halo ${name}, laporan Anda (<strong>${ticket}</strong>) untuk aset <strong>${asset}</strong> telah diverifikasi oleh pengelola dan diteruskan ke Manager untuk segera ditindaklanjuti.`,
     },
     DITOLAK_MANAGER: {
-      subject: `[${ticketNo}] Perbaikan Belum Dapat Dilanjutkan - ${assetName}`,
-      message: `Halo ${reporterName}, perbaikan untuk laporan <strong>${ticketNo}</strong> (${assetName}) belum dapat dilanjutkan saat ini.<br/><strong>Alasan Manager:</strong> ${
-        reason || "-"
-      }`,
+      subject: `[${input.ticketNo}] Perbaikan Belum Dapat Dilanjutkan - ${input.assetName}`,
+      message: `Halo ${name}, perbaikan untuk laporan <strong>${ticket}</strong> (${asset}) belum dapat dilanjutkan saat ini.<br/><strong>Alasan Manager:</strong> ${reason}`,
     },
     DISETUJUI: {
-      subject: `[${ticketNo}] Perbaikan Disetujui & Dijadwalkan - ${assetName}`,
-      message: `Halo ${reporterName}, perbaikan untuk laporan <strong>${ticketNo}</strong> (${assetName}) telah disetujui oleh Manager dan SPK telah diterbitkan ke vendor.`,
+      subject: `[${input.ticketNo}] Perbaikan Disetujui & Dijadwalkan - ${input.assetName}`,
+      message: `Halo ${name}, perbaikan untuk laporan <strong>${ticket}</strong> (${asset}) telah disetujui oleh Manager dan SPK telah diterbitkan ke vendor.`,
     },
     DIKERJAKAN: {
-      subject: `[${ticketNo}] Teknisi Sedang Menangani Perbaikan - ${assetName}`,
-      message: `Halo ${reporterName}, teknisi telah ditunjuk dan sedang menangani perbaikan untuk aset <strong>${assetName}</strong> (Tiket: <strong>${ticketNo}</strong>).`,
+      subject: `[${input.ticketNo}] Teknisi Sedang Menangani Perbaikan - ${input.assetName}`,
+      message: `Halo ${name}, teknisi telah ditunjuk dan sedang menangani perbaikan untuk aset <strong>${asset}</strong> (Tiket: <strong>${ticket}</strong>).`,
     },
     SELESAI: {
-      subject: `[${ticketNo}] Perbaikan Selesai - ${assetName}`,
-      message: `Halo ${reporterName}, kabar baik! Perbaikan aset <strong>${assetName}</strong> (Tiket: <strong>${ticketNo}</strong>) telah selesai dan dikonfirmasi oleh Manager.${
-        afterPhotoUrls && afterPhotoUrls.length > 0
-          ? `<br/>Foto hasil perbaikan terlampir: ${afterPhotoUrls.join(", ")}`
+      subject: `[${input.ticketNo}] Perbaikan Selesai - ${input.assetName}`,
+      message: `Halo ${name}, kabar baik! Perbaikan aset <strong>${asset}</strong> (Tiket: <strong>${ticket}</strong>) telah selesai dan dikonfirmasi oleh Manager.${
+        input.afterPhotoUrls && input.afterPhotoUrls.length > 0
+          ? `<br/>Foto hasil perbaikan:<br/>${input.afterPhotoUrls
+              .map((u) => {
+                const abs = escapeHtml(toAbsoluteUrl(u));
+                return `<a href="${abs}">${abs}</a>`;
+              })
+              .join("<br/>")}`
           : ""
       }`,
     },
     DIBATALKAN: {
-      subject: `[${ticketNo}] Konfirmasi Pembatalan Laporan - ${assetName}`,
-      message: `Halo ${reporterName}, laporan Anda dengan nomor tiket <strong>${ticketNo}</strong> (${assetName}) telah berhasil dibatalkan sesuai permintaan Anda.`,
+      subject: `[${input.ticketNo}] Konfirmasi Pembatalan Laporan - ${input.assetName}`,
+      message: `Halo ${name}, laporan Anda dengan nomor tiket <strong>${ticket}</strong> (${asset}) telah berhasil dibatalkan sesuai permintaan Anda.`,
     },
   };
 
-  const selected = templates[triggerType];
+  const selected = templates[input.triggerType];
+  const parentLine = parent
+    ? `<br/><strong>Laporan Induk:</strong> ${parent}`
+    : "";
   const bodyHtml = `
     <div style="font-family: sans-serif; line-height: 1.6; color: #1e293b;">
       <p>${selected.message}</p>
       <p style="margin-top: 12px;">
-        <strong>Nomor Tiket:</strong> ${ticketNo}<br/>
-        <strong>Cek Status Laporan:</strong> <a href="${statusUrl}">${statusUrl}</a>
+        <strong>Nomor Tiket:</strong> ${ticket}${parentLine}<br/>
+        <strong>Cek Status Laporan:</strong> <a href="${escapeHtml(statusUrl)}">${escapeHtml(statusUrl)}</a>
       </p>
     </div>
   `.trim();
 
-  return sendTransactionalEmail({
-    companyId,
-    toEmail,
-    subject: selected.subject,
+  return { subject: selected.subject, bodyHtml };
+}
+
+/**
+ * Enqueue email status laporan untuk satu pelapor (§10.1: selalu memuat nomor tiket + tautan cek status).
+ */
+export async function enqueueReportStatusEmail(
+  db: DbClient,
+  params: ReportStatusEmailInput & { companyId: string; toEmail: string }
+) {
+  const { subject, bodyHtml } = buildReportStatusEmail(params);
+  return enqueueEmail(db, {
+    companyId: params.companyId,
+    toEmail: params.toEmail,
+    subject,
     bodyHtml,
-    triggerType,
-    ticketNo,
+    triggerType: params.triggerType,
+    ticketNo: params.ticketNo,
   });
 }
 
 /**
- * Mengirim email status laporan ke pelapor utama SEKALIGUS ke seluruh pelapor
- * yang laporannya digabung (DIGABUNG) ke laporan induk ini (PRD Bagian 6 Fase 4 & Bagian 8).
+ * Enqueue email status laporan ke pelapor induk SEKALIGUS ke seluruh pelapor anak
+ * yang laporannya digabung (DIGABUNG) ke induk ini dan belum diarsip (§7 Verifikasi 4).
+ * Setiap anak menerima tautan status miliknya sendiri (tiket + token anak).
  */
-export async function sendReportStatusEmailWithMergedChildren(params: {
-  reportId: string;
-  triggerType: Exclude<EmailTriggerType, "OTP_LOGIN" | "VENDOR_INVITE">;
-  reason?: string | null;
-  afterPhotoUrls?: string[];
-}) {
-  const report = await prisma.report.findUnique({
-    where: { id: params.reportId },
-    include: {
-      asset: true,
-      reporter: { select: { name: true, email: true } },
-      mergedChildReports: {
-        include: {
-          reporter: { select: { name: true, email: true } },
-        },
-      },
-    },
-  });
+export async function enqueueReportStatusEmailWithMergedChildren(
+  db: DbClient,
+  params: {
+    reportId: string;
+    triggerType: ReportEmailTriggerType;
+    reason?: string | null;
+    afterPhotoUrls?: string[];
+  }
+) {
+  const report = await queryOne<{
+    id: string;
+    companyId: string;
+    ticketNo: string;
+    statusToken: string;
+    assetName: string;
+    assetCode: string;
+    reporterName: string;
+    reporterEmail: string;
+  }>(
+    `SELECT
+       r."id",
+       r."companyId",
+       r."ticketNo",
+       r."statusToken",
+       a."name" AS "assetName",
+       a."code" AS "assetCode",
+       u."name" AS "reporterName",
+       u."email" AS "reporterEmail"
+     FROM "Report" r
+     JOIN "Asset" a ON a."id" = r."assetId"
+     JOIN "User" u ON u."id" = r."reporterId"
+     WHERE r."id" = $1
+     LIMIT 1`,
+    [params.reportId],
+    db
+  );
 
   if (!report) return;
 
-  const assetLabel = `${report.asset.name} (${report.asset.code})`;
+  const mergedChildren = await query<{
+    ticketNo: string;
+    statusToken: string;
+    reporterName: string;
+    reporterEmail: string;
+  }>(
+    `SELECT
+       c."ticketNo",
+       c."statusToken",
+       u."name" AS "reporterName",
+       u."email" AS "reporterEmail"
+     FROM "Report" c
+     JOIN "User" u ON u."id" = c."reporterId"
+     WHERE c."parentReportId" = $1 AND c."archivedAt" IS NULL`,
+    [report.id],
+    db
+  );
 
-  // 1. Kirim ke pelapor laporan induk
-  await sendReportStatusEmail({
+  const assetLabel = `${report.assetName} (${report.assetCode})`;
+
+  await enqueueReportStatusEmail(db, {
     companyId: report.companyId,
-    toEmail: report.reporter.email,
-    reporterName: report.reporter.name,
+    toEmail: report.reporterEmail,
+    reporterName: report.reporterName,
     ticketNo: report.ticketNo,
+    statusToken: report.statusToken,
     assetName: assetLabel,
     triggerType: params.triggerType,
     reason: params.reason,
     afterPhotoUrls: params.afterPhotoUrls,
   });
 
-  // 2. Kirim ke seluruh pelapor dari laporan anak yang digabung (DIGABUNG)
-  for (const child of report.mergedChildReports) {
-    await sendReportStatusEmail({
+  for (const child of mergedChildren) {
+    await enqueueReportStatusEmail(db, {
       companyId: report.companyId,
-      toEmail: child.reporter.email,
-      reporterName: child.reporter.name,
-      ticketNo: `${child.ticketNo} (Induk: ${report.ticketNo})`,
+      toEmail: child.reporterEmail,
+      reporterName: child.reporterName,
+      ticketNo: child.ticketNo,
+      statusToken: child.statusToken,
+      parentTicketNo: report.ticketNo,
       assetName: assetLabel,
       triggerType: params.triggerType,
       reason: params.reason,
@@ -209,3 +305,99 @@ export async function sendReportStatusEmailWithMergedChildren(params: {
   }
 }
 
+function computeNextAttempt(retryCount: number, now: Date): Date {
+  const idx = Math.min(Math.max(retryCount - 1, 0), RETRY_BACKOFF_MINUTES.length - 1);
+  return new Date(now.getTime() + RETRY_BACKOFF_MINUTES[idx] * 60 * 1000);
+}
+
+export interface OutboxRunResult {
+  claimed: number;
+  sent: number;
+  failed: number;
+  dead: number;
+}
+
+/**
+ * Memproses outbox: mengklaim baris QUEUED yang sudah jatuh tempo (→ SENDING), mengirim lewat mailer,
+ * lalu menandai SENT / FAILED (retry dengan backoff) / DEAD (setelah EMAIL_MAX_RETRIES).
+ * Aman dipanggil bersamaan dari beberapa proses: klaim per baris memakai `updateMany` berguard status.
+ */
+export async function processEmailOutbox(limit = 20): Promise<OutboxRunResult> {
+  const result: OutboxRunResult = { claimed: 0, sent: 0, failed: 0, dead: 0 };
+
+  // Bandingkan dengan NOW() di sisi DB (bukan `new Date()` JS): `enqueueEmail` menulis
+  // "nextAttemptAt" = NOW() berpresisi mikrodetik, sedangkan Date JS dipotong ke milidetik
+  // sehingga baris yang baru masuk bisa dianggap "belum jatuh tempo" dan tidak terklaim.
+  const candidates = await query<{ id: string }>(
+    `SELECT "id"
+     FROM "EmailLog"
+     WHERE "status" IN ($1, $2) AND "nextAttemptAt" <= NOW()
+     ORDER BY "nextAttemptAt" ASC
+     LIMIT $3`,
+    [EMAIL_STATUS.QUEUED, EMAIL_STATUS.FAILED, limit],
+    pool
+  );
+
+  if (candidates.length === 0) return result;
+
+  const mailer = getMailer();
+
+  for (const { id } of candidates) {
+    const row = await queryOne<EmailLogRow>(
+      `UPDATE "EmailLog"
+       SET "status" = $1
+       WHERE "id" = $2 AND "status" IN ($3, $4)
+       RETURNING *`,
+      [EMAIL_STATUS.SENDING, id, EMAIL_STATUS.QUEUED, EMAIL_STATUS.FAILED],
+      pool
+    );
+    if (!row) continue; // sudah diklaim proses lain
+    result.claimed++;
+
+    try {
+      await mailer.send({ to: row.toEmail, subject: row.subject, html: row.bodyHtml });
+      await execute(
+        `UPDATE "EmailLog"
+         SET "status" = $1, "sentAt" = NOW(), "errorMessage" = NULL
+         WHERE "id" = $2`,
+        [EMAIL_STATUS.SENT, id],
+        pool
+      );
+      result.sent++;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const retryCount = row.retryCount + 1;
+      const dead = retryCount >= EMAIL_MAX_RETRIES;
+      await execute(
+        `UPDATE "EmailLog"
+         SET "status" = $1, "retryCount" = $2, "errorMessage" = $3, "nextAttemptAt" = $4
+         WHERE "id" = $5`,
+        [
+          dead ? EMAIL_STATUS.DEAD : EMAIL_STATUS.FAILED,
+          retryCount,
+          message.slice(0, 1000),
+          computeNextAttempt(retryCount, new Date()),
+          id,
+        ],
+        pool
+      );
+      if (dead) result.dead++;
+      else result.failed++;
+      console.error(`[email-outbox] gagal mengirim ${id} ke ${row.toEmail}: ${message}`);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Pemicu "best effort" dari server action (dipanggil via `after()` dari next/server).
+ * Kegagalan di sini tidak boleh menggagalkan action; cron /api/cron/outbox menjadi jaring pengaman.
+ */
+export async function flushEmailOutboxSafely(limit = 20): Promise<void> {
+  try {
+    await processEmailOutbox(limit);
+  } catch (err) {
+    console.error("[email-outbox] flush gagal:", err);
+  }
+}

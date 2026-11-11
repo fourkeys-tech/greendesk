@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import type { TechnicianStatus } from "@prisma/client";
+import type { TechnicianStatus } from "@/lib/db-types";
 import {
   confirmTechnicianRosterAction,
   registerTechnicianAction,

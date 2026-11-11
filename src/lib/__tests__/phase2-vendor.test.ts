@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { prisma } from "../prisma";
+import { execute, queryCount, queryOne } from "../db";
+import type {
+  ClusterRow,
+  EmailLogRow,
+  TechnicianRow,
+  UserRow,
+  VendorRow,
+} from "../db-types";
 import {
   approveOrRejectTechnicianByAdmin,
   approveTechnicianReactivationByAdmin,
@@ -14,14 +21,28 @@ import {
 } from "../services/phase2-vendor";
 import type { SessionUser } from "../auth";
 
+async function mustOne<T extends object>(
+  sql: string,
+  params: unknown[],
+  label: string
+): Promise<T> {
+  const row = await queryOne<T>(sql, params);
+  if (!row) throw new Error(`Record tidak ditemukan: ${label}`);
+  return row;
+}
+
 describe("Fase 2 – Onboarding Vendor, Persetujuan Teknisi & Job Terjadwal", () => {
   it("memungkinkan Admin membuat Vendor + Akun PIC dan mengirim email undangan", async () => {
-    const admin = await prisma.user.findUniqueOrThrow({
-      where: { email: "admin@greenpark.id" },
-    });
-    const cluster = await prisma.cluster.findFirstOrThrow({
-      where: { companyId: admin.companyId! },
-    });
+    const admin = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["admin@greenpark.id"],
+      "admin"
+    );
+    const cluster = await mustOne<ClusterRow>(
+      `SELECT * FROM "Cluster" WHERE "companyId" = $1 LIMIT 1`,
+      [admin.companyId!],
+      "cluster"
+    );
 
     const uniqueSuffix = Date.now().toString().slice(-5);
     const picEmail = `pic.vendor.${uniqueSuffix}@greenpark.id`;
@@ -52,23 +73,29 @@ describe("Fase 2 – Onboarding Vendor, Persetujuan Teknisi & Job Terjadwal", ()
     expect(picUser.role).toBe("PIC_VENDOR");
 
     // Pastikan email undangan VENDOR_INVITE tercatat di EmailLog
-    const inviteMail = await prisma.emailLog.findFirst({
-      where: { toEmail: picEmail, triggerType: "VENDOR_INVITE" },
-    });
+    const inviteMail = await queryOne<EmailLogRow>(
+      `SELECT * FROM "EmailLog" WHERE "toEmail" = $1 AND "triggerType" = 'VENDOR_INVITE' LIMIT 1`,
+      [picEmail]
+    );
     expect(inviteMail).not.toBeNull();
   });
 
   it("mendaftarkan teknisi baru (PENDING), mengirim notifikasi web ke Admin, lalu mengaktifkan setelah disetujui Admin", async () => {
-    const pic = await prisma.user.findUniqueOrThrow({
-      where: { email: "pic@vendorjaya.id" },
-    });
-    const admin = await prisma.user.findUniqueOrThrow({
-      where: { email: "admin@greenpark.id" },
-    });
+    const pic = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["pic@vendorjaya.id"],
+      "pic"
+    );
+    const admin = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["admin@greenpark.id"],
+      "admin"
+    );
 
-    const notifBefore = await prisma.notification.count({
-      where: { recipientId: admin.id },
-    });
+    const notifBefore = await queryCount(
+      `SELECT COUNT(*)::int AS count FROM "Notification" WHERE "recipientId" = $1`,
+      [admin.id]
+    );
 
     const uniqueSuffix = Date.now().toString().slice(-5);
     const techEmail = `teknisi.baru.${uniqueSuffix}@vendorjaya.id`;
@@ -94,9 +121,10 @@ describe("Fase 2 – Onboarding Vendor, Persetujuan Teknisi & Job Terjadwal", ()
     expect(tech.approvalStatus).toBe("PENDING");
 
     // Kriteria Penerimaan: Notifikasi web ke Admin muncul saat ada teknisi baru menunggu persetujuan
-    const notifAfter = await prisma.notification.count({
-      where: { recipientId: admin.id },
-    });
+    const notifAfter = await queryCount(
+      `SELECT COUNT(*)::int AS count FROM "Notification" WHERE "recipientId" = $1`,
+      [admin.id]
+    );
     expect(notifAfter).toBeGreaterThan(notifBefore);
 
     // Admin menyetujui teknisi
@@ -119,12 +147,16 @@ describe("Fase 2 – Onboarding Vendor, Persetujuan Teknisi & Job Terjadwal", ()
   });
 
   it("menolak pendaftaran teknisi dengan alasan wajib serta menyimpan alasan penolakan", async () => {
-    const pic = await prisma.user.findUniqueOrThrow({
-      where: { email: "pic@vendorjaya.id" },
-    });
-    const admin = await prisma.user.findUniqueOrThrow({
-      where: { email: "admin@greenpark.id" },
-    });
+    const pic = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["pic@vendorjaya.id"],
+      "pic"
+    );
+    const admin = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["admin@greenpark.id"],
+      "admin"
+    );
 
     const picActor: SessionUser = {
       id: pic.id,
@@ -167,22 +199,30 @@ describe("Fase 2 – Onboarding Vendor, Persetujuan Teknisi & Job Terjadwal", ()
     expect(rejected.rejectionReason).toBe("Foto wajah tidak jelas");
     expect(rejected.status).toBe("INACTIVE");
 
-    const techUser = await prisma.user.findUniqueOrThrow({
-      where: { id: tech.userId },
-    });
+    const techUser = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "id" = $1`,
+      [tech.userId],
+      "techUser"
+    );
     expect(techUser.isActive).toBe(false);
   });
 
   it("menonaktifkan teknisi tidak aktif >= 60 hari, mengirim pengingat 3 bulanan, serta memblokir cron untuk role non-Admin", async () => {
-    const admin = await prisma.user.findUniqueOrThrow({
-      where: { email: "admin@greenpark.id" },
-    });
-    const pic = await prisma.user.findUniqueOrThrow({
-      where: { email: "pic@vendorjaya.id" },
-    });
-    const vendor = await prisma.vendor.findFirstOrThrow({
-      where: { companyId: admin.companyId!, name: "PT Teknik Taman Jaya" },
-    });
+    const admin = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["admin@greenpark.id"],
+      "admin"
+    );
+    const pic = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["pic@vendorjaya.id"],
+      "pic"
+    );
+    const vendor = await mustOne<VendorRow>(
+      `SELECT * FROM "Vendor" WHERE "companyId" = $1 AND "name" = $2 LIMIT 1`,
+      [admin.companyId!, "PT Teknik Taman Jaya"],
+      "vendor"
+    );
 
     // Role non-Admin ditolak memanggil wrapper cron
     await expect(
@@ -199,22 +239,26 @@ describe("Fase 2 – Onboarding Vendor, Persetujuan Teknisi & Job Terjadwal", ()
 
     // Simulasikan vendor belum konfirmasi daftar teknisi > 90 hari
     const hundredDaysAgo = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000);
-    await prisma.vendor.update({
-      where: { id: vendor.id },
-      data: { lastTechnicianConfirmedAt: hundredDaysAgo },
-    });
+    await execute(
+      `UPDATE "Vendor" SET "lastTechnicianConfirmedAt" = $1, "updatedAt" = NOW() WHERE "id" = $2`,
+      [hundredDaysAgo, vendor.id]
+    );
 
     const res = await runPhase2MaintenanceJob(admin.companyId!);
     expect(res.reminderSentCount).toBeGreaterThanOrEqual(1);
   });
 
   it("mengelola siklus status teknisi (Cuti, Nonaktif Manual, Nonaktif Admin, Penolakan Aktif Kembali & Persetujuan Ulang)", async () => {
-    const admin = await prisma.user.findUniqueOrThrow({
-      where: { email: "admin@greenpark.id" },
-    });
-    const pic = await prisma.user.findUniqueOrThrow({
-      where: { email: "pic@vendorjaya.id" },
-    });
+    const admin = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["admin@greenpark.id"],
+      "admin"
+    );
+    const pic = await mustOne<UserRow>(
+      `SELECT * FROM "User" WHERE "email" = $1`,
+      ["pic@vendorjaya.id"],
+      "pic"
+    );
 
     const picActor: SessionUser = {
       id: pic.id,
@@ -291,19 +335,22 @@ describe("Fase 2 – Onboarding Vendor, Persetujuan Teknisi & Job Terjadwal", ()
     expect(rejectedReactivation.status).toBe("INACTIVE");
 
     // 5. Simulasikan nonaktif otomatis 60 hari oleh cron
-    await prisma.technician.update({
-      where: { id: tech.id },
-      data: {
-        status: "ACTIVE",
-        deactivationReason: null,
-        lastActiveAt: new Date(Date.now() - 70 * 24 * 60 * 60 * 1000),
-      },
-    });
+    await execute(
+      `UPDATE "Technician"
+       SET "status" = 'ACTIVE'::"TechnicianStatus",
+           "deactivationReason" = NULL,
+           "lastActiveAt" = $1,
+           "updatedAt" = NOW()
+       WHERE "id" = $2`,
+      [new Date(Date.now() - 70 * 24 * 60 * 60 * 1000), tech.id]
+    );
     await runPhase2MaintenanceJob(admin.companyId!);
 
-    const autoInactive = await prisma.technician.findUniqueOrThrow({
-      where: { id: tech.id },
-    });
+    const autoInactive = await mustOne<TechnicianRow>(
+      `SELECT * FROM "Technician" WHERE "id" = $1`,
+      [tech.id],
+      "autoInactive"
+    );
     expect(autoInactive.status).toBe("INACTIVE");
     expect(autoInactive.deactivationReason).toBe("AUTO_60_DAYS");
 

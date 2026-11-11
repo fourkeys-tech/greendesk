@@ -1,7 +1,9 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { getCurrentSession } from "@/lib/auth";
+import { flushEmailOutboxSafely } from "@/lib/email";
 import { saveUploadedPhoto } from "@/lib/storage";
 import {
   assignTechnicianToWorkOrder,
@@ -28,6 +30,7 @@ export async function assignTechnicianAction(formData: FormData) {
       technicianId,
     });
 
+    after(() => flushEmailOutboxSafely());
     revalidatePath("/dashboard/laporan");
     revalidatePath("/dashboard/spk");
     revalidatePath("/dashboard");
@@ -122,6 +125,7 @@ export async function confirmWorkResultAction(formData: FormData) {
       revisionNote,
     });
 
+    after(() => flushEmailOutboxSafely());
     revalidatePath("/dashboard/laporan");
     revalidatePath("/dashboard/spk");
     revalidatePath("/dashboard");

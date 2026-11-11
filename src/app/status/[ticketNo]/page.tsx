@@ -1,47 +1,52 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
-import { prisma } from "@/lib/prisma";
+import { getCurrentSession } from "@/lib/auth";
+import { query, queryOne } from "@/lib/db";
+import type {
+  AssetRow,
+  CategoryRow,
+  ClusterRow,
+  ParkRow,
+  ReportPhotoRow,
+  ReportRow,
+  ReportStatus,
+  ReportStatusLogRow,
+  WorkOrderRow,
+  WorkPhotoRow,
+} from "@/lib/db-types";
 import { STATUS_METADATA } from "@/lib/permissions";
 
 interface StatusPageProps {
   params: Promise<{ ticketNo: string }>;
+  searchParams: Promise<{ k?: string }>;
 }
 
-export default async function PublicStatusPage({ params }: StatusPageProps) {
-  const { ticketNo } = await params;
+export default async function PublicStatusPage({
+  params,
+  searchParams,
+}: StatusPageProps) {
+  const [{ ticketNo }, { k }, session] = await Promise.all([
+    params,
+    searchParams,
+    getCurrentSession(),
+  ]);
+  const tokenParam = k?.trim();
 
-  const report = await prisma.report.findFirst({
-    where: {
-      ticketNo: ticketNo.trim(),
-      archivedAt: null,
-    },
-    include: {
-      asset: {
-        include: {
-          park: {
-            include: { cluster: true },
-          },
-          category: true,
-        },
-      },
-      photos: true,
-      statusLogs: {
-        orderBy: { createdAt: "asc" },
-      },
-      parentReport: {
-        select: { ticketNo: true, status: true },
-      },
-      workOrder: {
-        include: {
-          photos: {
-            where: { type: "AFTER" },
-          },
-        },
-      },
-    },
-  });
+  const reportRow = await queryOne<ReportRow>(
+    `SELECT *
+     FROM "Report"
+     WHERE "ticketNo" = $1 AND "archivedAt" IS NULL
+     LIMIT 1`,
+    [ticketNo.trim()]
+  );
 
-  if (!report) {
+  const isReporterOwner = Boolean(
+    session && reportRow && session.id === reportRow.reporterId
+  );
+  const hasValidToken = Boolean(
+    reportRow && tokenParam && tokenParam === reportRow.statusToken
+  );
+
+  if (!reportRow || (!isReporterOwner && !hasValidToken)) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-white rounded-2xl shadow-lg border border-slate-200 p-6 text-center">
@@ -64,6 +69,80 @@ export default async function PublicStatusPage({ params }: StatusPageProps) {
       </div>
     );
   }
+
+  const [assetRow, photos, statusLogs, parentReport, workOrderRow] =
+    await Promise.all([
+      queryOne<AssetRow>(`SELECT * FROM "Asset" WHERE "id" = $1`, [
+        reportRow.assetId,
+      ]),
+      query<ReportPhotoRow>(
+        `SELECT * FROM "ReportPhoto" WHERE "reportId" = $1 ORDER BY "createdAt" ASC`,
+        [reportRow.id]
+      ),
+      query<ReportStatusLogRow>(
+        `SELECT * FROM "ReportStatusLog" WHERE "reportId" = $1 ORDER BY "createdAt" ASC`,
+        [reportRow.id]
+      ),
+      reportRow.parentReportId
+        ? queryOne<{
+            ticketNo: string;
+            status: ReportStatus;
+            statusToken: string;
+          }>(
+            `SELECT "ticketNo", "status", "statusToken" FROM "Report" WHERE "id" = $1`,
+            [reportRow.parentReportId]
+          )
+        : Promise.resolve(null),
+      queryOne<WorkOrderRow>(
+        `SELECT * FROM "WorkOrder" WHERE "reportId" = $1`,
+        [reportRow.id]
+      ),
+    ]);
+
+  if (!assetRow) {
+    throw new Error("Aset laporan tidak ditemukan.");
+  }
+
+  const [parkRow, categoryRow, workPhotos] = await Promise.all([
+    queryOne<ParkRow>(`SELECT * FROM "Park" WHERE "id" = $1`, [assetRow.parkId]),
+    queryOne<CategoryRow>(`SELECT * FROM "Category" WHERE "id" = $1`, [
+      assetRow.categoryId,
+    ]),
+    workOrderRow
+      ? query<WorkPhotoRow>(
+          `SELECT * FROM "WorkPhoto" WHERE "workOrderId" = $1 AND "type" = 'AFTER'`,
+          [workOrderRow.id]
+        )
+      : Promise.resolve([]),
+  ]);
+
+  if (!parkRow || !categoryRow) {
+    throw new Error("Lokasi taman aset tidak ditemukan.");
+  }
+
+  const clusterRow = await queryOne<ClusterRow>(
+    `SELECT * FROM "Cluster" WHERE "id" = $1`,
+    [parkRow.clusterId]
+  );
+  if (!clusterRow) {
+    throw new Error("Cluster taman tidak ditemukan.");
+  }
+
+  const report = {
+    ...reportRow,
+    asset: {
+      ...assetRow,
+      category: categoryRow,
+      park: {
+        ...parkRow,
+        cluster: clusterRow,
+      },
+    },
+    photos,
+    statusLogs,
+    parentReport,
+    workOrder: workOrderRow ? { ...workOrderRow, photos: workPhotos } : null,
+  };
 
   const meta = STATUS_METADATA[report.status];
   const completionPhotos = report.workOrder?.photos || [];
@@ -216,7 +295,7 @@ export default async function PublicStatusPage({ params }: StatusPageProps) {
                 <p className="text-sm text-blue-900">
                   Laporan ini telah digabung ke tiket induk{" "}
                   <Link
-                    href={`/status/${report.parentReport.ticketNo}`}
+                    href={`/status/${report.parentReport.ticketNo}?k=${encodeURIComponent(report.parentReport.statusToken)}`}
                     className="font-mono font-bold underline"
                   >
                     {report.parentReport.ticketNo}
@@ -279,11 +358,13 @@ export default async function PublicStatusPage({ params }: StatusPageProps) {
                             })}
                           </span>
                         </div>
-                        {log.note && (
-                          <p className="text-xs text-slate-600 mt-1">
-                            {log.note}
-                          </p>
-                        )}
+                        {log.note &&
+                          (log.toStatus === "TIDAK_VALID" ||
+                            log.toStatus === "DITOLAK") && (
+                            <p className="text-xs text-slate-600 mt-1">
+                              {log.note}
+                            </p>
+                          )}
                       </div>
                     </div>
                   );

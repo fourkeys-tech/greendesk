@@ -169,7 +169,7 @@ export function VendorAdminForms({
                 type="password"
                 name="picPassword"
                 autoComplete="new-password"
-                placeholder="Kosongkan untuk kata sandi bawaan"
+                placeholder="Kosongkan untuk sandi acak otomatis (tampil sekali)"
                 className={inputClass}
               />
             </div>

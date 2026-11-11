@@ -1,6 +1,6 @@
 import React from "react";
 import Link from "next/link";
-import type { AuditAction, ReportStatus, Role } from "@prisma/client";
+import type { AuditAction, ReportStatus, Role } from "@/lib/db-types";
 import {
   BarChart3,
   Building2,

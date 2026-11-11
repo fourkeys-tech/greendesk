@@ -21,7 +21,7 @@ import { ManagerDecisionPanel } from "./manager-decision-panel";
 import { ManagerConfirmationPanel } from "./manager-confirmation-panel";
 import { PicAssignPanel } from "./pic-assign-panel";
 import { TechnicianSubmitPanel } from "./technician-submit-panel";
-import type { Role, ReportStatus } from "@prisma/client";
+import type { Role, ReportStatus } from "@/lib/db-types";
 
 interface LaporanClientBoardProps {
   reports: any[];
@@ -457,14 +457,16 @@ export function LaporanClientBoard({
 
                     {/* Action Buttons */}
                     <div className="flex items-center gap-2 ml-auto">
-                      <Link
-                        href={`/status/${report.ticketNo}`}
-                        target="_blank"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200/80 text-slate-700 text-xs font-semibold transition"
-                      >
-                        <span>Cek Status Publik</span>
-                        <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
-                      </Link>
+                      {report.statusToken && (
+                        <Link
+                          href={`/status/${report.ticketNo}?k=${encodeURIComponent(report.statusToken)}`}
+                          target="_blank"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200/80 text-slate-700 text-xs font-semibold transition"
+                        >
+                          <span>Cek Status Publik</span>
+                          <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
+                        </Link>
+                      )}
 
                       {role === "PENGGUNA" && report.status === "BARU" && (
                         <CancelReportButton reportId={report.id} />
