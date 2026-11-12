@@ -448,8 +448,8 @@ export function QrReportClientForm({
           {isPending
             ? "Memproses Laporan..."
             : user
-            ? "Kirim Laporan Sekarang"
-            : "Simpan Draft & Lanjutkan Pengiriman →"}
+              ? "Kirim Laporan Sekarang"
+              : "Simpan Draft & Lanjutkan Pengiriman →"}
         </button>
       </form>
 
@@ -483,33 +483,30 @@ export function QrReportClientForm({
             <button
               type="button"
               onClick={() => setAuthTab("google")}
-              className={`py-2 px-2 rounded-xl text-xs font-bold transition cursor-pointer ${
-                authTab === "google"
+              className={`py-2 px-2 rounded-xl text-xs font-bold transition cursor-pointer ${authTab === "google"
                   ? "bg-emerald-500 text-slate-950"
                   : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-              }`}
+                }`}
             >
               1. Lanjut dgn Google
             </button>
             <button
               type="button"
               onClick={() => setAuthTab("login")}
-              className={`py-2 px-2 rounded-xl text-xs font-bold transition cursor-pointer ${
-                authTab === "login"
+              className={`py-2 px-2 rounded-xl text-xs font-bold transition cursor-pointer ${authTab === "login"
                   ? "bg-emerald-500 text-slate-950"
                   : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-              }`}
+                }`}
             >
               2. Masuk Akun
             </button>
             <button
               type="button"
               onClick={() => setAuthTab("register")}
-              className={`py-2 px-2 rounded-xl text-xs font-bold transition cursor-pointer ${
-                authTab === "register"
+              className={`py-2 px-2 rounded-xl text-xs font-bold transition cursor-pointer ${authTab === "register"
                   ? "bg-emerald-500 text-slate-950"
                   : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-              }`}
+                }`}
             >
               3. Daftar (OTP)
             </button>
