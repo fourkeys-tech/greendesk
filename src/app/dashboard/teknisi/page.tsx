@@ -3,6 +3,7 @@ import { getCurrentSession } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
 import { query, queryOne } from "@/lib/db";
 import type { TechnicianRow, VendorRow } from "@/lib/db-types";
+import { sanitizeMediaHref } from "@/lib/url-safety";
 import { DbErrorNotice } from "@/components/dashboard/db-error-notice";
 import {
   PicTechnicianForms,
@@ -31,23 +32,34 @@ export default async function TeknisiManagementPage() {
   let technicians: Array<TechnicianRow & { vendor: { name: string } }> = [];
 
   try {
-    ownVendor = isPicVendor
+    ownVendor = isPicVendor && session.companyId
       ? await queryOne<VendorRow>(
-          `SELECT * FROM "Vendor" WHERE "picUserId" = $1`,
-          [session.id]
+          `SELECT *
+           FROM "Vendor"
+           WHERE "picUserId" = $1 AND "companyId" = $2 AND "isActive" = true`,
+          [session.id, session.companyId]
         )
       : null;
 
     if (session.companyId) {
+      if (isPicVendor && !ownVendor) return <>
+        <DbErrorNotice
+          title="Vendor tidak aktif atau belum terhubung"
+          message="Hubungi Admin untuk memeriksa penautan akun PIC Vendor Anda."
+        />
+      </>;
       const rows =
-        isPicVendor && ownVendor
+        isPicVendor
           ? await query<TechnicianRow & { vendorName: string }>(
               `SELECT t.*, v."name" AS "vendorName"
                FROM "Technician" t
                JOIN "Vendor" v ON v."id" = t."vendorId"
-               WHERE t."companyId" = $1 AND t."vendorId" = $2
+               WHERE t."companyId" = $1
+                 AND t."vendorId" = $2
+                 AND v."companyId" = $1
+                 AND v."isActive" = true
                ORDER BY t."createdAt" DESC`,
-              [session.companyId, ownVendor.id]
+              [session.companyId, ownVendor!.id]
             )
           : await query<TechnicianRow & { vendorName: string }>(
               `SELECT t.*, v."name" AS "vendorName"
@@ -99,9 +111,9 @@ export default async function TeknisiManagementPage() {
           >
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-3">
-                {t.facePhotoUrl ? (
+                {sanitizeMediaHref(t.facePhotoUrl) ? (
                   <img
-                    src={t.facePhotoUrl}
+                    src={sanitizeMediaHref(t.facePhotoUrl)!}
                     alt={t.fullName}
                     className="w-12 h-12 rounded-full object-cover border border-slate-300"
                   />

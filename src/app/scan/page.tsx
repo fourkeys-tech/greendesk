@@ -15,7 +15,7 @@ export default function QRScannerPage() {
 
   const [flashlightOn, setFlashlightOn] = useState(false);
   const [showManualModal, setShowManualModal] = useState(false);
-  const [manualCode, setManualCode] = useState("TK-0824-91");
+  const [manualCode, setManualCode] = useState("");
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
 
@@ -88,7 +88,13 @@ export default function QRScannerPage() {
   };
 
   const handleSimulateScan = () => {
-    router.push(`/r/${encodeURIComponent(manualCode.trim().toUpperCase())}`);
+    // Belum ada decoder QR; tanpa kode valid, arahkan ke input manual agar tidak jatuh ke 404.
+    const code = manualCode.trim();
+    if (!code) {
+      setShowManualModal(true);
+      return;
+    }
+    router.push(`/r/${encodeURIComponent(code.toUpperCase())}`);
   };
 
   const handleManualSubmit = (e: React.FormEvent) => {
@@ -122,7 +128,7 @@ export default function QRScannerPage() {
 
       <header className="relative z-20 flex items-center justify-between p-4 bg-slate-950/40 backdrop-blur-md border-b border-white/10">
         <Link
-          href="/"
+          href="/beranda"
           className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 transition-colors"
         >
           <ChevronLeft className="w-6 h-6" />
@@ -216,7 +222,7 @@ export default function QRScannerPage() {
                   type="text"
                   value={manualCode}
                   onChange={(e) => setManualCode(e.target.value)}
-                  placeholder="Contoh: TK-0824-91"
+                  placeholder="Contoh: AST-BGV-001"
                   className="input input-bordered w-full font-mono font-semibold uppercase text-[#283330] text-center tracking-wider"
                   required
                 />
@@ -266,7 +272,7 @@ export default function QRScannerPage() {
 
       <div className="relative z-20 flex flex-col items-center w-full max-w-2xl px-6">
         <header className="w-full flex items-center justify-between mb-8">
-          <Link href="/" className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 transition-colors">
+          <Link href="/beranda" className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 transition-colors">
             <ChevronLeft className="w-6 h-6" />
           </Link>
           <h1 className="text-xl font-bold tracking-tight">Scan QR Code</h1>
@@ -321,7 +327,7 @@ export default function QRScannerPage() {
             <form onSubmit={handleManualSubmit} className="space-y-4">
               <div className="form-control">
                 <label className="label"><span className="label-text">Kode / ID Aset</span></label>
-                <input type="text" value={manualCode} onChange={(e) => setManualCode(e.target.value)} placeholder="Contoh: TK-0824-91" className="input input-bordered w-full font-mono font-semibold uppercase text-[#283330] text-center tracking-wider" required />
+                <input type="text" value={manualCode} onChange={(e) => setManualCode(e.target.value)} placeholder="Contoh: AST-BGV-001" className="input input-bordered w-full font-mono font-semibold uppercase text-[#283330] text-center tracking-wider" required />
                 <span className="text-xs text-slate-400 mt-1">ID tercetak di bagian bawah stiker plat aset taman.</span>
               </div>
               <div className="flex gap-2 pt-2">

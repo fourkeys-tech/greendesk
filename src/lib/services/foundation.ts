@@ -17,6 +17,7 @@ import type {
 import { assertPermission } from "../permissions";
 import { recordAuditLog } from "../audit";
 import { activeAssignmentSql } from "../scopes";
+import { assertSafeUploadUrl } from "../url-safety";
 import type { SessionUser } from "../auth";
 
 export type ScopedTechnicianReport = {
@@ -301,6 +302,9 @@ async function hydrateFullScopedReports(
 
   return reports.map((r) => ({
     ...r,
+    ...(anonymizeReporter
+      ? { reporterId: "ANONYMOUS", statusToken: "" }
+      : {}),
     asset: assetMap.get(r.assetId)!,
     reporter: anonymizeReporter
       ? anonymousReporter
@@ -511,8 +515,8 @@ export async function getScopedReportsForUser(
 
     if (user.role === "PIC_VENDOR") {
       const vendor = await queryOne<{ id: string }>(
-        `SELECT "id" FROM "Vendor" WHERE "picUserId" = $1`,
-        [user.id]
+        `SELECT "id" FROM "Vendor" WHERE "picUserId" = $1 AND "companyId" = $2 AND "isActive" = true`,
+        [user.id, user.companyId]
       );
       if (!vendor) return [];
 
@@ -573,6 +577,11 @@ export async function updateAssetMasterData(
     throw new Error("Aset tidak ditemukan di perusahaan Anda.");
   }
 
+  const sanitizedPhotoUrl =
+    updates.photoUrl && updates.photoUrl.trim().length > 0
+      ? assertSafeUploadUrl(updates.photoUrl, "Foto aset")
+      : updates.photoUrl;
+
   return withTransaction(async (tx) => {
     const nextName = updates.name ?? existing.name;
     const nextLocationNote = updates.locationNote ?? existing.locationNote;
@@ -580,7 +589,7 @@ export async function updateAssetMasterData(
       typeof updates.isActive === "boolean"
         ? updates.isActive
         : existing.isActive;
-    const nextPhotoUrl = updates.photoUrl ?? existing.photoUrl;
+    const nextPhotoUrl = sanitizedPhotoUrl ?? existing.photoUrl;
 
     const updated = await queryOne<AssetRow>(
       `UPDATE "Asset"

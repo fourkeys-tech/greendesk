@@ -260,37 +260,45 @@ export async function mergeDuplicateReport(
     throw new Error(check.error);
   }
 
-  const parentReport = await queryOne<{
-    id: string;
-    ticketNo: string;
-    status: ReportStatus;
-    parentReportId: string | null;
-  }>(
-    `SELECT "id", "ticketNo", "status", "parentReportId"
-     FROM "Report"
-     WHERE "id" = $1
-       AND "companyId" = $2
-       AND "assetId" = $3
-       AND "archivedAt" IS NULL`,
-    [input.parentReportId, childReport.companyId, childReport.assetId]
-  );
-
-  if (!parentReport) {
-    throw new Error(
-      "Laporan induk harus berasal dari aset yang sama di perusahaan ini."
-    );
-  }
-
-  if (
-    TERMINAL_REPORT_STATUSES.includes(parentReport.status) ||
-    parentReport.parentReportId
-  ) {
-    throw new Error(
-      "Laporan induk yang dipilih tidak aktif untuk penggabungan (sudah selesai/ditolak/dibatalkan/digabung)."
-    );
-  }
-
   return withTransaction(async (tx) => {
+    const lockIds = [childReport.id, input.parentReportId].sort();
+    await query(
+      `SELECT "id" FROM "Report" WHERE "id" = ANY($1::text[]) ORDER BY "id" ASC FOR UPDATE`,
+      [lockIds],
+      tx
+    );
+
+    const parentReport = await queryOne<{
+      id: string;
+      ticketNo: string;
+      status: ReportStatus;
+      parentReportId: string | null;
+    }>(
+      `SELECT "id", "ticketNo", "status", "parentReportId"
+       FROM "Report"
+       WHERE "id" = $1
+         AND "companyId" = $2
+         AND "assetId" = $3
+         AND "archivedAt" IS NULL`,
+      [input.parentReportId, childReport.companyId, childReport.assetId],
+      tx
+    );
+
+    if (!parentReport) {
+      throw new Error(
+        "Laporan induk harus berasal dari aset yang sama di perusahaan ini."
+      );
+    }
+
+    if (
+      TERMINAL_REPORT_STATUSES.includes(parentReport.status) ||
+      parentReport.parentReportId
+    ) {
+      throw new Error(
+        "Laporan induk yang dipilih tidak aktif untuk penggabungan (sudah selesai/ditolak/dibatalkan/digabung)."
+      );
+    }
+
     await transitionReport(tx, {
       reportId: childReport.id,
       from: childReport.status,

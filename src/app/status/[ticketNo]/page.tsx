@@ -14,6 +14,7 @@ import type {
   WorkPhotoRow,
 } from "@/lib/db-types";
 import { STATUS_METADATA } from "@/lib/permissions";
+import { sanitizeMediaHref } from "@/lib/url-safety";
 
 interface StatusPageProps {
   params: Promise<{ ticketNo: string }>;
@@ -60,7 +61,7 @@ export default async function PublicStatusPage({
             Nomor tiket <code className="font-mono font-bold text-slate-800">{ticketNo}</code> tidak terdaftar di sistem GreenPark atau telah diarsipkan.
           </p>
           <Link
-            href="/"
+            href="/beranda"
             className="inline-block px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 transition"
           >
             Kembali ke Beranda
@@ -89,7 +90,9 @@ export default async function PublicStatusPage({
             status: ReportStatus;
             statusToken: string;
           }>(
-            `SELECT "ticketNo", "status", "statusToken" FROM "Report" WHERE "id" = $1`,
+            `SELECT "ticketNo", "status", "statusToken"
+             FROM "Report"
+             WHERE "id" = $1 AND "archivedAt" IS NULL`,
             [reportRow.parentReportId]
           )
         : Promise.resolve(null),
@@ -146,13 +149,25 @@ export default async function PublicStatusPage({
 
   const meta = STATUS_METADATA[report.status];
   const completionPhotos = report.workOrder?.photos || [];
+  const homeHref =
+    session?.role && session.role !== "PENGGUNA" ? "/dashboard" : "/beranda";
+  const actionHref = !session
+    ? "/login"
+    : session.role === "PENGGUNA"
+      ? "/beranda/laporan"
+      : "/dashboard/laporan";
+  const actionLabel = !session
+    ? "Masuk Akun →"
+    : session.role === "PENGGUNA"
+      ? "Laporan Saya →"
+      : "Dashboard →";
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-emerald-50/50 via-slate-50 to-slate-100 py-10 px-4 sm:px-6">
       <div className="max-w-2xl mx-auto">
         {/* Header Branding */}
         <div className="flex items-center justify-between mb-6">
-          <Link href="/" className="flex items-center gap-2">
+          <Link href={homeHref} className="flex items-center gap-2">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-700 to-teal-500 text-white flex items-center justify-center text-sm font-black shadow-xs">
               GP
             </div>
@@ -167,10 +182,10 @@ export default async function PublicStatusPage({
           </Link>
 
           <Link
-            href="/login"
+            href={actionHref}
             className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg"
           >
-            Masuk Akun →
+            {actionLabel}
           </Link>
         </div>
 
@@ -253,22 +268,26 @@ export default async function PublicStatusPage({
                     Foto Kerusakan:
                   </span>
                   <div className="flex flex-wrap gap-2">
-                    {report.photos.map((p, idx) => (
-                      <a
-                        key={p.id}
-                        href={p.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="block rounded-lg overflow-hidden border border-slate-300 hover:opacity-90"
-                      >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={p.url}
-                          alt={`Foto kerusakan ${idx + 1}`}
-                          className="w-24 h-24 object-cover"
-                        />
-                      </a>
-                    ))}
+                    {report.photos.map((p, idx) => {
+                      const safeUrl = sanitizeMediaHref(p.url);
+                      if (!safeUrl) return null;
+                      return (
+                        <a
+                          key={p.id}
+                          href={safeUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="block rounded-lg overflow-hidden border border-slate-300 hover:opacity-90"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={safeUrl}
+                            alt={`Foto kerusakan ${idx + 1}`}
+                            className="w-24 h-24 object-cover"
+                          />
+                        </a>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -312,22 +331,26 @@ export default async function PublicStatusPage({
                   ✓ Foto Hasil Perbaikan Selesai
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {completionPhotos.map((cp, idx) => (
-                    <a
-                      key={cp.id}
-                      href={cp.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="block rounded-lg overflow-hidden border border-emerald-300 hover:opacity-90"
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={cp.url}
-                        alt={`Foto hasil ${idx + 1}`}
-                        className="w-28 h-28 object-cover"
-                      />
-                    </a>
-                  ))}
+                  {completionPhotos.map((cp, idx) => {
+                    const safeUrl = sanitizeMediaHref(cp.url);
+                    if (!safeUrl) return null;
+                    return (
+                      <a
+                        key={cp.id}
+                        href={safeUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block rounded-lg overflow-hidden border border-emerald-300 hover:opacity-90"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={safeUrl}
+                          alt={`Foto hasil ${idx + 1}`}
+                          className="w-28 h-28 object-cover"
+                        />
+                      </a>
+                    );
+                  })}
                 </div>
               </div>
             )}

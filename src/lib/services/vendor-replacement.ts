@@ -48,7 +48,10 @@ export async function submitVendorReplacementRequest(
     throw new Error("Alasan pengajuan pergantian vendor wajib diisi.");
   }
 
-  if (!input.basisReportIds || input.basisReportIds.length < 2) {
+  const uniqueBasisIds = Array.from(
+    new Set((input.basisReportIds ?? []).map((id) => id.trim()).filter(Boolean))
+  );
+  if (uniqueBasisIds.length < 2) {
     throw new Error(
       "Pengajuan pergantian vendor memerlukan minimal 2 laporan berulang sebagai bukti kerusakan berulang."
     );
@@ -80,17 +83,36 @@ export async function submitVendorReplacementRequest(
     );
   }
 
-  // Verifikasi vendor terdaftar di perusahaan
+  // Verifikasi vendor aktif, terdaftar di perusahaan, dan terkait dengan cluster/aset ini
   const vendor = await queryOne<{ id: string; name: string }>(
-    `SELECT "id", "name" FROM "Vendor" WHERE "id" = $1 AND "companyId" = $2`,
-    [input.vendorId, actor.companyId]
+    `SELECT v."id", v."name"
+     FROM "Vendor" v
+     WHERE v."id" = $1
+       AND v."companyId" = $2
+       AND v."isActive" = true
+       AND (
+         EXISTS (
+           SELECT 1 FROM "VendorServiceArea" vsa
+           WHERE vsa."vendorId" = v."id" AND vsa."clusterId" = $3
+         )
+         OR EXISTS (
+           SELECT 1 FROM "WorkOrder" wo
+           JOIN "Report" r ON r."id" = wo."reportId"
+           WHERE wo."vendorId" = v."id" AND r."assetId" = $4
+         )
+         OR EXISTS (
+           SELECT 1 FROM "Report" r
+           WHERE r."assetId" = $4 AND r."underWarrantyOfVendorId" = v."id"
+         )
+       )`,
+    [input.vendorId, actor.companyId, asset.clusterId, asset.id]
   );
 
   if (!vendor) {
-    throw new Error("Vendor yang dipersoalkan tidak ditemukan.");
+    throw new Error("Vendor yang dipersoalkan tidak ditemukan atau tidak aktif pada area/aset ini.");
   }
 
-  // Verifikasi semua basis laporan adalah untuk aset ini dan merupakan laporan valid
+  // Verifikasi semua basis laporan adalah untuk aset ini dan merupakan laporan valid (non-digabung)
   const reports = await query<{ id: string; ticketNo: string }>(
     `SELECT "id", "ticketNo"
      FROM "Report"
@@ -98,13 +120,13 @@ export async function submitVendorReplacementRequest(
        AND "assetId" = $2
        AND "companyId" = $3
        AND "archivedAt" IS NULL
-       AND "status" NOT IN ('DIBATALKAN', 'TIDAK_VALID')`,
-    [input.basisReportIds, asset.id, actor.companyId]
+       AND "status" NOT IN ('DIBATALKAN', 'TIDAK_VALID', 'DIGABUNG')`,
+    [uniqueBasisIds, asset.id, actor.companyId]
   );
 
-  if (reports.length < 2) {
+  if (reports.length !== uniqueBasisIds.length || reports.length < 2) {
     throw new Error(
-      "Semua laporan pembuktian harus terdaftar pada aset yang sama dan minimal 2 laporan valid (bukan laporan dibatalkan/tidak valid)."
+      "Semua laporan pembuktian harus terdaftar pada aset yang sama dan minimal 2 laporan valid (bukan dibatalkan/tidak valid/digabung)."
     );
   }
 
@@ -506,6 +528,7 @@ export async function markVendorReplacementViewedByOwner(
   actor: SessionUser,
   requestId: string
 ) {
+  assertPermission(actor.role, "VIEW_REPORTS");
   if (actor.role !== "OWNER") {
     throw new Error("Akses ditolak: Hanya Owner yang dapat mengakses fitur ini.");
   }

@@ -13,9 +13,13 @@ interface ManualReportFormProps {
     categoryName: string;
     damageTypes: string[];
   }>;
+  reportsHref?: string;
 }
 
-export function ManualReportForm({ assets }: ManualReportFormProps) {
+export function ManualReportForm({
+  assets,
+  reportsHref = "/dashboard/laporan",
+}: ManualReportFormProps) {
   const [selectedCode, setSelectedCode] = useState(assets[0]?.code || "");
   const [description, setDescription] = useState("");
   const [feedback, setFeedback] = useState<{
@@ -68,7 +72,7 @@ export function ManualReportForm({ assets }: ManualReportFormProps) {
           {feedback.ticketNo && (
             <div>
               <Link
-                href="/dashboard/laporan"
+                href={reportsHref}
                 className="inline-block px-3.5 py-1.5 rounded-lg bg-emerald-700 text-white font-semibold"
               >
                 Lihat Status Tiket {feedback.ticketNo} →

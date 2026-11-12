@@ -3,6 +3,7 @@ import { getCurrentSession } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
 import { queryOne } from "@/lib/db";
 import type { TechnicianRow, VendorType } from "@/lib/db-types";
+import { sanitizeMediaHref } from "@/lib/url-safety";
 import { UserCheck, LogOut } from "lucide-react";
 import { logoutAction } from "@/app/actions/auth-actions";
 import { DbErrorNotice } from "@/components/dashboard/db-error-notice";
@@ -31,8 +32,11 @@ export default async function ProfilTeknisiPage() {
               v."warrantyDays" AS "vendorWarrantyDays"
        FROM "Technician" t
        JOIN "Vendor" v ON v."id" = t."vendorId"
-       WHERE t."userId" = $1`,
-      [session.id]
+       WHERE t."userId" = $1
+         AND t."companyId" = $2
+         AND v."companyId" = $2
+         AND v."isActive" = true`,
+      [session.id, session.companyId]
     );
     if (row) {
       const { vendorName, vendorType, vendorWarrantyDays, ...t } = row;
@@ -93,9 +97,9 @@ export default async function ProfilTeknisiPage() {
         {tech ? (
           <div className="mt-6 space-y-5">
             <div className="flex items-center gap-4">
-              {tech.facePhotoUrl ? (
+              {sanitizeMediaHref(tech.facePhotoUrl) ? (
                 <img
-                  src={tech.facePhotoUrl}
+                  src={sanitizeMediaHref(tech.facePhotoUrl)!}
                   alt={tech.fullName}
                   className="w-16 h-16 rounded-2xl object-cover border-2 border-orange-200 shadow-xs"
                 />

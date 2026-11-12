@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { getCurrentSession } from "@/lib/auth";
 import { query } from "@/lib/db";
 import type { NotificationRow } from "@/lib/db-types";
+import { sanitizeInternalHref } from "@/lib/url-safety";
 import { DbErrorNotice } from "@/components/dashboard/db-error-notice";
 import {
   markAllNotificationsAsReadAction,
@@ -82,63 +83,66 @@ export default async function NotificationsPage() {
         </div>
       ) : (
         <div className="space-y-2.5">
-          {notifications.map((notif) => (
-            <div
-              key={notif.id}
-              className={`rounded-2xl p-4 border transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
-                notif.isRead
-                  ? "bg-white border-slate-200/80 text-slate-700"
-                  : "bg-emerald-50/60 border-emerald-300 shadow-2xs text-slate-900"
-              }`}
-            >
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  {!notif.isRead && (
-                    <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
-                  )}
-                  <h4 className="font-bold text-sm text-slate-900">
-                    {notif.title}
-                  </h4>
-                  <span className="text-[11px] text-slate-400">
-                    {new Date(notif.createdAt).toLocaleString("id-ID", {
-                      dateStyle: "medium",
-                      timeStyle: "short",
-                    })}
-                  </span>
+          {notifications.map((notif) => {
+            const safeLinkUrl = sanitizeInternalHref(notif.linkUrl);
+            return (
+              <div
+                key={notif.id}
+                className={`rounded-2xl p-4 border transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                  notif.isRead
+                    ? "bg-white border-slate-200/80 text-slate-700"
+                    : "bg-emerald-50/60 border-emerald-300 shadow-2xs text-slate-900"
+                }`}
+              >
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    {!notif.isRead && (
+                      <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
+                    )}
+                    <h4 className="font-bold text-sm text-slate-900">
+                      {notif.title}
+                    </h4>
+                    <span className="text-[11px] text-slate-400">
+                      {new Date(notif.createdAt).toLocaleString("id-ID", {
+                        dateStyle: "medium",
+                        timeStyle: "short",
+                      })}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    {notif.message}
+                  </p>
                 </div>
-                <p className="text-xs text-slate-600 leading-relaxed">
-                  {notif.message}
-                </p>
-              </div>
 
-              <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                {notif.linkUrl && (
-                  <Link
-                    href={notif.linkUrl}
-                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition"
-                  >
-                    Buka Detail →
-                  </Link>
-                )}
-
-                {!notif.isRead && (
-                  <form
-                    action={async () => {
-                      "use server";
-                      await markNotificationAsReadAction(notif.id);
-                    }}
-                  >
-                    <button
-                      type="submit"
-                      className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold"
+                <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                  {safeLinkUrl && (
+                    <Link
+                      href={safeLinkUrl}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition"
                     >
-                      Tandai Dibaca
-                    </button>
-                  </form>
-                )}
+                      Buka Detail →
+                    </Link>
+                  )}
+
+                  {!notif.isRead && (
+                    <form
+                      action={async () => {
+                        "use server";
+                        await markNotificationAsReadAction(notif.id);
+                      }}
+                    >
+                      <button
+                        type="submit"
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold"
+                      >
+                        Tandai Dibaca
+                      </button>
+                    </form>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

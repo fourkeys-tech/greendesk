@@ -211,6 +211,39 @@ export function getNavigationForRole(
   role: Role,
   options?: { isDualRoleTechnician?: boolean; isDualRolePic?: boolean }
 ): NavItem[] {
+  if (role === "PENGGUNA") {
+    return [
+      {
+        href: "/beranda",
+        label: "Beranda Warga",
+        shortLabel: "Beranda",
+        description: "Halaman utama pelapor dan akses cepat Scan QR",
+        iconName: "LayoutDashboard",
+      },
+      {
+        href: "/beranda/lapor",
+        label: "Buat Laporan Baru",
+        shortLabel: "Lapor",
+        description: "Laporkan kerusakan fasilitas taman via QR atau pilih aset",
+        iconName: "PlusCircle",
+      },
+      {
+        href: "/beranda/laporan",
+        label: "Laporan Saya",
+        shortLabel: "Laporan",
+        description: "Pantau status laporan dan batalkan jika masih Baru",
+        iconName: "FileText",
+      },
+      {
+        href: "/beranda/profil",
+        label: "Profil Saya",
+        shortLabel: "Profil",
+        description: "Status pelapor, rekam jejak, dan persetujuan data",
+        iconName: "User",
+      },
+    ];
+  }
+
   const items: NavItem[] = [
     {
       href: "/dashboard",
@@ -220,32 +253,6 @@ export function getNavigationForRole(
       iconName: "LayoutDashboard",
     },
   ];
-
-  if (role === "PENGGUNA") {
-    items.push(
-      {
-        href: "/dashboard/lapor",
-        label: "Buat Laporan Baru",
-        shortLabel: "Lapor",
-        description: "Laporkan kerusakan fasilitas taman via QR atau pilih aset",
-        iconName: "PlusCircle",
-      },
-      {
-        href: "/dashboard/laporan",
-        label: "Laporan Saya",
-        shortLabel: "Laporan",
-        description: "Pantau status laporan dan batalkan jika masih Baru",
-        iconName: "FileText",
-      },
-      {
-        href: "/dashboard/profil",
-        label: "Profil Saya",
-        shortLabel: "Profil",
-        description: "Status pelapor, rekam jejak, dan persetujuan data",
-        iconName: "User",
-      }
-    );
-  }
 
   if (role === "PENGELOLA") {
     items.push(

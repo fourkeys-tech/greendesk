@@ -5,6 +5,7 @@ import { getCurrentSession } from "@/lib/auth";
 import { query, queryCount, queryOne } from "@/lib/db";
 import { activeAssignmentSql } from "@/lib/scopes";
 import { getNavigationForRole, ROLE_METADATA } from "@/lib/permissions";
+import { sanitizeInternalHref } from "@/lib/url-safety";
 import { AppSidebar } from "@/components/dashboard/app-sidebar";
 import { MobileBottomNav } from "@/components/dashboard/mobile-bottom-nav";
 import {
@@ -21,6 +22,9 @@ export default async function DashboardLayout({
   const session = await getCurrentSession();
   if (!session) {
     redirect("/login");
+  }
+  if (session.role === "PENGGUNA") {
+    redirect("/beranda");
   }
 
   // Cek peran ganda PIC Vendor dan Teknisi langsung dari session yang ter-cache (hemat 2 query per render)
@@ -70,31 +74,32 @@ export default async function DashboardLayout({
          LIMIT 8`,
         [session.id]
       ),
-      session.staffClusterId
+      session.staffClusterId && session.companyId
         ? queryOne<{ name: string }>(
-            `SELECT "name" FROM "Cluster" WHERE "id" = $1`,
-            [session.staffClusterId]
+            `SELECT "name" FROM "Cluster" WHERE "id" = $1 AND "companyId" = $2`,
+            [session.staffClusterId, session.companyId]
           )
         : Promise.resolve(null),
-      session.role === "MANAGER"
+      session.role === "MANAGER" && session.companyId
         ? query<{ clusterId: string; clusterName: string }>(
             `SELECT cma."clusterId", cl."name" AS "clusterName"
              FROM "ClusterManagerAssignment" cma
              JOIN "Cluster" cl ON cl."id" = cma."clusterId"
-             WHERE cma."userId" = $1 AND ${activeAssignmentSql("cma", "$2")}`,
-            [session.id, now]
+             WHERE cma."userId" = $1 AND cl."companyId" = $2 AND ${activeAssignmentSql("cma", "$3")}`,
+            [session.id, session.companyId, now]
           )
         : Promise.resolve([]),
-      session.role === "PENGELOLA" && session.staffClusterId
+      session.role === "PENGELOLA" && session.staffClusterId && session.companyId
         ? queryCount(
             `SELECT COUNT(*)::int AS count
              FROM "Report" r
              JOIN "Asset" a ON a."id" = r."assetId"
              JOIN "Park" p ON p."id" = a."parkId"
-             WHERE r."archivedAt" IS NULL
+             WHERE r."companyId" = $1
+               AND r."archivedAt" IS NULL
                AND r."status" = 'BARU'::"ReportStatus"
-               AND p."clusterId" = $1`,
-            [session.staffClusterId]
+               AND p."clusterId" = $2`,
+            [session.companyId, session.staffClusterId]
           )
         : session.role === "MANAGER" && session.companyId
         ? queryCount(
@@ -123,7 +128,9 @@ export default async function DashboardLayout({
              WHERE r."companyId" = $1
                AND r."archivedAt" IS NULL
                AND r."status" = 'DISETUJUI'::"ReportStatus"
-               AND v."picUserId" = $2`,
+               AND v."companyId" = $1
+               AND v."picUserId" = $2
+               AND v."isActive" = true`,
             [session.companyId, session.id]
           )
         : session.role === "TEKNISI" && session.companyId
@@ -132,10 +139,15 @@ export default async function DashboardLayout({
              FROM "Report" r
              JOIN "WorkOrder" wo ON wo."reportId" = r."id"
              JOIN "Technician" t ON t."id" = wo."technicianId"
+             JOIN "Vendor" v ON v."id" = t."vendorId"
              WHERE r."companyId" = $1
                AND r."archivedAt" IS NULL
                AND r."status" = 'DIKERJAKAN'::"ReportStatus"
-               AND t."userId" = $2`,
+               AND t."companyId" = $1
+               AND t."userId" = $2
+               AND t."status" = 'ACTIVE'::"TechnicianStatus"
+               AND t."approvalStatus" = 'APPROVED'::"ApprovalStatus"
+               AND v."isActive" = true`,
             [session.companyId, session.id]
           )
         : Promise.resolve(0),
@@ -168,7 +180,7 @@ export default async function DashboardLayout({
     id: n.id,
     title: n.title,
     message: n.message,
-    linkUrl: n.linkUrl,
+    linkUrl: sanitizeInternalHref(n.linkUrl),
     isRead: n.isRead,
     createdAt: n.createdAt.toISOString(),
   }));

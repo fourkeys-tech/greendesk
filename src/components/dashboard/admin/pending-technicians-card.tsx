@@ -9,6 +9,7 @@ import {
   useActionRunner,
 } from "@/components/dashboard/action-feedback";
 import { formatWibDate } from "@/lib/dates";
+import { sanitizeMediaHref } from "@/lib/url-safety";
 
 export interface PendingTechnicianItem {
   id: string;
@@ -142,10 +143,10 @@ export function PendingTechniciansCard({
               className="p-3.5 rounded-xl bg-white border border-amber-200/90 shadow-2xs flex flex-col justify-between gap-3 text-xs"
             >
               <div className="flex items-start gap-3">
-                {tech.facePhotoUrl ? (
+                {sanitizeMediaHref(tech.facePhotoUrl) ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
-                    src={tech.facePhotoUrl}
+                    src={sanitizeMediaHref(tech.facePhotoUrl)!}
                     alt={`Foto wajah ${tech.fullName}`}
                     className="w-14 h-14 rounded-xl object-cover border border-slate-200 shrink-0"
                   />

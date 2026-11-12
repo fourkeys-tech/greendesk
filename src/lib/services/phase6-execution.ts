@@ -12,6 +12,7 @@ import { enqueueReportStatusEmailWithMergedChildren } from "../email";
 import { recordAuditLog } from "../audit";
 import { transitionReport } from "../report-transition";
 import { activeAssignmentSql } from "../scopes";
+import { assertSafeUploadUrls } from "../url-safety";
 import { getManagerAssignedClusterIds } from "./phase5-decision";
 import type { SessionUser } from "../auth";
 
@@ -28,11 +29,14 @@ export async function assignTechnicianToWorkOrder(
   }
 ) {
   assertPermission(actor.role, "ASSIGN_TECHNICIAN");
+  if (!actor.companyId) {
+    throw new Error("Akun PIC tidak terhubung ke perusahaan.");
+  }
 
   // Cari vendor milik PIC
   const vendor = await queryOne<VendorRow>(
-    `SELECT * FROM "Vendor" WHERE "picUserId" = $1 AND "isActive" = true`,
-    [actor.id]
+    `SELECT * FROM "Vendor" WHERE "picUserId" = $1 AND "companyId" = $2 AND "isActive" = true`,
+    [actor.id, actor.companyId]
   );
 
   if (!vendor) {
@@ -52,8 +56,8 @@ export async function assignTechnicianToWorkOrder(
      FROM "WorkOrder" wo
      JOIN "Report" r ON r."id" = wo."reportId"
      JOIN "Asset" a ON a."id" = r."assetId"
-     WHERE wo."id" = $1 AND wo."vendorId" = $2 AND r."archivedAt" IS NULL`,
-    [input.workOrderId, vendor.id]
+     WHERE wo."id" = $1 AND wo."vendorId" = $2 AND wo."companyId" = $3 AND r."archivedAt" IS NULL`,
+    [input.workOrderId, vendor.id, actor.companyId]
   );
 
   if (!workOrder) {
@@ -66,9 +70,10 @@ export async function assignTechnicianToWorkOrder(
      FROM "Technician"
      WHERE "id" = $1
        AND "vendorId" = $2
+       AND "companyId" = $3
        AND "status" = 'ACTIVE'::"TechnicianStatus"
        AND "approvalStatus" = 'APPROVED'::"ApprovalStatus"`,
-    [input.technicianId, vendor.id]
+    [input.technicianId, vendor.id, actor.companyId]
   );
 
   if (!technician) {
@@ -183,10 +188,13 @@ export async function replaceTechnicianForWorkOrder(
   }
 ) {
   assertPermission(actor.role, "ASSIGN_TECHNICIAN");
+  if (!actor.companyId) {
+    throw new Error("Akun PIC tidak terhubung ke perusahaan.");
+  }
 
   const vendor = await queryOne<VendorRow>(
-    `SELECT * FROM "Vendor" WHERE "picUserId" = $1 AND "isActive" = true`,
-    [actor.id]
+    `SELECT * FROM "Vendor" WHERE "picUserId" = $1 AND "companyId" = $2 AND "isActive" = true`,
+    [actor.id, actor.companyId]
   );
 
   if (!vendor) {
@@ -209,8 +217,8 @@ export async function replaceTechnicianForWorkOrder(
      JOIN "Report" r ON r."id" = wo."reportId"
      JOIN "Asset" a ON a."id" = r."assetId"
      LEFT JOIN "Technician" t ON t."id" = wo."technicianId"
-     WHERE wo."id" = $1 AND wo."vendorId" = $2 AND r."archivedAt" IS NULL`,
-    [input.workOrderId, vendor.id]
+     WHERE wo."id" = $1 AND wo."vendorId" = $2 AND wo."companyId" = $3 AND r."archivedAt" IS NULL`,
+    [input.workOrderId, vendor.id, actor.companyId]
   );
 
   if (!workOrder) {
@@ -230,9 +238,10 @@ export async function replaceTechnicianForWorkOrder(
      FROM "Technician"
      WHERE "id" = $1
        AND "vendorId" = $2
+       AND "companyId" = $3
        AND "status" = 'ACTIVE'::"TechnicianStatus"
        AND "approvalStatus" = 'APPROVED'::"ApprovalStatus"`,
-    [input.newTechnicianId, vendor.id]
+    [input.newTechnicianId, vendor.id, actor.companyId]
   );
 
   if (!newTechnician) {
@@ -343,14 +352,24 @@ export async function submitWorkResultByTechnician(
   }
 ) {
   assertPermission(actor.role, "SUBMIT_WORK_RESULT");
+  if (!actor.companyId) {
+    throw new Error("Akun Teknisi tidak terhubung ke perusahaan.");
+  }
 
   const technician = await queryOne<TechnicianRow>(
-    `SELECT * FROM "Technician" WHERE "userId" = $1`,
-    [actor.id]
+    `SELECT t.*
+     FROM "Technician" t
+     JOIN "Vendor" v ON v."id" = t."vendorId"
+     WHERE t."userId" = $1
+       AND t."companyId" = $2
+       AND t."status" = 'ACTIVE'::"TechnicianStatus"
+       AND t."approvalStatus" = 'APPROVED'::"ApprovalStatus"
+       AND v."isActive" = true`,
+    [actor.id, actor.companyId]
   );
 
   if (!technician) {
-    throw new Error("Profil teknisi Anda tidak ditemukan.");
+    throw new Error("Profil teknisi aktif Anda tidak ditemukan.");
   }
 
   const workOrder = await queryOne<
@@ -369,8 +388,8 @@ export async function submitWorkResultByTechnician(
      JOIN "Report" r ON r."id" = wo."reportId"
      JOIN "Asset" a ON a."id" = r."assetId"
      JOIN "Park" p ON p."id" = a."parkId"
-     WHERE wo."id" = $1 AND wo."technicianId" = $2 AND r."archivedAt" IS NULL`,
-    [input.workOrderId, technician.id]
+     WHERE wo."id" = $1 AND wo."technicianId" = $2 AND wo."companyId" = $3 AND r."archivedAt" IS NULL`,
+    [input.workOrderId, technician.id, actor.companyId]
   );
 
   if (!workOrder) {
@@ -386,8 +405,14 @@ export async function submitWorkResultByTechnician(
     throw new Error(check.error);
   }
 
-  const beforeUrls = (input.beforePhotoUrls || []).filter((u) => u && u.trim());
-  const afterUrls = (input.afterPhotoUrls || []).filter((u) => u && u.trim());
+  const beforeUrls = assertSafeUploadUrls(
+    (input.beforePhotoUrls || []).filter((u) => u && u.trim()),
+    "Foto sebelum perbaikan"
+  );
+  const afterUrls = assertSafeUploadUrls(
+    (input.afterPhotoUrls || []).filter((u) => u && u.trim()),
+    "Foto sesudah perbaikan"
+  );
   const clusterId = workOrder.clusterId;
   const now = new Date();
 

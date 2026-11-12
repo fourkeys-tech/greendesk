@@ -14,6 +14,7 @@ import type {
   HierarchyAsset,
   HierarchyComplex,
 } from "./wilayah-types";
+import { sanitizeMediaHref } from "@/lib/url-safety";
 
 interface WilayahHierarchyClientProps {
   complexes: HierarchyComplex[];
@@ -358,10 +359,10 @@ export function WilayahHierarchyClient({
                                       )}
                                     </div>
 
-                                    {asset.photoUrl && (
+                                    {sanitizeMediaHref(asset.photoUrl) && (
                                       // eslint-disable-next-line @next/next/no-img-element
                                       <img
-                                        src={asset.photoUrl}
+                                        src={sanitizeMediaHref(asset.photoUrl)!}
                                         alt={asset.name}
                                         className="h-20 w-28 object-cover rounded-xl border border-slate-200 mt-2"
                                       />

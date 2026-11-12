@@ -13,6 +13,7 @@ import type {
 import { assertPermission } from "../permissions";
 import { recordAuditLog, SYSTEM_AUDIT_ACTOR_NAME } from "../audit";
 import { enqueueEmail, escapeHtml } from "../email";
+import { assertSafeUploadUrl } from "../url-safety";
 import type { SessionUser } from "../auth";
 
 function generateTemporaryPassword(): string {
@@ -241,8 +242,8 @@ export async function registerTechnicianByPic(
 
   const companyId = actor.companyId;
   const vendor = await queryOne<VendorRow>(
-    `SELECT * FROM "Vendor" WHERE "picUserId" = $1`,
-    [actor.id]
+    `SELECT * FROM "Vendor" WHERE "picUserId" = $1 AND "companyId" = $2`,
+    [actor.id, companyId]
   );
   if (!vendor) {
     throw new Error("Data perusahaan vendor Anda tidak ditemukan.");
@@ -252,6 +253,11 @@ export async function registerTechnicianByPic(
       "Vendor Anda sedang dinonaktifkan Admin. Teknisi baru tidak dapat didaftarkan."
     );
   }
+
+  const cleanFacePhotoUrl =
+    input.facePhotoUrl && input.facePhotoUrl.trim().length > 0
+      ? assertSafeUploadUrl(input.facePhotoUrl, "Foto wajah teknisi")
+      : null;
 
   const fullName = input.fullName.trim();
   const whatsapp = input.whatsapp.trim();
@@ -303,7 +309,7 @@ export async function registerTechnicianByPic(
         fullName,
         whatsapp,
         email,
-        input.facePhotoUrl || null,
+        cleanFacePhotoUrl,
         cleanSkills,
       ],
       tx
@@ -380,11 +386,11 @@ export async function updateTechnicianStatusByPic(
   }
 
   const vendor = await queryOne<VendorRow>(
-    `SELECT * FROM "Vendor" WHERE "picUserId" = $1`,
-    [actor.id]
+    `SELECT * FROM "Vendor" WHERE "picUserId" = $1 AND "companyId" = $2 AND "isActive" = true`,
+    [actor.id, actor.companyId]
   );
   if (!vendor) {
-    throw new Error("Vendor tidak ditemukan.");
+    throw new Error("Vendor aktif tidak ditemukan untuk akun PIC Anda.");
   }
 
   const tech = await queryOne<TechnicianRow>(
@@ -415,6 +421,23 @@ export async function updateTechnicianStatusByPic(
     if (tech.deactivationReason === "MANUAL_BY_ADMIN") {
       throw new Error(
         "Teknisi dinonaktifkan oleh Admin dan hanya dapat diaktifkan kembali oleh Admin."
+      );
+    }
+  }
+
+  if (newStatus === "INACTIVE" || newStatus === "ON_LEAVE") {
+    const openWoCount = await queryCount(
+      `SELECT COUNT(*)::int AS count
+       FROM "WorkOrder" wo
+       JOIN "Report" r ON r."id" = wo."reportId"
+       WHERE wo."technicianId" = $1
+         AND r."archivedAt" IS NULL
+         AND r."status" = ANY($2::"ReportStatus"[])`,
+      [tech.id, [...OPEN_WORK_ORDER_REPORT_STATUSES]]
+    );
+    if (openWoCount > 0) {
+      throw new Error(
+        `Teknisi masih memegang ${openWoCount} SPK berjalan. Alihkan SPK ke teknisi lain terlebih dahulu.`
       );
     }
   }
@@ -482,11 +505,11 @@ export async function requestTechnicianReactivationByPic(
   }
 
   const vendor = await queryOne<VendorRow>(
-    `SELECT * FROM "Vendor" WHERE "picUserId" = $1`,
-    [actor.id]
+    `SELECT * FROM "Vendor" WHERE "picUserId" = $1 AND "companyId" = $2 AND "isActive" = true`,
+    [actor.id, actor.companyId]
   );
   if (!vendor) {
-    throw new Error("Vendor tidak ditemukan.");
+    throw new Error("Vendor aktif tidak ditemukan untuk akun PIC Anda.");
   }
 
   const tech = await queryOne<TechnicianRow>(
@@ -1130,9 +1153,9 @@ export async function approveTechnicianReactivationByAdmin(
   }
 
   const tech = await queryOne<
-    TechnicianRow & { vendorPicUserId: string | null }
+    TechnicianRow & { vendorPicUserId: string | null; vendorIsActive: boolean }
   >(
-    `SELECT t.*, v."picUserId" AS "vendorPicUserId"
+    `SELECT t.*, v."picUserId" AS "vendorPicUserId", v."isActive" AS "vendorIsActive"
      FROM "Technician" t
      JOIN "Vendor" v ON v."id" = t."vendorId"
      WHERE t."id" = $1 AND t."companyId" = $2`,
@@ -1140,6 +1163,9 @@ export async function approveTechnicianReactivationByAdmin(
   );
   if (!tech) {
     throw new Error("Data teknisi tidak ditemukan.");
+  }
+  if (!tech.vendorIsActive) {
+    throw new Error("Vendor untuk teknisi ini sedang nonaktif. Aktifkan vendor terlebih dahulu.");
   }
   if (tech.approvalStatus === "REJECTED") {
     throw new Error(
@@ -1227,12 +1253,15 @@ export async function approveTechnicianReactivationByAdmin(
  */
 export async function confirmTechnicianRosterByPic(actor: SessionUser) {
   assertPermission(actor.role, "MANAGE_OWN_TECHNICIANS");
+  if (!actor.companyId) {
+    throw new Error("Akun PIC tidak terhubung ke perusahaan.");
+  }
   const vendor = await queryOne<VendorRow>(
-    `SELECT * FROM "Vendor" WHERE "picUserId" = $1`,
-    [actor.id]
+    `SELECT * FROM "Vendor" WHERE "picUserId" = $1 AND "companyId" = $2 AND "isActive" = true`,
+    [actor.id, actor.companyId]
   );
   if (!vendor) {
-    throw new Error("Data vendor tidak ditemukan.");
+    throw new Error("Data vendor aktif tidak ditemukan.");
   }
 
   const now = new Date();
