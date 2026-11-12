@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getCurrentSession } from "@/lib/auth";
 import { hasPermission, ROLE_METADATA } from "@/lib/permissions";
+import { sanitizeMediaHref } from "@/lib/url-safety";
 import { query } from "@/lib/db";
 import type { TechnicianRow, VendorRow } from "@/lib/db-types";
 import { getVendorReportCard } from "@/lib/services/vendor-replacement";
@@ -241,7 +242,7 @@ export default async function VendorPage() {
             email: t.email,
             whatsapp: t.whatsapp,
             skills: t.skills,
-            facePhotoUrl: t.facePhotoUrl,
+            facePhotoUrl: sanitizeMediaHref(t.facePhotoUrl),
             vendor: { name: t.vendor.name },
             createdAt: t.createdAt.toISOString(),
           }))}

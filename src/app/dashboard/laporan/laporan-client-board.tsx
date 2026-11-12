@@ -22,6 +22,7 @@ import { ManagerConfirmationPanel } from "./manager-confirmation-panel";
 import { PicAssignPanel } from "./pic-assign-panel";
 import { TechnicianSubmitPanel } from "./technician-submit-panel";
 import type { Role, ReportStatus } from "@/lib/db-types";
+import { sanitizeMediaHref } from "@/lib/url-safety";
 
 interface LaporanClientBoardProps {
   reports: any[];
@@ -568,27 +569,31 @@ export function LaporanClientBoard({
                             Bukti Foto Lapangan ({report.photos.length})
                           </div>
                           <div className="flex flex-wrap gap-3">
-                            {report.photos.map((p: any) => (
-                              <a
-                                key={p.id}
-                                href={p.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="group relative block rounded-xl overflow-hidden border border-slate-200 shadow-2xs"
-                              >
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img
-                                  src={p.url}
-                                  alt="Foto Laporan"
-                                  className="h-24 w-36 object-cover group-hover:scale-105 transition duration-300"
-                                />
-                                <div className="absolute inset-0 bg-slate-900/0 group-hover:bg-slate-900/30 transition flex items-center justify-center">
-                                  <span className="opacity-0 group-hover:opacity-100 text-[10px] font-bold bg-white/95 text-slate-900 px-2 py-1 rounded-md shadow-xs transition">
-                                    Perbesar
-                                  </span>
-                                </div>
-                              </a>
-                            ))}
+                            {report.photos.map((p: any) => {
+                              const safeUrl = sanitizeMediaHref(p.url);
+                              if (!safeUrl) return null;
+                              return (
+                                <a
+                                  key={p.id}
+                                  href={safeUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="group relative block rounded-xl overflow-hidden border border-slate-200 shadow-2xs"
+                                >
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    src={safeUrl}
+                                    alt="Foto Laporan"
+                                    className="h-24 w-36 object-cover group-hover:scale-105 transition duration-300"
+                                  />
+                                  <div className="absolute inset-0 bg-slate-900/0 group-hover:bg-slate-900/30 transition flex items-center justify-center">
+                                    <span className="opacity-0 group-hover:opacity-100 text-[10px] font-bold bg-white/95 text-slate-900 px-2 py-1 rounded-md shadow-xs transition">
+                                      Perbesar
+                                    </span>
+                                  </div>
+                                </a>
+                              );
+                            })}
                           </div>
                         </div>
                       )}
@@ -631,9 +636,9 @@ export function LaporanClientBoard({
                               </div>
                             )}
 
-                            {Boolean((report.workOrder as any)?.spkFileUrl) && (
+                            {sanitizeMediaHref((report.workOrder as any)?.spkFileUrl) && (
                               <a
-                                href={(report.workOrder as any).spkFileUrl}
+                                href={sanitizeMediaHref((report.workOrder as any).spkFileUrl)!}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 download={(report.workOrder as any).spkFileName || "SPK.pdf"}
@@ -748,7 +753,7 @@ export function LaporanClientBoard({
                           currentTechnicianId={report.workOrder.technicianId}
                           currentTechnicianName={report.workOrder.technician?.fullName}
                           isReplacing={report.status === "DIKERJAKAN"}
-                          spkFileUrl={(report.workOrder as any).spkFileUrl}
+                          spkFileUrl={sanitizeMediaHref((report.workOrder as any).spkFileUrl)}
                           spkFileName={(report.workOrder as any).spkFileName}
                         />
                       </div>
@@ -770,7 +775,7 @@ export function LaporanClientBoard({
                                 ].note
                               : null
                           }
-                          spkFileUrl={(report.workOrder as any).spkFileUrl}
+                          spkFileUrl={sanitizeMediaHref((report.workOrder as any).spkFileUrl)}
                           spkFileName={(report.workOrder as any).spkFileName}
                           existingBeforeCount={
                             (report.workOrder as any).photos?.filter(

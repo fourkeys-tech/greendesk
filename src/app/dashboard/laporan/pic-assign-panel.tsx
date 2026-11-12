@@ -6,6 +6,7 @@ import {
   assignTechnicianAction,
   replaceTechnicianAction,
 } from "@/app/actions/phase6-actions";
+import { sanitizeMediaHref } from "@/lib/url-safety";
 
 interface TechnicianOption {
   id: string;
@@ -112,9 +113,9 @@ export function PicAssignPanel({
           </span>
         </div>
 
-        {spkFileUrl && (
+        {sanitizeMediaHref(spkFileUrl) && (
           <a
-            href={spkFileUrl}
+            href={sanitizeMediaHref(spkFileUrl)!}
             target="_blank"
             rel="noopener noreferrer"
             download={spkFileName || "SPK.pdf"}

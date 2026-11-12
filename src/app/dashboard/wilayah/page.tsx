@@ -14,6 +14,7 @@ import type {
 import { generateAssetQrDataUrl } from "@/lib/qr";
 import { activeAssignmentSql } from "@/lib/scopes";
 import { wibDateInputValue } from "@/lib/dates";
+import { sanitizeMediaHref } from "@/lib/url-safety";
 import {
   AccessDeniedNotice,
   DbErrorNotice,
@@ -57,13 +58,21 @@ export default async function WilayahPage() {
 
   try {
     if (session.role === "PENGELOLA") {
-      clusterScope = session.staffClusterId ? [session.staffClusterId] : [];
+      clusterScope = session.staffClusterId
+        ? (await query<{ id: string }>(
+            `SELECT "id" FROM "Cluster" WHERE "id" = $1 AND "companyId" = $2`,
+            [session.staffClusterId, companyId]
+          )).map((cluster) => cluster.id)
+        : [];
     } else if (session.role === "MANAGER") {
       const assignments = await query<{ clusterId: string }>(
-        `SELECT "clusterId"
-         FROM "ClusterManagerAssignment"
-         WHERE "userId" = $1 AND ${activeAssignmentSql("ClusterManagerAssignment", "$2")}`,
-        [session.id, now]
+        `SELECT cma."clusterId"
+         FROM "ClusterManagerAssignment" cma
+         JOIN "Cluster" cl ON cl."id" = cma."clusterId"
+         WHERE cma."userId" = $1
+           AND cl."companyId" = $2
+           AND ${activeAssignmentSql("cma", "$3")}`,
+        [session.id, companyId, now]
       );
       clusterScope = assignments.map((a) => a.clusterId);
     }
@@ -118,32 +127,68 @@ export default async function WilayahPage() {
               `SELECT * FROM "Cluster" WHERE "companyId" = $1 ORDER BY "name" ASC`,
               [companyId]
             ),
-        query<ParkRow>(
-          `SELECT * FROM "Park" WHERE "companyId" = $1 ORDER BY "name" ASC`,
-          [companyId]
-        ),
-        query<AssetRow>(
-          `SELECT * FROM "Asset" WHERE "companyId" = $1 ORDER BY "code" ASC`,
-          [companyId]
-        ),
-        query<{ name: string; staffClusterId: string }>(
-          `SELECT "name", "staffClusterId"
-           FROM "User"
-           WHERE "companyId" = $1
-             AND "role" = 'PENGELOLA'::"Role"
-             AND "isActive" = true
-             AND "staffClusterId" IS NOT NULL`,
-          [companyId]
-        ),
-        query<{ clusterId: string; isTemporary: boolean; userName: string }>(
-          `SELECT cma."clusterId", cma."isTemporary", u."name" AS "userName"
-           FROM "ClusterManagerAssignment" cma
-           JOIN "User" u ON u."id" = cma."userId"
-           WHERE u."companyId" = $1
-             AND ${activeAssignmentSql("cma", "$2")}
-             AND u."isActive" = true`,
-          [companyId, now]
-        ),
+        clusterScope
+          ? query<ParkRow>(
+              `SELECT * FROM "Park"
+               WHERE "companyId" = $1 AND "clusterId" = ANY($2::text[])
+               ORDER BY "name" ASC`,
+              [companyId, clusterScope]
+            )
+          : query<ParkRow>(
+              `SELECT * FROM "Park" WHERE "companyId" = $1 ORDER BY "name" ASC`,
+              [companyId]
+            ),
+        clusterScope
+          ? query<AssetRow>(
+              `SELECT a.* FROM "Asset" a
+               JOIN "Park" p ON p."id" = a."parkId"
+               WHERE a."companyId" = $1 AND p."clusterId" = ANY($2::text[])
+               ORDER BY a."code" ASC`,
+              [companyId, clusterScope]
+            )
+          : query<AssetRow>(
+              `SELECT * FROM "Asset" WHERE "companyId" = $1 ORDER BY "code" ASC`,
+              [companyId]
+            ),
+        clusterScope
+          ? query<{ name: string; staffClusterId: string }>(
+              `SELECT "name", "staffClusterId"
+               FROM "User"
+               WHERE "companyId" = $1
+                 AND "role" = 'PENGELOLA'::"Role"
+                 AND "isActive" = true
+                 AND "staffClusterId" = ANY($2::text[])`,
+              [companyId, clusterScope]
+            )
+          : query<{ name: string; staffClusterId: string }>(
+              `SELECT "name", "staffClusterId"
+               FROM "User"
+               WHERE "companyId" = $1
+                 AND "role" = 'PENGELOLA'::"Role"
+                 AND "isActive" = true
+                 AND "staffClusterId" IS NOT NULL`,
+              [companyId]
+            ),
+        clusterScope
+          ? query<{ clusterId: string; isTemporary: boolean; userName: string }>(
+              `SELECT cma."clusterId", cma."isTemporary", u."name" AS "userName"
+               FROM "ClusterManagerAssignment" cma
+               JOIN "User" u ON u."id" = cma."userId"
+               WHERE u."companyId" = $1
+                 AND cma."clusterId" = ANY($3::text[])
+                 AND ${activeAssignmentSql("cma", "$2")}
+                 AND u."isActive" = true`,
+              [companyId, now, clusterScope]
+            )
+          : query<{ clusterId: string; isTemporary: boolean; userName: string }>(
+              `SELECT cma."clusterId", cma."isTemporary", u."name" AS "userName"
+               FROM "ClusterManagerAssignment" cma
+               JOIN "User" u ON u."id" = cma."userId"
+               WHERE u."companyId" = $1
+                 AND ${activeAssignmentSql("cma", "$2")}
+                 AND u."isActive" = true`,
+              [companyId, now]
+            ),
         query<{
           assetId: string;
           reportId: string;
@@ -160,10 +205,13 @@ export default async function WilayahPage() {
              FROM "Report" r
              JOIN "WorkOrder" wo ON wo."reportId" = r."id"
              JOIN "Vendor" v ON v."id" = wo."vendorId"
-             WHERE r."companyId" = $1 AND r."archivedAt" IS NULL
+             JOIN "Asset" a ON a."id" = r."assetId"
+             JOIN "Park" p ON p."id" = a."parkId"
+             WHERE r."companyId" = $1
+               AND r."archivedAt" IS NULL${clusterScope ? ` AND p."clusterId" = ANY($2::text[])` : ""}
            ) sub
            WHERE sub.rn <= 3`,
-          [companyId]
+          clusterScope ? [companyId, clusterScope] : [companyId]
         ),
       ]);
 
@@ -220,7 +268,7 @@ export default async function WilayahPage() {
           code: a.code,
           name: a.name,
           locationNote: a.locationNote,
-          photoUrl: a.photoUrl,
+          photoUrl: sanitizeMediaHref(a.photoUrl),
           installedAt: a.installedAt ? a.installedAt.toISOString() : null,
           isActive: a.isActive,
           category: cat,

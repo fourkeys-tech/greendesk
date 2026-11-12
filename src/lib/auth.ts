@@ -138,7 +138,7 @@ export const getCurrentSession = cache(async (): Promise<SessionUser | null> => 
        FROM "User" u
        LEFT JOIN "Company" c ON c."id" = u."companyId"
        LEFT JOIN "Technician" t ON t."userId" = u."id"
-       LEFT JOIN "Vendor" v ON v."picUserId" = u."id"
+       LEFT JOIN "Vendor" v ON v."picUserId" = u."id" AND v."isActive" = true
        WHERE u."id" = $1
        LIMIT 1`,
       [decoded.id]
@@ -155,13 +155,12 @@ export const getCurrentSession = cache(async (): Promise<SessionUser | null> => 
     return null;
   }
 
-  if (dbUser.role === "TEKNISI" && dbUser.techApprovalStatus) {
-    // Teknisi belum disetujui Admin tidak bisa login (PRD Fase 2)
-    if (dbUser.techApprovalStatus !== "APPROVED") {
-      return null;
-    }
-    // Teknisi nonaktif (manual/otomatis 60 hari, §8.3.7) tidak bisa login; cuti tetap boleh.
-    if (dbUser.techStatus === "INACTIVE") {
+  if (dbUser.role === "TEKNISI") {
+    // Teknisi tanpa profil atau belum disetujui Admin tidak bisa login (PRD Fase 2)
+    if (
+      dbUser.techApprovalStatus !== "APPROVED" ||
+      dbUser.techStatus === "INACTIVE"
+    ) {
       return null;
     }
   }

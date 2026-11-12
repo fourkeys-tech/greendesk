@@ -1,9 +1,9 @@
-import fs from "fs";
-import path from "path";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 export function parseEnvFile(filePath: string): Record<string, string> {
-  if (!fs.existsSync(filePath)) return {};
-  const raw = fs.readFileSync(filePath, "utf8");
+  if (!existsSync(filePath)) return {};
+  const raw = readFileSync(filePath, "utf8");
   const parsed: Record<string, string> = {};
 
   for (const rawLine of raw.split(/\r?\n/)) {
@@ -31,8 +31,8 @@ export function parseEnvFile(filePath: string): Record<string, string> {
  * Sekaligus menolak bila `DATABASE_URL` test menunjuk ke port yang sama dengan `.env` dev.
  */
 export function loadTestEnv(rootDir: string): Record<string, string> {
-  const testEnvPath = path.join(rootDir, ".env.test");
-  const devEnvPath = path.join(rootDir, ".env");
+  const testEnvPath = join(rootDir, ".env.test");
+  const devEnvPath = join(rootDir, ".env");
 
   const testVars = parseEnvFile(testEnvPath);
   if (!testVars.DATABASE_URL) {

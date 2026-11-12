@@ -9,8 +9,6 @@ import {
   EyeOff,
   Lock,
   Mail,
-  Phone,
-  User as UserIcon,
   ShieldCheck,
   Crown,
   Briefcase,
@@ -29,7 +27,7 @@ import {
   loginWithPasswordAction,
 } from "@/app/actions/auth-actions";
 
-type AuthMode = "login" | "register" | "developer";
+type AuthMode = "login" | "developer";
 
 const inputClass =
   "w-full h-12 rounded-xl bg-white border border-slate-200 pl-10 pr-3 text-[13px] font-medium text-slate-800 placeholder:text-slate-400 shadow-sm outline-none transition focus:border-[#1b5e45] focus:ring-2 focus:ring-[#1b5e45]/20";
@@ -130,13 +128,40 @@ function Field({
   );
 }
 
-export function LoginClient() {
+const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+  google_not_configured: "Login Google belum dikonfigurasi pada server.",
+  consent_required: "Persetujuan data pribadi wajib dicentang terlebih dahulu.",
+  access_denied: "Autentikasi Google dibatalkan.",
+  invalid_state: "Sesi autentikasi Google tidak valid. Silakan coba lagi.",
+  expired_state: "Sesi autentikasi Google kedaluwarsa. Silakan coba lagi.",
+  account_blocked: "Akun Anda sedang dinonaktifkan atau diblokir.",
+  internal_role_password_required:
+    "Akun staf/internal harus masuk menggunakan email dan kata sandi.",
+  oauth_failed: "Gagal memverifikasi akun Google. Silakan coba lagi.",
+};
+
+export function LoginClient({
+  allowDevQuickSwitch = false,
+  googleOAuthEnabled = false,
+  googleStartUrl = "/api/auth/google/start",
+  oauthError = null,
+  returnTo,
+}: {
+  allowDevQuickSwitch?: boolean;
+  googleOAuthEnabled?: boolean;
+  googleStartUrl?: string;
+  oauthError?: string | null;
+  returnTo?: string;
+}) {
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [showPassword, setShowPassword] = useState(false);
   const [selectedDemoRole, setSelectedDemoRole] = useState(
     DEMO_ACCOUNTS[0].email
   );
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(
+    oauthError ? OAUTH_ERROR_MESSAGES[oauthError] ?? "Login Google gagal." : null
+  );
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const [loginEmail, setLoginEmail] = useState("");
@@ -145,18 +170,18 @@ export function LoginClient() {
   const [devEmail, setDevEmail] = useState("");
   const [devPassword, setDevPassword] = useState("");
 
-  const [regName, setRegName] = useState("");
-  const [regPhone, setRegPhone] = useState("");
-  const [regEmail, setRegEmail] = useState("");
-  const [regCluster, setRegCluster] = useState("");
-
   const switchMode = (mode: AuthMode) => {
     setShowPassword(false);
     setErrorMessage(null);
+    setInfoMessage(null);
     setAuthMode(mode);
   };
 
   const handleRoleSwitch = (target: string) => {
+    if (!allowDevQuickSwitch) {
+      setErrorMessage("Fitur pindah akun cepat tidak diaktifkan.");
+      return;
+    }
     setErrorMessage(null);
     startTransition(async () => {
       try {
@@ -172,38 +197,34 @@ export function LoginClient() {
     });
   };
 
-  // TODO(pre-prod) P0-1: Blokir fallback `handleRoleSwitch` ketika kata sandi kosong.
   const handleUserLogin = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
+    setInfoMessage(null);
 
-    // Jika mengisi password, coba login resmi dengan password
-    if (loginPassword) {
-      startTransition(async () => {
-        const formData = new FormData();
-        formData.set("email", loginEmail);
-        formData.set("password", loginPassword);
-        const res = await loginWithPasswordAction(formData);
-        if (res?.error) {
-          setErrorMessage(res.error);
-        }
-      });
-    } else {
-      // Fallback cepat untuk pengujian
-      handleRoleSwitch(loginEmail || "warga@greenpark.id");
+    if (!loginEmail.trim() || !loginPassword) {
+      setErrorMessage("Email dan kata sandi wajib diisi.");
+      return;
     }
+
+    startTransition(async () => {
+      const formData = new FormData();
+      formData.set("email", loginEmail);
+      formData.set("password", loginPassword);
+      const res = await loginWithPasswordAction(formData, returnTo);
+      if (res?.error) {
+        setErrorMessage(res.error);
+      }
+    });
   };
 
-  // TODO(pre-prod) P0-1: Hapus/guard portal developer tanpa kredensial sebelum production.
   const handleDeveloperLogin = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!allowDevQuickSwitch) {
+      setErrorMessage("Developer Portal tidak diaktifkan.");
+      return;
+    }
     handleRoleSwitch(devEmail || "admin@greenpark.id");
-  };
-
-  // TODO(pre-prod) P0-1: Ganti pendaftaran role-switch ini dengan alur OTP terverifikasi.
-  const handleRegister = (e: React.FormEvent) => {
-    e.preventDefault();
-    handleRoleSwitch(regEmail || "warga@greenpark.id");
   };
 
   const passwordToggle = (
@@ -218,318 +239,253 @@ export function LoginClient() {
   );
 
   const title =
-    authMode === "register"
-      ? "Registrasi Akun"
-      : authMode === "developer"
-        ? "Developer Portal"
-        : null;
+    authMode === "developer" ? "Developer Portal" : null;
 
   const subtitle =
-    authMode === "register"
-      ? "Lengkapi data diri untuk pendaftaran warga"
-      : authMode === "developer"
-        ? "Akses pengujian instan menuju panel admin"
-        : null;
+    authMode === "developer" ? "Akses pengujian instan menuju panel admin" : null;
 
-  const errorBanner = errorMessage && (
-    <div className="mb-3 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">
-      {errorMessage}
-    </div>
+  const errorBanner = (
+    <>
+      {errorMessage && (
+        <div className="mb-3 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">
+          {errorMessage}
+        </div>
+      )}
+      {infoMessage && (
+        <div className="mb-3 p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold">
+          {infoMessage}
+        </div>
+      )}
+    </>
   );
 
   // Blok form & panel demo dipakai ulang oleh layout mobile dan desktop (hanya satu yang tampil via CSS).
   const loginForm = (
     <form onSubmit={handleUserLogin} className="space-y-3.5 mt-1">
-            <Field label="Alamat Email" icon={<Mail className="w-4 h-4" />}>
-              <input
-                type="email"
-                value={loginEmail}
-                onChange={(e) => setLoginEmail(e.target.value)}
-                placeholder="nama@email.com (contoh: admin@greenpark.id)"
-                className={inputClass}
-              />
-            </Field>
+      <Field label="Alamat Email" icon={<Mail className="w-4 h-4" />}>
+        <input
+          type="email"
+          required
+          value={loginEmail}
+          onChange={(e) => setLoginEmail(e.target.value)}
+          placeholder="nama@email.com"
+          className={inputClass}
+        />
+      </Field>
 
-            <Field label="Kata Sandi" icon={<Lock className="w-4 h-4" />}>
-              <input
-                type={showPassword ? "text" : "password"}
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                placeholder="•••••••• (kosongkan jika uji coba cepat)"
-                className={`${inputClass} pr-10`}
-              />
-              {passwordToggle}
-            </Field>
+      <Field label="Kata Sandi" icon={<Lock className="w-4 h-4" />}>
+        <input
+          type={showPassword ? "text" : "password"}
+          required
+          value={loginPassword}
+          onChange={(e) => setLoginPassword(e.target.value)}
+          placeholder="Masukkan kata sandi"
+          className={`${inputClass} pr-10`}
+        />
+        {passwordToggle}
+      </Field>
 
-            <div className="pt-2 space-y-2.5">
-              <button type="submit" disabled={isPending} className={primaryBtn}>
-                {isPending ? (
-                  <span className="flex items-center gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>MEMPROSES...</span>
-                  </span>
-                ) : (
-                  "LOGIN KE DASHBOARD"
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() => switchMode("register")}
-                className={secondaryBtn}
-              >
-                REGISTER AKUN WARGA
-              </button>
-            </div>
-          </form>
+      <div className="pt-2 space-y-2.5">
+        <button type="submit" disabled={isPending} className={primaryBtn}>
+          {isPending ? (
+            <span className="flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span>MEMPROSES...</span>
+            </span>
+          ) : (
+            "LOGIN KE DASHBOARD"
+          )}
+        </button>
+        {googleOAuthEnabled && (
+          <a
+            href={
+              returnTo
+                ? `${googleStartUrl}?returnTo=${encodeURIComponent(returnTo)}&consent=1`
+                : `${googleStartUrl}?consent=1`
+            }
+            className="w-full h-12 rounded-2xl bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 text-[13px] font-bold tracking-wide flex items-center justify-center gap-2 transition"
+          >
+            <span>MASUK DENGAN GOOGLE</span>
+          </a>
+        )}
+        <p className="text-[11px] text-center text-slate-500 pt-1">
+          Warga baru?{" "}
+          <Link
+            href={returnTo ? `/register?returnTo=${encodeURIComponent(returnTo)}` : "/register"}
+            className="font-bold text-[#1b5e45] hover:underline"
+          >
+            Daftar akun warga dengan verifikasi email →
+          </Link>
+        </p>
+      </div>
+    </form>
   );
 
   const developerForm = (
-          <form onSubmit={handleDeveloperLogin} className="space-y-3.5">
-            <Field label="Email Developer / Admin" icon={<Mail className="w-4 h-4" />}>
-              <input
-                type="email"
-                value={devEmail}
-                onChange={(e) => setDevEmail(e.target.value)}
-                placeholder="admin@greenpark.id"
-                className={inputClass}
-              />
-            </Field>
+    <form onSubmit={handleDeveloperLogin} className="space-y-3.5">
+      <Field label="Email Developer / Admin" icon={<Mail className="w-4 h-4" />}>
+        <input
+          type="email"
+          value={devEmail}
+          onChange={(e) => setDevEmail(e.target.value)}
+          placeholder="admin@greenpark.id"
+          className={inputClass}
+        />
+      </Field>
 
-            <Field label="Password (Opsional saat Dev)" icon={<Lock className="w-4 h-4" />}>
-              <input
-                type={showPassword ? "text" : "password"}
-                value={devPassword}
-                onChange={(e) => setDevPassword(e.target.value)}
-                placeholder="••••••••"
-                className={`${inputClass} pr-10`}
-              />
-              {passwordToggle}
-            </Field>
+      <Field label="Password (Opsional saat Dev)" icon={<Lock className="w-4 h-4" />}>
+        <input
+          type={showPassword ? "text" : "password"}
+          value={devPassword}
+          onChange={(e) => setDevPassword(e.target.value)}
+          placeholder="••••••••"
+          className={`${inputClass} pr-10`}
+        />
+        {passwordToggle}
+      </Field>
 
-            <div className="pt-2 space-y-2.5">
-              <button type="submit" disabled={isPending} className={primaryBtn}>
-                {isPending ? (
-                  <span className="flex items-center gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>MEMBUKA DASHBOARD...</span>
-                  </span>
-                ) : (
-                  "MASUK KE DASHBOARD ADMIN"
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() => switchMode("login")}
-                className={secondaryBtn}
-              >
-                KEMBALI KE LOGIN
-              </button>
-            </div>
-          </form>
-  );
-
-  const registerForm = (
-          <form onSubmit={handleRegister} className="space-y-3.5">
-            <Field label="Nama Lengkap" icon={<UserIcon className="w-4 h-4" />}>
-              <input
-                type="text"
-                value={regName}
-                onChange={(e) => setRegName(e.target.value)}
-                placeholder="Nama Lengkap Sesuai KTP"
-                className={inputClass}
-                required
-              />
-            </Field>
-
-            <Field label="No. Telepon" icon={<Phone className="w-4 h-4" />}>
-              <input
-                type="tel"
-                value={regPhone}
-                onChange={(e) => setRegPhone(e.target.value)}
-                placeholder="0812-xxxx-xxxx"
-                className={inputClass}
-                required
-              />
-            </Field>
-
-            <Field label="Email" icon={<Mail className="w-4 h-4" />}>
-              <input
-                type="email"
-                value={regEmail}
-                onChange={(e) => setRegEmail(e.target.value)}
-                placeholder="nama@email.com"
-                className={inputClass}
-                required
-              />
-            </Field>
-
-            <Field label="Pilih Cluster" icon={<Building className="w-4 h-4" />}>
-              <select
-                value={regCluster}
-                onChange={(e) => setRegCluster(e.target.value)}
-                className={`${inputClass} appearance-none pr-10 ${
-                  regCluster ? "" : "text-slate-400"
-                }`}
-                required
-              >
-                <option value="" disabled>
-                  Pilih Cluster Hunian
-                </option>
-                <option value="Cluster Taman Eden">Cluster Taman Eden</option>
-                <option value="Cluster Bougenville">Cluster Bougenville</option>
-                <option value="Cluster Edelweiss">Cluster Edelweiss</option>
-                <option value="Cluster Lavender">Cluster Lavender</option>
-                <option value="Cluster Jasmine">Cluster Jasmine</option>
-              </select>
-              <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-            </Field>
-
-            <div className="pt-2 space-y-2.5">
-              <button type="submit" disabled={isPending} className={primaryBtn}>
-                {isPending ? (
-                  <span className="flex items-center gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>MENDAFTAR...</span>
-                  </span>
-                ) : (
-                  "DAFTAR & MASUK"
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() => switchMode("login")}
-                className={secondaryBtn}
-              >
-                SUDAH PUNYA AKUN? LOGIN
-              </button>
-            </div>
-          </form>
+      <div className="pt-2 space-y-2.5">
+        <button type="submit" disabled={isPending} className={primaryBtn}>
+          {isPending ? (
+            <span className="flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span>MEMBUKA DASHBOARD...</span>
+            </span>
+          ) : (
+            "MASUK KE DASHBOARD ADMIN"
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => switchMode("login")}
+          className={secondaryBtn}
+        >
+          KEMBALI KE LOGIN
+        </button>
+      </div>
+    </form>
   );
 
   const activeForm =
-    authMode === "login"
-      ? loginForm
-      : authMode === "developer"
-        ? developerForm
-        : registerForm;
+    authMode === "developer" && allowDevQuickSwitch
+      ? developerForm
+      : loginForm;
 
-  // TODO(pre-prod) P0-1: Sembunyikan/hapus Panel Uji Cepat 7 Role di production
-  // Panel Uji Cepat 7 Role (PRD v0.2 Testing)
-  const demoPanel = (
-        <div className="mt-5 pt-4 border-t border-slate-200/90 space-y-2.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[12px] font-bold text-slate-800 flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-[#1b5e45]" />
-              <span>Masuk Cepat 1-Klik (Uji 7 Role)</span>
-            </span>
-            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-100 text-[#1b5e45] border border-emerald-300">
-              PRD v0.2
-            </span>
-          </div>
+  const demoPanel = allowDevQuickSwitch ? (
+    <div className="mt-5 pt-4 border-t border-slate-200/90 space-y-2.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[12px] font-bold text-slate-800 flex items-center gap-1.5">
+          <Sparkles className="w-3.5 h-3.5 text-[#1b5e45]" />
+          <span>Masuk Cepat 1-Klik (Uji 7 Role)</span>
+        </span>
+        <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-100 text-[#1b5e45] border border-emerald-300">
+          PRD v0.2
+        </span>
+      </div>
 
-          <p className="text-[11px] text-slate-500 leading-tight">
-            Pilih role akun demo untuk langsung masuk ke <code>/dashboard</code>:
-          </p>
+      <p className="text-[11px] text-slate-500 leading-tight">
+        Pilih role akun demo untuk langsung masuk ke <code>/dashboard</code>:
+      </p>
 
-          {/* Dropdown Selector + Tombol Masuk */}
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1">
-              <select
-                value={selectedDemoRole}
-                onChange={(e) => setSelectedDemoRole(e.target.value)}
-                disabled={isPending}
-                className="w-full h-10 rounded-xl bg-white border border-slate-200 pl-3 pr-8 text-[11px] font-semibold text-slate-800 shadow-xs outline-none focus:border-[#1b5e45] appearance-none"
-              >
-                {DEMO_ACCOUNTS.map((d) => (
-                  <option key={d.role} value={d.email}>
-                    {d.role} – {d.name} ({d.email})
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            </div>
+      {/* Dropdown Selector + Tombol Masuk */}
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <select
+            value={selectedDemoRole}
+            onChange={(e) => setSelectedDemoRole(e.target.value)}
+            disabled={isPending}
+            className="w-full h-10 rounded-xl bg-white border border-slate-200 pl-3 pr-8 text-[11px] font-semibold text-slate-800 shadow-xs outline-none focus:border-[#1b5e45] appearance-none"
+          >
+            {DEMO_ACCOUNTS.map((d) => (
+              <option key={d.role} value={d.email}>
+                {d.role} – {d.name} ({d.email})
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+        </div>
 
+        <button
+          type="button"
+          disabled={isPending}
+          onClick={() => handleRoleSwitch(selectedDemoRole)}
+          className="h-10 px-3.5 rounded-xl bg-[#1b5e45] hover:bg-[#154a36] text-white text-[11px] font-bold shadow-xs flex items-center gap-1 transition disabled:opacity-50 shrink-0 cursor-pointer"
+        >
+          {isPending ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <>
+              <span>Masuk</span>
+              <ArrowRight className="w-3 h-3" />
+            </>
+          )}
+        </button>
+      </div>
+
+      {/* 1-Click Role Chips */}
+      <div className="grid grid-cols-2 gap-1.5 pt-0.5">
+        {DEMO_ACCOUNTS.map((d) => {
+          const Icon = d.icon;
+          return (
             <button
+              key={d.role}
               type="button"
               disabled={isPending}
-              onClick={() => handleRoleSwitch(selectedDemoRole)}
-              className="h-10 px-3.5 rounded-xl bg-[#1b5e45] hover:bg-[#154a36] text-white text-[11px] font-bold shadow-xs flex items-center gap-1 transition disabled:opacity-50 shrink-0 cursor-pointer"
+              onClick={() => handleRoleSwitch(d.email)}
+              className={`p-2 rounded-xl border text-left flex items-center gap-2 hover:opacity-90 active:scale-[0.98] transition cursor-pointer ${d.badgeColor}`}
             >
-              {isPending ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <>
-                  <span>Masuk</span>
-                  <ArrowRight className="w-3 h-3" />
-                </>
-              )}
-            </button>
-          </div>
-
-          {/* 1-Click Role Chips */}
-          <div className="grid grid-cols-2 gap-1.5 pt-0.5">
-            {DEMO_ACCOUNTS.map((d) => {
-              const Icon = d.icon;
-              return (
-                <button
-                  key={d.role}
-                  type="button"
-                  disabled={isPending}
-                  onClick={() => handleRoleSwitch(d.email)}
-                  className={`p-2 rounded-xl border text-left flex items-center gap-2 hover:opacity-90 active:scale-[0.98] transition cursor-pointer ${d.badgeColor}`}
-                >
-                  <Icon className="w-3.5 h-3.5 shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[11px] font-bold truncate leading-tight">
-                      {d.role}
-                    </div>
-                    <div className="text-[9px] opacity-80 truncate">
-                      {d.name}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-
-            {/* Tombol Uji Isolasi Multi-Perusahaan (Perusahaan B) */}
-            <button
-              type="button"
-              disabled={isPending}
-              onClick={() => handleRoleSwitch("admin@griyaasri.id")}
-              className="col-span-2 p-2 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/70 text-left flex items-center justify-between gap-2 hover:bg-indigo-100/70 transition cursor-pointer text-indigo-950"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <Building className="w-3.5 h-3.5 text-indigo-700 shrink-0" />
-                <div className="min-w-0">
-                  <div className="text-[11px] font-bold truncate">
-                    Uji Isolasi Multi-Perusahaan (Perusahaan B)
-                  </div>
-                  <div className="text-[9px] text-indigo-700 truncate">
-                    Admin PT Griya Asri (admin@griyaasri.id)
-                  </div>
+              <Icon className="w-3.5 h-3.5 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] font-bold truncate leading-tight">
+                  {d.role}
+                </div>
+                <div className="text-[9px] opacity-80 truncate">
+                  {d.name}
                 </div>
               </div>
-              <span className="text-[10px] font-bold text-indigo-700 shrink-0">
-                Uji →
-              </span>
             </button>
-          </div>
+          );
+        })}
 
-          {/* Shortcut ke Developer Portal Tab jika sedang di mode login */}
-          {authMode === "login" && (
-            <div className="text-center pt-1.5">
-              <button
-                type="button"
-                onClick={() => switchMode("developer")}
-                className="text-[11px] font-semibold text-slate-500 hover:text-[#1b5e45] transition inline-flex items-center gap-1 cursor-pointer"
-              >
-                <span>Akses Khusus Developer Portal</span>
-                <span>→</span>
-              </button>
+        {/* Tombol Uji Isolasi Multi-Perusahaan (Perusahaan B) */}
+        <button
+          type="button"
+          disabled={isPending}
+          onClick={() => handleRoleSwitch("admin@griyaasri.id")}
+          className="col-span-2 p-2 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/70 text-left flex items-center justify-between gap-2 hover:bg-indigo-100/70 transition cursor-pointer text-indigo-950"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <Building className="w-3.5 h-3.5 text-indigo-700 shrink-0" />
+            <div className="min-w-0">
+              <div className="text-[11px] font-bold truncate">
+                Uji Isolasi Multi-Perusahaan (Perusahaan B)
+              </div>
+              <div className="text-[9px] text-indigo-700 truncate">
+                Admin PT Griya Asri (admin@griyaasri.id)
+              </div>
             </div>
-          )}
+          </div>
+          <span className="text-[10px] font-bold text-indigo-700 shrink-0">
+            Uji →
+          </span>
+        </button>
+      </div>
+
+      {/* Shortcut ke Developer Portal Tab jika sedang di mode login */}
+      {authMode === "login" && (
+        <div className="text-center pt-1.5">
+          <button
+            type="button"
+            onClick={() => switchMode("developer")}
+            className="text-[11px] font-semibold text-slate-500 hover:text-[#1b5e45] transition inline-flex items-center gap-1 cursor-pointer"
+          >
+            <span>Akses Khusus Developer Portal</span>
+            <span>→</span>
+          </button>
         </div>
-  );
+      )}
+    </div>
+  ) : null;
 
   return (
     <>
@@ -542,7 +498,7 @@ export function LoginClient() {
               GreenPark v0.2
             </span>
             <Link
-              href="/dashboard/lapor"
+              href="/scan"
               className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 hover:bg-emerald-200 text-[#1b5e45] text-[11px] font-bold transition border border-emerald-300"
             >
               <FileText className="w-3.5 h-3.5" />
@@ -557,7 +513,7 @@ export function LoginClient() {
           </h1>
 
           {/* Ilustrasi Fasilitas Taman */}
-          {authMode !== "register" && (
+          {authMode === "login" && (
             <div className="flex items-center justify-center py-4">
               <img
                 src="/images/Kursi%20Taman.png"
@@ -568,7 +524,7 @@ export function LoginClient() {
           )}
 
           {title && (
-            <div className={`text-center ${authMode === "register" ? "mt-4" : ""} mb-3`}>
+            <div className={`text-center ${authMode === "login" ? "" : "mt-4"} mb-3`}>
               <h2 className="text-[18px] font-bold text-[#1b5e45] leading-tight">
                 {title}
               </h2>
@@ -629,7 +585,7 @@ export function LoginClient() {
                 className="h-9 w-auto object-contain"
               />
               <Link
-                href="/dashboard/lapor"
+                href="/scan"
                 className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 hover:bg-emerald-200 text-[#1b5e45] text-[11px] font-bold transition border border-emerald-300"
               >
                 <FileText className="w-3.5 h-3.5" />

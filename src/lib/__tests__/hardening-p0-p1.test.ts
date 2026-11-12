@@ -64,8 +64,8 @@ import {
 } from "../services/phase4-verification";
 import { decideManagerReport } from "../services/phase5-decision";
 import {
-  requestInlineOtpAction,
-  verifyInlineOtpAction,
+  requestRegistrationOtpAction,
+  verifyRegistrationOtpAction,
 } from "@/app/actions/phase3-actions";
 
 async function mustOne<T extends object>(
@@ -650,7 +650,7 @@ describe("Hardening P0 + P1 – Keamanan, Penomoran, Konkurensi, Merge, OTP & Ou
       "AST-BGV-001 companyId"
     );
 
-    const reqLock = await requestInlineOtpAction({
+    const reqLock = await requestRegistrationOtpAction({
       name: "Calon Warga Terkunci",
       email: emailLock,
       reporterStatus: "WARGA",
@@ -683,7 +683,7 @@ describe("Hardening P0 + P1 – Keamanan, Penomoran, Konkurensi, Merge, OTP & Ou
       reqLock.debugOtpHint === "999999" ? "888888" : "999999";
 
     for (let i = 0; i < 5; i++) {
-      const attempt = await verifyInlineOtpAction({
+      const attempt = await verifyRegistrationOtpAction({
         email: emailLock,
         code: wrongCode,
       });
@@ -691,7 +691,7 @@ describe("Hardening P0 + P1 – Keamanan, Penomoran, Konkurensi, Merge, OTP & Ou
     }
 
     // Percobaan ke-6 dengan kode YANG BENAR tetap ditolak karena kode hangus
-    const sixthWithCorrect = await verifyInlineOtpAction({
+    const sixthWithCorrect = await verifyRegistrationOtpAction({
       email: emailLock,
       code: reqLock.debugOtpHint!,
     });
@@ -702,7 +702,7 @@ describe("Hardening P0 + P1 – Keamanan, Penomoran, Konkurensi, Merge, OTP & Ou
 
     // Verifikasi kode valid pada akun baru kedua baru menciptakan user dengan companyId milik aset
     const emailSuccess = `otp.sukses.${suffix}@greenpark.id`;
-    const reqSuccess = await requestInlineOtpAction({
+    const reqSuccess = await requestRegistrationOtpAction({
       name: "Calon Warga Lolos",
       email: emailSuccess,
       reporterStatus: "WARGA",
@@ -715,7 +715,7 @@ describe("Hardening P0 + P1 – Keamanan, Penomoran, Konkurensi, Merge, OTP & Ou
       await queryOne(`SELECT "id" FROM "User" WHERE "email" = $1`, [emailSuccess])
     ).toBeNull();
 
-    const verified = await verifyInlineOtpAction({
+    const verified = await verifyRegistrationOtpAction({
       email: emailSuccess,
       code: reqSuccess.debugOtpHint!,
     });

@@ -4,7 +4,7 @@ import type { OtpCodeRow } from "../db-types";
 import { enqueueEmail, escapeHtml } from "../email";
 
 /**
- * Layanan OTP email (login dashboard & daftar/masuk inline di form QR).
+ * Layanan OTP email untuk verifikasi pendaftaran warga.
  *
  * Keamanan (P0-2):
  * - Kode dibuat dengan `crypto.randomInt`, disimpan sebagai sha256(email:kode) — bukan plaintext.
@@ -48,8 +48,8 @@ export type OtpIssueResult =
 
 /**
  * Menerbitkan OTP untuk email. Mengembalikan kode mentah HANYA untuk dipakai pemanggil
- * (debug hint di non-production). Pemanggil WAJIB sudah memutuskan apakah email ini
- * berhak menerima OTP (user aktif, atau pendaftaran baru dengan payload).
+ * (debug hint di non-production). Pemanggil WAJIB memastikan alamat email belum terdaftar
+ * dan mengirimkan payload pendaftaran yang akan diverifikasi.
  */
 export async function issueOtp(params: {
   email: string;
@@ -114,7 +114,7 @@ export async function issueOtp(params: {
       toEmail: email,
       subject: params.subject,
       bodyHtml: params.bodyHtml(code),
-      triggerType: "OTP_LOGIN",
+      triggerType: "OTP_REGISTRATION",
     });
   });
 
@@ -193,18 +193,10 @@ export async function verifyOtp(params: {
   });
 }
 
-/** Template email OTP (login dashboard). */
-export function otpLoginEmail(code: string) {
+/** Registration-only email template. */
+export function otpRegistrationEmail(name: string, code: string) {
   return {
-    subject: "Kode OTP Masuk GreenPark",
-    bodyHtml: `<p>Kode verifikasi satu kali (OTP) Anda adalah: <strong style="font-size:18px;letter-spacing:2px;">${code}</strong> (berlaku ${OTP_TTL_MINUTES} menit).</p><p style="color:#64748b;font-size:12px;">Abaikan email ini bila Anda tidak meminta kode.</p>`,
-  };
-}
-
-/** Template email OTP (daftar/masuk inline dari form QR). */
-export function otpReportEmail(name: string, code: string) {
-  return {
-    subject: "Kode OTP Verifikasi Laporan GreenPark",
-    bodyHtml: `<p>Halo ${escapeHtml(name)}, kode OTP untuk mengirim laporan Anda adalah: <strong style="font-size:18px;letter-spacing:2px;">${code}</strong> (berlaku ${OTP_TTL_MINUTES} menit).</p><p style="color:#64748b;font-size:12px;">Abaikan email ini bila Anda tidak meminta kode.</p>`,
+    subject: "Kode verifikasi pendaftaran GreenPark",
+    bodyHtml: `<p>Halo ${escapeHtml(name)}, kode OTP untuk verifikasi pendaftaran akun Anda adalah: <strong style="font-size:18px;letter-spacing:2px;">${code}</strong> (berlaku ${OTP_TTL_MINUTES} menit).</p><p style="color:#64748b;font-size:12px;">Abaikan email ini bila Anda tidak meminta kode.</p>`,
   };
 }

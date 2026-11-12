@@ -14,12 +14,7 @@ import {
 } from "@/lib/auth";
 import { recordAuditLog } from "@/lib/audit";
 import { flushEmailOutboxSafely } from "@/lib/email";
-import {
-  issueOtp,
-  OTP_GENERIC_INVALID_MESSAGE,
-  otpLoginEmail,
-  verifyOtp,
-} from "@/lib/services/otp";
+import { sanitizeInternalHref } from "@/lib/url-safety";
 
 interface AuthUserLookupRow {
   id: string;
@@ -41,7 +36,10 @@ interface AuthUserLookupRow {
  * Menerapkan prinsip Anti-Enumerasi Email (PRD 14.5):
  * Pesan kesalahan sama baik email terdaftar maupun tidak.
  */
-export async function loginWithPasswordAction(formData: FormData) {
+export async function loginWithPasswordAction(
+  formData: FormData,
+  returnTo?: string
+) {
   const email = (formData.get("email") as string | null)?.trim().toLowerCase();
   const password = (formData.get("password") as string | null) ?? "";
 
@@ -109,124 +107,15 @@ export async function loginWithPasswordAction(formData: FormData) {
   };
 
   await setSessionCookie(sessionUser);
-  redirect("/dashboard");
+  redirect(
+    sanitizeInternalHref(returnTo) ??
+      (sessionUser.role === "PENGGUNA" ? "/beranda" : "/dashboard")
+  );
 }
 
 /**
  * Meminta kode OTP ke email (Anti-enumerasi: pesan respons selalu sama).
  */
-export async function requestOtpAction(emailInput: string) {
-  const email = emailInput.trim().toLowerCase();
-  if (!email) {
-    return { error: "Masukkan alamat email yang valid." };
-  }
-
-  const user = await queryOne<{
-    id: string;
-    companyId: string | null;
-    role: Role;
-    isActive: boolean;
-    isBlocked: boolean;
-    techApprovalStatus: string | null;
-    techStatus: string | null;
-  }>(
-    `SELECT u."id", u."companyId", u."role", u."isActive", u."isBlocked",
-            t."approvalStatus" AS "techApprovalStatus",
-            t."status" AS "techStatus"
-     FROM "User" u
-     LEFT JOIN "Technician" t ON t."userId" = u."id"
-     WHERE u."email" = $1`,
-    [email]
-  );
-
-  const isTechEligible =
-    user?.role !== "TEKNISI" ||
-    (user.techApprovalStatus === "APPROVED" && user.techStatus !== "INACTIVE");
-
-  if (user && user.isActive && !user.isBlocked && isTechEligible) {
-    const res = await issueOtp({
-      email,
-      companyId: user.companyId,
-      subject: otpLoginEmail("000000").subject,
-      bodyHtml: (code) => otpLoginEmail(code).bodyHtml,
-    });
-    if (res.issued) {
-      after(() => flushEmailOutboxSafely());
-    }
-  }
-
-  // Respons identik baik email terdaftar maupun belum (Anti-enumerasi PRD 14.5)
-  return {
-    success: true,
-    message:
-      "Jika alamat email terdaftar dan aktif, kode OTP telah dikirimkan ke email tersebut.",
-  };
-}
-
-/**
- * Verifikasi kode OTP untuk login.
- */
-export async function verifyOtpAction(emailInput: string, codeInput: string) {
-  const email = emailInput.trim().toLowerCase();
-  const code = codeInput.trim();
-
-  const verified = await verifyOtp({ email, code });
-  if (!verified.ok) {
-    return { error: OTP_GENERIC_INVALID_MESSAGE };
-  }
-
-  const user = await queryOne<AuthUserLookupRow>(
-    `SELECT u."id", u."name", u."email", u."passwordHash", u."role",
-            u."companyId", u."staffClusterId", u."isActive", u."isBlocked",
-            c."name" AS "companyName",
-            t."approvalStatus" AS "techApprovalStatus",
-            t."status" AS "techStatus"
-     FROM "User" u
-     LEFT JOIN "Company" c ON c."id" = u."companyId"
-     LEFT JOIN "Technician" t ON t."userId" = u."id"
-     WHERE u."email" = $1`,
-    [email]
-  );
-
-  if (
-    !user ||
-    !user.isActive ||
-    user.isBlocked ||
-    (user.role === "TEKNISI" &&
-      (user.techApprovalStatus !== "APPROVED" || user.techStatus === "INACTIVE"))
-  ) {
-    return { error: OTP_GENERIC_INVALID_MESSAGE };
-  }
-
-  const now = new Date();
-  await withTransaction(async (tx) => {
-    await execute(
-      `UPDATE "User" SET "lastLoginAt" = $2, "updatedAt" = NOW() WHERE "id" = $1`,
-      [user.id, now],
-      tx
-    );
-    if (user.role === "TEKNISI" && user.techApprovalStatus !== null) {
-      await execute(
-        `UPDATE "Technician" SET "lastActiveAt" = $2, "updatedAt" = NOW() WHERE "userId" = $1`,
-        [user.id, now],
-        tx
-      );
-    }
-  });
-
-  await setSessionCookie({
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    role: user.role,
-    companyId: user.companyId,
-    companyName: user.companyName ?? null,
-    staffClusterId: user.staffClusterId,
-  });
-
-  redirect("/dashboard");
-}
-
 /**
  * Fitur khusus pengujian: Pindah cepat antar 7 role & multi-perusahaan dengan 1 klik.
  *
@@ -237,6 +126,15 @@ export async function verifyOtpAction(emailInput: string, codeInput: string) {
  * 4. Integrasikan Google OAuth asli untuk tombol Google atau sembunyikan tombolnya.
  */
 export async function quickSwitchRoleAction(roleOrEmail: string) {
+  if (
+    process.env.NODE_ENV === "production" ||
+    process.env.ALLOW_DEV_QUICK_SWITCH !== "true"
+  ) {
+    return {
+      error: "Fitur pindah akun cepat tidak diaktifkan.",
+    };
+  }
+
   const target = roleOrEmail?.trim();
   if (!target) {
     return { error: "Identitas akun tidak boleh kosong." };
@@ -351,6 +249,13 @@ export async function updateUserProfileAction(formData: FormData) {
     }
 
     const nextReporterStatus = reporterStatus ? reporterStatus : null;
+    if (
+      nextReporterStatus !== null &&
+      nextReporterStatus !== "WARGA" &&
+      nextReporterStatus !== "PENGUNJUNG"
+    ) {
+      return { error: "Status pelapor hanya boleh WARGA atau PENGUNJUNG." };
+    }
     const nextConsentAt = dataConsent ? new Date() : existing.dataConsentAt;
 
     const updated = await withTransaction(async (tx) => {
@@ -407,6 +312,8 @@ export async function updateUserProfileAction(formData: FormData) {
 
     revalidatePath("/dashboard/profil");
     revalidatePath("/dashboard");
+    revalidatePath("/beranda/profil");
+    revalidatePath("/beranda");
 
     return { success: true };
   } catch (err) {

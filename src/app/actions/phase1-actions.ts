@@ -206,7 +206,11 @@ export async function createInternalAccountAction(formData: FormData) {
     const name = (formData.get("name") as string) ?? "";
     const email = (formData.get("email") as string) ?? "";
     const password = (formData.get("password") as string) ?? "";
-    const role = (formData.get("role") as "PENGELOLA" | "MANAGER") ?? "PENGELOLA";
+    const rawRole = ((formData.get("role") as string) ?? "PENGELOLA").trim();
+    if (rawRole !== "PENGELOLA" && rawRole !== "MANAGER") {
+      return { error: "Role akun internal hanya boleh PENGELOLA atau MANAGER." };
+    }
+    const role = rawRole;
     const clusterIds = formData.getAll("clusterIds") as string[];
 
     const created = await createInternalStaffAccount(session, {

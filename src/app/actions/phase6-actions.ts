@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { getCurrentSession } from "@/lib/auth";
 import { flushEmailOutboxSafely } from "@/lib/email";
+import { assertPermission } from "@/lib/permissions";
+import { queryOne } from "@/lib/db";
 import { saveUploadedPhoto } from "@/lib/storage";
 import {
   assignTechnicianToWorkOrder,
@@ -16,6 +18,14 @@ import {
   decideVendorReplacementByManager,
   forwardVendorReplacementByAdmin,
 } from "@/lib/services/vendor-replacement";
+
+function stripReportToken<T extends { report?: { statusToken?: string } }>(
+  result: T
+) {
+  if (!result.report) return result;
+  const { statusToken: _omitted, ...safeReport } = result.report;
+  return { ...result, report: safeReport };
+}
 
 export async function assignTechnicianAction(formData: FormData) {
   const session = await getCurrentSession();
@@ -35,7 +45,7 @@ export async function assignTechnicianAction(formData: FormData) {
     revalidatePath("/dashboard/spk");
     revalidatePath("/dashboard");
 
-    return { success: true, result };
+    return { success: true, result: stripReportToken(result) };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Gagal menugaskan teknisi." };
   }
@@ -71,10 +81,34 @@ export async function submitWorkResultAction(formData: FormData) {
   if (!session) return { error: "Silakan login terlebih dahulu." };
 
   try {
+    assertPermission(session.role, "SUBMIT_WORK_RESULT");
     const workOrderId = (formData.get("workOrderId") as string) ?? "";
     const notes = (formData.get("notes") as string) ?? undefined;
     const beforeUrls = (formData.getAll("beforePhotoUrls") as string[]).filter(Boolean);
     const afterUrls = (formData.getAll("afterPhotoUrls") as string[]).filter(Boolean);
+
+    if (!session.companyId) throw new Error("Akun Teknisi tidak terhubung ke perusahaan.");
+    const ownsActiveWorkOrder = await queryOne<{ id: string }>(
+      `SELECT wo."id"
+       FROM "WorkOrder" wo
+       JOIN "Report" r ON r."id" = wo."reportId"
+       JOIN "Technician" t ON t."id" = wo."technicianId"
+       JOIN "Vendor" v ON v."id" = wo."vendorId"
+       WHERE wo."id" = $1
+         AND wo."companyId" = $2
+         AND r."companyId" = $2
+         AND r."archivedAt" IS NULL
+         AND t."userId" = $3
+         AND t."companyId" = $2
+         AND t."status" = 'ACTIVE'::"TechnicianStatus"
+         AND t."approvalStatus" = 'APPROVED'::"ApprovalStatus"
+         AND v."companyId" = $2
+         AND v."isActive" = true`,
+      [workOrderId, session.companyId, session.id]
+    );
+    if (!ownsActiveWorkOrder) {
+      throw new Error("SPK tidak ditemukan atau bukan ditugaskan kepada Anda.");
+    }
 
     // Support direct file uploads
     const beforeFiles = formData.getAll("beforeFiles") as File[];
@@ -104,7 +138,7 @@ export async function submitWorkResultAction(formData: FormData) {
     revalidatePath("/dashboard/spk");
     revalidatePath("/dashboard");
 
-    return { success: true, result };
+    return { success: true, result: stripReportToken(result) };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Gagal mengirimkan hasil perbaikan." };
   }
@@ -130,7 +164,7 @@ export async function confirmWorkResultAction(formData: FormData) {
     revalidatePath("/dashboard/spk");
     revalidatePath("/dashboard");
 
-    return { success: true, result };
+    return { success: true, result: stripReportToken(result) };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Gagal mengonfirmasi hasil perbaikan." };
   }

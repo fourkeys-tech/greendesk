@@ -77,7 +77,7 @@ export default function WelcomePage() {
             </div>
 
             <Link
-              href="/login"
+              href="/beranda"
               className="relative overflow-hidden w-full h-[64px] rounded-3xl bg-white text-[#1b5e45] font-bold text-[22px] shadow-[0_4px_14px_rgba(0,0,0,0.10)] flex items-center justify-center transition-transform active:scale-[0.98]"
             >
               <img
@@ -105,6 +105,14 @@ export default function WelcomePage() {
               </div>
               <ArrowRight className="w-5 h-5 text-[#1b5e45] shrink-0" />
             </button>
+
+            {/* Jalan masuk staf/pengelola; warga tidak perlu login di awal */}
+            <Link
+              href="/login"
+              className="block text-center text-[11px] font-semibold text-[#1b5e45]/80 hover:text-[#1b5e45] underline underline-offset-2 pt-1"
+            >
+              Masuk sebagai petugas / pengelola →
+            </Link>
           </div>
         </main>
 
@@ -243,7 +251,7 @@ export default function WelcomePage() {
             />
 
             <Link
-              href="/login"
+              href="/beranda"
               className="relative z-10 group flex items-center justify-between w-[360px] lg:w-[440px] h-16 lg:h-[72px] pl-0 pr-8 rounded-full bg-[#d8efe2] text-[#1b5e45] shadow-md hover:shadow-lg hover:bg-[#cdeadb] transition-all overflow-hidden"
             >
               <img
@@ -331,10 +339,16 @@ export default function WelcomePage() {
           </div>
         </section>
 
-        <footer className="mt-auto bg-[#0a1f15] text-white px-8 lg:px-12 py-5 flex items-center justify-between text-xs">
+        {/* <footer className="mt-auto bg-[#0a1f15] text-white px-8 lg:px-12 py-5 flex items-center justify-between gap-4 text-xs">
           <span className="font-bold text-sm">GreenDesk</span>
-          <span className="text-white/60">Pelaporan kerusakan fasilitas taman untuk warga dan pengunjung.</span>
-        </footer>
+          <span className="text-white/60 hidden lg:inline">Pelaporan kerusakan fasilitas taman untuk warga dan pengunjung.</span>
+          <Link
+            href="/login"
+            className="font-semibold text-white/80 hover:text-white underline underline-offset-2 shrink-0"
+          >
+            Masuk sebagai petugas / pengelola →
+          </Link>
+        </footer> */}
 
         {/* Guide modal (shared with mobile) */}
         {isGuideOpen && (

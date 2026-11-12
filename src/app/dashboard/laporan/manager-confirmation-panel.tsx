@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { confirmWorkResultAction } from "@/app/actions/phase6-actions";
+import { sanitizeMediaHref } from "@/lib/url-safety";
 
 interface WorkPhotoItem {
   id: string;
@@ -104,18 +105,22 @@ export function ManagerConfirmationPanel({
             <div className="text-xs text-slate-400 italic">Belum ada foto before</div>
           ) : (
             <div className="flex flex-wrap gap-2">
-              {beforePhotos.map((p) => (
-                <a
-                  key={p.id}
-                  href={p.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="block rounded-lg overflow-hidden border border-slate-200 hover:opacity-90"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={p.url} alt="Before" className="w-28 h-20 object-cover" />
-                </a>
-              ))}
+              {beforePhotos.map((p) => {
+                const safeUrl = sanitizeMediaHref(p.url);
+                if (!safeUrl) return null;
+                return (
+                  <a
+                    key={p.id}
+                    href={safeUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block rounded-lg overflow-hidden border border-slate-200 hover:opacity-90"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={safeUrl} alt="Before" className="w-28 h-20 object-cover" />
+                  </a>
+                );
+              })}
             </div>
           )}
         </div>
@@ -128,18 +133,22 @@ export function ManagerConfirmationPanel({
             <div className="text-xs text-slate-400 italic">Belum ada foto after</div>
           ) : (
             <div className="flex flex-wrap gap-2">
-              {afterPhotos.map((p) => (
-                <a
-                  key={p.id}
-                  href={p.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="block rounded-lg overflow-hidden border border-emerald-300 hover:opacity-90"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={p.url} alt="After" className="w-28 h-20 object-cover" />
-                </a>
-              ))}
+              {afterPhotos.map((p) => {
+                const safeUrl = sanitizeMediaHref(p.url);
+                if (!safeUrl) return null;
+                return (
+                  <a
+                    key={p.id}
+                    href={safeUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block rounded-lg overflow-hidden border border-emerald-300 hover:opacity-90"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={safeUrl} alt="After" className="w-28 h-20 object-cover" />
+                  </a>
+                );
+              })}
             </div>
           )}
         </div>

@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { AlertCircle, Camera, Download, FileText, Upload } from "lucide-react";
 import { submitWorkResultAction } from "@/app/actions/phase6-actions";
+import { sanitizeMediaHref } from "@/lib/url-safety";
 
 interface TechnicianSubmitPanelProps {
   workOrderId: string;
@@ -84,9 +85,9 @@ export function TechnicianSubmitPanel({
           </span>
         </div>
 
-        {spkFileUrl && (
+        {sanitizeMediaHref(spkFileUrl) && (
           <a
-            href={spkFileUrl}
+            href={sanitizeMediaHref(spkFileUrl)!}
             target="_blank"
             rel="noopener noreferrer"
             download={spkFileName || "SPK.pdf"}

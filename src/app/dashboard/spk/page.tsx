@@ -6,6 +6,7 @@ import { query } from "@/lib/db";
 import { getManagerAssignedClusterIds } from "@/lib/services/phase5-decision";
 import { ROLE_METADATA, STATUS_METADATA } from "@/lib/permissions";
 import { formatWibDate } from "@/lib/dates";
+import { sanitizeMediaHref } from "@/lib/url-safety";
 import {
   AccessDeniedNotice,
   DbErrorNotice,
@@ -84,9 +85,14 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
     } else if (session.role === "PIC_VENDOR") {
       params.push(session.id);
       conditions.push(`v."picUserId" = $${params.length}`);
+      conditions.push(`v."isActive" = true`);
     } else if (session.role === "TEKNISI") {
       params.push(session.id);
       conditions.push(`t."userId" = $${params.length}`);
+      conditions.push(`t."companyId" = $1`);
+      conditions.push(`t."status" = 'ACTIVE'::"TechnicianStatus"`);
+      conditions.push(`t."approvalStatus" = 'APPROVED'::"ApprovalStatus"`);
+      conditions.push(`v."isActive" = true`);
     }
 
     if (activeFilter.status) {
@@ -218,7 +224,7 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
                       {wo.underWarrantyOfVendorId ? " · Masa garansi" : ""}
                     </span>
                     <SpkActions
-                      spkFileUrl={wo.spkFileUrl}
+                      spkFileUrl={sanitizeMediaHref(wo.spkFileUrl)}
                       spkFileName={wo.spkFileName}
                       ticketNo={wo.reportTicketNo}
                     />
@@ -299,7 +305,7 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
                         </td>
                         <td className="px-4 py-3 text-right">
                           <SpkActions
-                            spkFileUrl={wo.spkFileUrl}
+                            spkFileUrl={sanitizeMediaHref(wo.spkFileUrl)}
                             spkFileName={wo.spkFileName}
                             ticketNo={wo.reportTicketNo}
                           />

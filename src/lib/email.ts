@@ -1,9 +1,12 @@
 import { pool, execute, query, queryOne, type DbClient } from "./db";
 import type { EmailLogRow } from "./db-types";
 import { getMailer } from "./mailer";
+import { isSafeLocalUploadUrl } from "./url-safety";
+import { getPublicAppBaseUrl } from "./app-url";
 
 export type EmailTriggerType =
   | "OTP_LOGIN"
+  | "OTP_REGISTRATION"
   | "VENDOR_INVITE"
   | "ACCOUNT_INVITE"
   | "LAPORAN_TERKIRIM"
@@ -18,7 +21,7 @@ export type EmailTriggerType =
 
 export type ReportEmailTriggerType = Exclude<
   EmailTriggerType,
-  "OTP_LOGIN" | "VENDOR_INVITE" | "ACCOUNT_INVITE"
+  "OTP_LOGIN" | "OTP_REGISTRATION" | "VENDOR_INVITE" | "ACCOUNT_INVITE"
 >;
 
 export interface EnqueueEmailParams {
@@ -54,17 +57,16 @@ export function escapeHtml(value: string | null | undefined): string {
 }
 
 export function getAppBaseUrl(): string {
-  const raw = process.env.APP_BASE_URL?.trim() || "http://localhost:3000";
-  return raw.replace(/\/+$/, "");
+  return getPublicAppBaseUrl();
 }
 
 export function buildStatusUrl(ticketNo: string, statusToken: string): string {
   return `${getAppBaseUrl()}/status/${encodeURIComponent(ticketNo)}?k=${encodeURIComponent(statusToken)}`;
 }
 
-function toAbsoluteUrl(url: string): string {
-  if (/^https?:\/\//i.test(url)) return url;
-  return `${getAppBaseUrl()}${url.startsWith("/") ? "" : "/"}${url}`;
+function toAbsoluteUrl(url: string): string | null {
+  if (!isSafeLocalUploadUrl(url)) return null;
+  return `${getAppBaseUrl()}${url.trim()}`;
 }
 
 /**
@@ -163,12 +165,18 @@ export function buildReportStatusEmail(input: ReportStatusEmailInput): {
       subject: `[${input.ticketNo}] Perbaikan Selesai - ${input.assetName}`,
       message: `Halo ${name}, kabar baik! Perbaikan aset <strong>${asset}</strong> (Tiket: <strong>${ticket}</strong>) telah selesai dan dikonfirmasi oleh Manager.${
         input.afterPhotoUrls && input.afterPhotoUrls.length > 0
-          ? `<br/>Foto hasil perbaikan:<br/>${input.afterPhotoUrls
-              .map((u) => {
-                const abs = escapeHtml(toAbsoluteUrl(u));
-                return `<a href="${abs}">${abs}</a>`;
-              })
-              .join("<br/>")}`
+          ? (() => {
+              const safeLinks = input.afterPhotoUrls
+                .map((u) => toAbsoluteUrl(u))
+                .filter((u): u is string => Boolean(u))
+                .map((absUrl) => {
+                  const abs = escapeHtml(absUrl);
+                  return `<a href="${abs}">${abs}</a>`;
+                });
+              return safeLinks.length > 0
+                ? `<br/>Foto hasil perbaikan:<br/>${safeLinks.join("<br/>")}`
+                : "";
+            })()
           : ""
       }`,
     },

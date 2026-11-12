@@ -1,17 +1,20 @@
 import QRCode from "qrcode";
+import { getPublicAppBaseUrl } from "./app-url";
 
 const qrDataCache = new Map<string, { shortUrl: string; qrDataUrl: string }>();
 
 /**
- * Menghasilkan SVG QR Code untuk tautan pendek aset (/r/{kodeAset}).
+ * Menghasilkan Data URL PNG QR Code untuk tautan pendek aset (/r/{kodeAset}).
  * Sesuai PRD Fase 1: QR dibuat otomatis dari kode aset dan membuka form untuk aset yang benar.
+ * Basis URL mengikuti parameter `baseUrl` bila diberikan, atau `APP_BASE_URL` dari environment.
+ * Production mewajibkan `APP_BASE_URL`; localhost hanya dipakai pada development/test.
  * Menggunakan memory-cache untuk performa render instan tanpa hitung ulang canvas.
  */
 export async function generateAssetQrDataUrl(
   assetCode: string,
-  baseUrl = "http://localhost:3000"
+  baseUrl?: string
 ): Promise<{ shortUrl: string; qrDataUrl: string }> {
-  const cleanBase = baseUrl.replace(/\/$/, "");
+  const cleanBase = getPublicAppBaseUrl(baseUrl);
   const shortUrl = `${cleanBase}/r/${encodeURIComponent(assetCode)}`;
   const cacheKey = `${cleanBase}:${assetCode}`;
 

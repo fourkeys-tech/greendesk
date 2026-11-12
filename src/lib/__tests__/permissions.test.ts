@@ -31,7 +31,10 @@ describe("Fase 0 – Matriks Hak Akses & Transisi Status", () => {
     expect(adminMenus).not.toContain("/dashboard/lapor");
 
     const penggunaMenus = getNavigationForRole("PENGGUNA").map((m) => m.href);
-    expect(penggunaMenus).toContain("/dashboard/lapor");
+    expect(penggunaMenus).toContain("/beranda");
+    expect(penggunaMenus).toContain("/beranda/lapor");
+    expect(penggunaMenus).toContain("/beranda/laporan");
+    expect(penggunaMenus).toContain("/beranda/profil");
     expect(penggunaMenus).not.toContain("/dashboard/audit");
     expect(penggunaMenus).not.toContain("/dashboard/wilayah");
 

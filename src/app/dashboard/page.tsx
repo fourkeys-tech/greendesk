@@ -6,10 +6,10 @@ import { REPORTER_REVIEW_THRESHOLD } from "@/lib/permissions";
 import { query, queryCount, queryOne } from "@/lib/db";
 import type { AuditAction, Role, VendorType } from "@/lib/db-types";
 import { activeAssignmentSql, reporterInCompanySql } from "@/lib/scopes";
+import { sanitizeMediaHref } from "@/lib/url-safety";
 import { DbErrorNotice } from "@/components/dashboard/db-error-notice";
 import type { PendingTechnicianItem } from "@/components/dashboard/admin/pending-technicians-card";
 
-import { CitizenDashboard } from "@/components/dashboard/views/citizen-dashboard";
 import { PengelolaDashboard } from "@/components/dashboard/views/pengelola-dashboard";
 import { ManagerDashboard } from "@/components/dashboard/views/manager-dashboard";
 import { VendorDashboard } from "@/components/dashboard/views/vendor-dashboard";
@@ -24,6 +24,7 @@ import {
 export default async function DashboardHomePage() {
   const session = await getCurrentSession();
   if (!session) redirect("/login");
+  if (session.role === "PENGGUNA") redirect("/beranda");
 
   let visibleReports: any[] = [];
   let dbError = false;
@@ -69,8 +70,14 @@ export default async function DashboardHomePage() {
         ]);
       } else if (session.role === "PIC_VENDOR") {
         technicianCount = await queryCount(
-          `SELECT COUNT(*)::int AS count FROM "Technician" WHERE "companyId" = $1`,
-          [companyId]
+          `SELECT COUNT(*)::int AS count
+           FROM "Technician" t
+           JOIN "Vendor" v ON v."id" = t."vendorId"
+           WHERE t."companyId" = $1
+             AND v."companyId" = $1
+             AND v."picUserId" = $2
+             AND v."isActive" = true`,
+          [companyId, session.id]
         );
       }
     } catch {
@@ -79,9 +86,6 @@ export default async function DashboardHomePage() {
   }
 
   switch (session.role) {
-    case "PENGGUNA":
-      return <CitizenDashboard session={session} reports={visibleReports} />;
-
     case "PENGELOLA":
       return (
         <PengelolaDashboard
@@ -102,13 +106,19 @@ export default async function DashboardHomePage() {
 
     case "PIC_VENDOR": {
       let vendorRecord: { lastTechnicianConfirmedAt: Date | null } | null = null;
-      try {
-        vendorRecord = await queryOne<{ lastTechnicianConfirmedAt: Date | null }>(
-          `SELECT "lastTechnicianConfirmedAt" FROM "Vendor" WHERE "picUserId" = $1`,
-          [session.id]
-        );
-      } catch {
-        dbError = true;
+      if (session.companyId) {
+        try {
+          vendorRecord = await queryOne<{ lastTechnicianConfirmedAt: Date | null }>(
+            `SELECT "lastTechnicianConfirmedAt"
+             FROM "Vendor"
+             WHERE "picUserId" = $1
+               AND "companyId" = $2
+               AND "isActive" = true`,
+            [session.id, session.companyId]
+          );
+        } catch {
+          dbError = true;
+        }
       }
       const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
       const needsConfirmation =
@@ -274,8 +284,9 @@ export default async function DashboardHomePage() {
           ),
         ]);
 
-        pendingTechnicians = techs.map(({ vendorName, ...t }) => ({
+        pendingTechnicians = techs.map(({ vendorName, facePhotoUrl, ...t }) => ({
           ...t,
+          facePhotoUrl: sanitizeMediaHref(facePhotoUrl),
           vendor: { name: vendorName },
         }));
         pendingTechTotalCount = techTotal;

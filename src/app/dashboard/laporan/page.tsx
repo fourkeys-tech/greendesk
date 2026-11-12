@@ -73,15 +73,18 @@ export default async function LaporanPage({
         ...v,
         serviceAreas: areasByVendor.get(v.id) ?? [],
       }));
-    } else if (session.role === "PIC_VENDOR") {
+    } else if (session.role === "PIC_VENDOR" && session.companyId) {
       picTechnicians = await query<{ id: string; fullName: string }>(
         `SELECT t."id", t."fullName"
          FROM "Technician" t
          JOIN "Vendor" v ON v."id" = t."vendorId"
          WHERE v."picUserId" = $1
+           AND v."companyId" = $2
+           AND t."companyId" = $2
+           AND v."isActive" = true
            AND t."status" = 'ACTIVE'::"TechnicianStatus"
            AND t."approvalStatus" = 'APPROVED'::"ApprovalStatus"`,
-        [session.id]
+        [session.id, session.companyId]
       );
     }
   } catch (err) {

@@ -14,6 +14,7 @@ import { assetUnreportableReason } from "../scopes";
 import { enqueueReportStatusEmail } from "../email";
 import { nextTicketNumber } from "../numbering";
 import { transitionReport } from "../report-transition";
+import { assertSafeUploadUrls } from "../url-safety";
 import type { SessionUser } from "../auth";
 
 export const MAX_DAILY_REPORTS_PER_USER = 5;
@@ -41,18 +42,19 @@ export async function submitCitizenReport(
   assertPermission(actor.role, "CREATE_REPORT");
 
   const description = input.description.trim();
-  const cleanPhotos = input.photoUrls.filter((u) => u && u.trim().length > 0);
+  const rawPhotos = input.photoUrls.filter((u) => u && u.trim().length > 0);
 
-  if (cleanPhotos.length === 0) {
+  if (rawPhotos.length === 0) {
     throw new Error("Wajib melampirkan minimal satu foto bukti kerusakan.");
   }
+  const cleanPhotos = assertSafeUploadUrls(rawPhotos, "Foto bukti kerusakan");
   if (description.length < 5) {
     throw new Error(
       "Deskripsi singkat kerusakan wajib diisi (minimal 5 karakter)."
     );
   }
 
-  // Periksa status blokir pengguna
+  // Periksa status blokir pengguna (re-verified dengan lock di dalam transaksi)
   const dbUser = await queryOne<{
     id: string;
     name: string;
@@ -69,22 +71,8 @@ export async function submitCitizenReport(
     throw new Error("Akun Anda tidak dapat mengirim laporan saat ini.");
   }
 
-  // Periksa batas laporan per akun per hari (Anti-spam PRD Bagian 6 Fase 3 & Bagian 8)
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
-
-  const reportsToday = await queryCount(
-    `SELECT COUNT(*)::int AS count
-     FROM "Report"
-     WHERE "reporterId" = $1 AND "createdAt" >= $2 AND "archivedAt" IS NULL`,
-    [actor.id, startOfToday]
-  );
-
-  if (reportsToday >= MAX_DAILY_REPORTS_PER_USER) {
-    throw new Error(
-      `Batas pengiriman laporan harian tercapai (maksimal ${MAX_DAILY_REPORTS_PER_USER} laporan per hari per akun).`
-    );
-  }
 
   const assetRow = await queryOne<
     AssetRow & {
@@ -181,6 +169,36 @@ export async function submitCitizenReport(
   const assetLabel = `${assetRow.name} (${assetRow.code})`;
 
   return withTransaction(async (tx) => {
+    // Kunci baris user untuk serialisasi pemeriksaan kuota harian & status blokir
+    const lockedUser = await queryOne<{
+      id: string;
+      isActive: boolean;
+      isBlocked: boolean;
+    }>(
+      `SELECT "id", "isActive", "isBlocked"
+       FROM "User"
+       WHERE "id" = $1
+       FOR UPDATE`,
+      [actor.id],
+      tx
+    );
+    if (!lockedUser || !lockedUser.isActive || lockedUser.isBlocked) {
+      throw new Error("Akun Anda tidak dapat mengirim laporan saat ini.");
+    }
+
+    const reportsToday = await queryCount(
+      `SELECT COUNT(*)::int AS count
+       FROM "Report"
+       WHERE "reporterId" = $1 AND "createdAt" >= $2 AND "archivedAt" IS NULL`,
+      [actor.id, startOfToday],
+      tx
+    );
+    if (reportsToday >= MAX_DAILY_REPORTS_PER_USER) {
+      throw new Error(
+        `Batas pengiriman laporan harian tercapai (maksimal ${MAX_DAILY_REPORTS_PER_USER} laporan per hari per akun).`
+      );
+    }
+
     const ticketNo = await nextTicketNumber(tx);
 
     const createdReport = await queryOne<ReportRow>(
@@ -265,12 +283,19 @@ export async function cancelOwnReportByUser(
   actor: SessionUser,
   reportId: string
 ) {
+  assertPermission(actor.role, "CREATE_REPORT");
+  if (actor.role !== "PENGGUNA") {
+    throw new Error("Akses ditolak: Hanya Pelapor yang dapat membatalkan laporannya sendiri.");
+  }
+
   const report = await queryOne<
     ReportRow & {
       assetName: string;
       assetCode: string;
       reporterName: string;
       reporterEmail: string;
+      reporterActive: boolean;
+      reporterBlocked: boolean;
     }
   >(
     `SELECT
@@ -278,7 +303,9 @@ export async function cancelOwnReportByUser(
        a."name" AS "assetName",
        a."code" AS "assetCode",
        u."name" AS "reporterName",
-       u."email" AS "reporterEmail"
+       u."email" AS "reporterEmail",
+       u."isActive" AS "reporterActive",
+       u."isBlocked" AS "reporterBlocked"
      FROM "Report" r
      JOIN "Asset" a ON a."id" = r."assetId"
      JOIN "User" u ON u."id" = r."reporterId"
@@ -288,6 +315,9 @@ export async function cancelOwnReportByUser(
 
   if (!report) {
     throw new Error("Laporan tidak ditemukan atau bukan milik Anda.");
+  }
+  if (!report.reporterActive || report.reporterBlocked) {
+    throw new Error("Akun Anda tidak aktif atau diblokir.");
   }
 
   const transitionCheck = validateStatusTransition(

@@ -14,6 +14,7 @@ import { assertPermission } from "../permissions";
 import { activeAssignmentSql, reporterInCompanySql } from "../scopes";
 import { recordAuditLog } from "../audit";
 import { buildAssetPrefix } from "../asset-code";
+import { assertSafeUploadUrl } from "../url-safety";
 import type { SessionUser } from "../auth";
 
 function generateTemporaryPassword(): string {
@@ -389,6 +390,11 @@ export async function createAsset(
     throw new Error("Nama aset, taman, dan kategori wajib diisi.");
   }
 
+  const cleanPhotoUrl =
+    input.photoUrl && input.photoUrl.trim().length > 0
+      ? assertSafeUploadUrl(input.photoUrl, "Foto aset")
+      : null;
+
   const [park, category] = await Promise.all([
     queryOne<
       ParkRow & {
@@ -468,7 +474,7 @@ export async function createAsset(
         category.id,
         name,
         input.locationNote?.trim() || null,
-        input.photoUrl || null,
+        cleanPhotoUrl,
         input.installedAt || new Date(),
         input.isActive ?? true,
       ],
@@ -521,6 +527,9 @@ export async function createInternalStaffAccount(
   assertPermission(actor.role, "MANAGE_INTERNAL_ACCOUNTS");
   if (!actor.companyId) {
     throw new Error("Akun Admin tidak terhubung ke perusahaan.");
+  }
+  if (input.role !== "PENGELOLA" && input.role !== "MANAGER") {
+    throw new Error("Role akun internal harus PENGELOLA atau MANAGER.");
   }
 
   const companyId = actor.companyId;
@@ -1194,47 +1203,57 @@ export async function assignTemporaryManager(
     throw new Error("Cluster sedang nonaktif.");
   }
 
-  const [repPermanent, subPermanent, overlap] = await Promise.all([
-    queryOne<{ id: string }>(
-      `SELECT "id" FROM "ClusterManagerAssignment"
-       WHERE "userId" = $1 AND "clusterId" = $2 AND "isTemporary" = false LIMIT 1`,
-      [repManager.id, cluster.id]
-    ),
-    queryOne<{ id: string }>(
-      `SELECT "id" FROM "ClusterManagerAssignment"
-       WHERE "userId" = $1 AND "clusterId" = $2 AND "isTemporary" = false LIMIT 1`,
-      [subManager.id, cluster.id]
-    ),
-    queryOne<{ id: string }>(
-      `SELECT "id" FROM "ClusterManagerAssignment"
-       WHERE "clusterId" = $1
-         AND "isTemporary" = true
-         AND "cancelledAt" IS NULL
-         AND ("userId" = $2 OR "replacedManagerId" = $3)
-         AND "validFrom" <= $4
-         AND "validUntil" >= $5
-       LIMIT 1`,
-      [cluster.id, subManager.id, repManager.id, input.validUntil, input.validFrom]
-    ),
-  ]);
-
-  if (!repPermanent) {
-    throw new Error(
-      `${repManager.name} tidak memegang ${cluster.name} secara tetap, jadi tidak bisa digantikan di cluster ini.`
-    );
-  }
-  if (subPermanent) {
-    throw new Error(
-      `${subManager.name} sudah menjadi Manager tetap di ${cluster.name}; penunjukan sementara tidak diperlukan.`
-    );
-  }
-  if (overlap) {
-    throw new Error(
-      "Periode ini tumpang-tindih dengan delegasi lain di cluster yang sama. Batalkan delegasi lama atau pilih periode lain."
-    );
-  }
-
   return withTransaction(async (tx) => {
+    // Kunci baris cluster agar pengecekan overlap delegasi bersifat serial
+    await queryOne<{ id: string }>(
+      `SELECT "id" FROM "Cluster" WHERE "id" = $1 FOR UPDATE`,
+      [cluster.id],
+      tx
+    );
+
+    const [repPermanent, subPermanent, overlap] = await Promise.all([
+      queryOne<{ id: string }>(
+        `SELECT "id" FROM "ClusterManagerAssignment"
+         WHERE "userId" = $1 AND "clusterId" = $2 AND "isTemporary" = false LIMIT 1`,
+        [repManager.id, cluster.id],
+        tx
+      ),
+      queryOne<{ id: string }>(
+        `SELECT "id" FROM "ClusterManagerAssignment"
+         WHERE "userId" = $1 AND "clusterId" = $2 AND "isTemporary" = false LIMIT 1`,
+        [subManager.id, cluster.id],
+        tx
+      ),
+      queryOne<{ id: string }>(
+        `SELECT "id" FROM "ClusterManagerAssignment"
+         WHERE "clusterId" = $1
+           AND "isTemporary" = true
+           AND "cancelledAt" IS NULL
+           AND ("userId" = $2 OR "replacedManagerId" = $3)
+           AND "validFrom" <= $4
+           AND "validUntil" >= $5
+         LIMIT 1`,
+        [cluster.id, subManager.id, repManager.id, input.validUntil, input.validFrom],
+        tx
+      ),
+    ]);
+
+    if (!repPermanent) {
+      throw new Error(
+        `${repManager.name} tidak memegang ${cluster.name} secara tetap, jadi tidak bisa digantikan di cluster ini.`
+      );
+    }
+    if (subPermanent) {
+      throw new Error(
+        `${subManager.name} sudah menjadi Manager tetap di ${cluster.name}; penunjukan sementara tidak diperlukan.`
+      );
+    }
+    if (overlap) {
+      throw new Error(
+        "Periode ini tumpang-tindih dengan delegasi lain di cluster yang sama. Batalkan delegasi lama atau pilih periode lain."
+      );
+    }
+
     const assignment = await queryOne<ClusterManagerAssignmentRow>(
       `INSERT INTO "ClusterManagerAssignment" (
          "userId", "clusterId", "isTemporary", "replacedManagerId", "validFrom", "validUntil"
