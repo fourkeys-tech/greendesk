@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import bcrypt from "bcryptjs";
 import { Pool, type PoolClient } from "pg";
+import { buildPgPoolConfig } from "../src/lib/pg-config";
 
 function loadDotEnvFallback(rootDir: string) {
   const envPath = path.join(rootDir, ".env");
@@ -54,7 +55,7 @@ async function main() {
   console.log("Memulai seeding data Fase 0 (Fondasi)...");
   const defaultPasswordHash = await bcrypt.hash(seedPassword, 10);
 
-  const pool = new Pool({ connectionString, max: 2 });
+  const pool = new Pool(buildPgPoolConfig(connectionString, 2));
   const client = await pool.connect();
 
   try {
