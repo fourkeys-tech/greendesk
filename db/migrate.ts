@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { Pool } from "pg";
+import { buildPgPoolConfig } from "../src/lib/pg-config";
 
 function loadDotEnvFallback(rootDir: string) {
   const envPath = path.join(rootDir, ".env");
@@ -44,7 +45,7 @@ async function main() {
     .filter((f) => f.endsWith(".sql"))
     .sort();
 
-  const pool = new Pool({ connectionString, max: 2 });
+  const pool = new Pool(buildPgPoolConfig(connectionString, 2));
   const client = await pool.connect();
 
   try {

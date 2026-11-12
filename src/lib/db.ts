@@ -1,4 +1,5 @@
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
+import { buildPgPoolConfig } from "./pg-config";
 
 export type TxClient = PoolClient;
 export type DbClient = Pool | PoolClient;
@@ -14,10 +15,7 @@ function createPool(): Pool {
       "Konfigurasi DATABASE_URL belum diatur. Periksa file .env atau .env.test."
     );
   }
-  return new Pool({
-    connectionString,
-    max: 10,
-  });
+  return new Pool(buildPgPoolConfig(connectionString, 10));
 }
 
 export const pool: Pool = globalForPg.pgPool ?? createPool();
