@@ -231,58 +231,15 @@ export function LoginClient() {
         ? "Akses pengujian instan menuju panel admin"
         : null;
 
-  return (
-    <MobileContainer className="bg-[#f6f4ee] overflow-hidden">
-      <main className="flex-1 overflow-y-auto px-7 pt-8 pb-8 flex flex-col">
-        {/* Header Bar: Link cepat Lapor Warga */}
-        <div className="flex items-center justify-between pb-3">
-          <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-            GreenPark v0.2
-          </span>
-          <Link
-            href="/dashboard/lapor"
-            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 hover:bg-emerald-200 text-[#1b5e45] text-[11px] font-bold transition border border-emerald-300"
-          >
-            <FileText className="w-3.5 h-3.5" />
-            <span>Lapor Kerusakan</span>
-          </Link>
-        </div>
+  const errorBanner = errorMessage && (
+    <div className="mb-3 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">
+      {errorMessage}
+    </div>
+  );
 
-        {/* Logo GreenDesk */}
-        <h1 className="text-center text-[30px] tracking-tight leading-none pt-2">
-          <span className="font-extrabold text-[#1b5e45]">Green</span>
-          <span className="font-semibold text-[#1b5e45]">Desk</span>
-        </h1>
-
-        {/* Ilustrasi Fasilitas Taman */}
-        {authMode !== "register" && (
-          <div className="flex items-center justify-center py-4">
-            <img
-              src="/images/Kursi%20Taman.png"
-              alt="Ilustrasi Fasilitas Taman"
-              className="w-full max-w-[240px] h-auto object-contain select-none pointer-events-none"
-            />
-          </div>
-        )}
-
-        {title && (
-          <div className={`text-center ${authMode === "register" ? "mt-4" : ""} mb-3`}>
-            <h2 className="text-[18px] font-bold text-[#1b5e45] leading-tight">
-              {title}
-            </h2>
-            <p className="text-[11px] text-slate-500 mt-1">{subtitle}</p>
-          </div>
-        )}
-
-        {errorMessage && (
-          <div className="mb-3 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">
-            {errorMessage}
-          </div>
-        )}
-
-        {/* Form Login */}
-        {authMode === "login" && (
-          <form onSubmit={handleUserLogin} className="space-y-3.5 mt-1">
+  // Blok form & panel demo dipakai ulang oleh layout mobile dan desktop (hanya satu yang tampil via CSS).
+  const loginForm = (
+    <form onSubmit={handleUserLogin} className="space-y-3.5 mt-1">
             <Field label="Alamat Email" icon={<Mail className="w-4 h-4" />}>
               <input
                 type="email"
@@ -324,10 +281,9 @@ export function LoginClient() {
               </button>
             </div>
           </form>
-        )}
+  );
 
-        {/* Form Developer Portal */}
-        {authMode === "developer" && (
+  const developerForm = (
           <form onSubmit={handleDeveloperLogin} className="space-y-3.5">
             <Field label="Email Developer / Admin" icon={<Mail className="w-4 h-4" />}>
               <input
@@ -370,10 +326,9 @@ export function LoginClient() {
               </button>
             </div>
           </form>
-        )}
+  );
 
-        {/* Form Register */}
-        {authMode === "register" && (
+  const registerForm = (
           <form onSubmit={handleRegister} className="space-y-3.5">
             <Field label="Nama Lengkap" icon={<UserIcon className="w-4 h-4" />}>
               <input
@@ -449,10 +404,18 @@ export function LoginClient() {
               </button>
             </div>
           </form>
-        )}
+  );
 
-        {/* TODO(pre-prod) P0-1: Sembunyikan/hapus Panel Uji Cepat 7 Role di production */}
-        {/* Panel Uji Cepat 7 Role (PRD v0.2 Testing) */}
+  const activeForm =
+    authMode === "login"
+      ? loginForm
+      : authMode === "developer"
+        ? developerForm
+        : registerForm;
+
+  // TODO(pre-prod) P0-1: Sembunyikan/hapus Panel Uji Cepat 7 Role di production
+  // Panel Uji Cepat 7 Role (PRD v0.2 Testing)
+  const demoPanel = (
         <div className="mt-5 pt-4 border-t border-slate-200/90 space-y-2.5">
           <div className="flex items-center justify-between">
             <span className="text-[12px] font-bold text-slate-800 flex items-center gap-1.5">
@@ -566,7 +529,131 @@ export function LoginClient() {
             </div>
           )}
         </div>
-      </main>
-    </MobileContainer>
+  );
+
+  return (
+    <>
+      {/* ===== MOBILE ===== */}
+      <MobileContainer className="bg-[#f6f4ee] overflow-hidden">
+        <main className="flex-1 overflow-y-auto px-7 pt-8 pb-8 flex flex-col">
+          {/* Header Bar: Link cepat Lapor Warga */}
+          <div className="flex items-center justify-between pb-3">
+            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+              GreenPark v0.2
+            </span>
+            <Link
+              href="/dashboard/lapor"
+              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 hover:bg-emerald-200 text-[#1b5e45] text-[11px] font-bold transition border border-emerald-300"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>Lapor Kerusakan</span>
+            </Link>
+          </div>
+
+          {/* Logo GreenDesk */}
+          <h1 className="text-center text-[30px] tracking-tight leading-none pt-2">
+            <span className="font-extrabold text-[#1b5e45]">Green</span>
+            <span className="font-semibold text-[#1b5e45]">Desk</span>
+          </h1>
+
+          {/* Ilustrasi Fasilitas Taman */}
+          {authMode !== "register" && (
+            <div className="flex items-center justify-center py-4">
+              <img
+                src="/images/Kursi%20Taman.png"
+                alt="Ilustrasi Fasilitas Taman"
+                className="w-full max-w-[240px] h-auto object-contain select-none pointer-events-none"
+              />
+            </div>
+          )}
+
+          {title && (
+            <div className={`text-center ${authMode === "register" ? "mt-4" : ""} mb-3`}>
+              <h2 className="text-[18px] font-bold text-[#1b5e45] leading-tight">
+                {title}
+              </h2>
+              <p className="text-[11px] text-slate-500 mt-1">{subtitle}</p>
+            </div>
+          )}
+
+          {errorBanner}
+          {activeForm}
+          {demoPanel}
+        </main>
+      </MobileContainer>
+
+      {/* ===== DESKTOP / TABLET ===== */}
+      <div className="hidden md:flex min-h-screen bg-[#F6F5F0] items-center justify-center p-6">
+        <div className="w-full max-w-4xl lg:max-w-5xl grid grid-cols-12 rounded-3xl bg-white shadow-2xl border border-slate-200/80 overflow-hidden">
+          {/* Kiri: panel branding */}
+          <div className="col-span-5 bg-gradient-to-br from-[#1b5e45] to-[#113d2d] p-8 lg:p-10 text-white flex flex-col justify-between relative overflow-hidden">
+            <div className="relative z-10">
+              <p className="text-xs text-white/80 mt-1">Platform Manajemen Fasilitas Taman</p>
+              <div className="mt-8 space-y-4">
+                <h2 className="text-2xl font-bold text-white leading-tight">
+                  Mari Bersama Merawat Fasilitas Taman
+                </h2>
+                <p className="text-xs text-white/80 leading-relaxed">
+                  Laporkan kerusakan secara instan melalui pemindaian QR code dan pantau
+                  perbaikan secara langsung hingga selesai.
+                </p>
+              </div>
+            </div>
+            <div className="relative z-10 my-4 flex items-center justify-center">
+              <div className="relative w-48 h-48 bg-white/10 rounded-2xl p-4 backdrop-blur-sm border border-white/10 flex items-center justify-center shadow-lg">
+                <img
+                  src="/assets/KursiTaman.svg"
+                  alt="Ilustrasi Kursi Taman"
+                  className="w-full h-auto object-contain select-none pointer-events-none drop-shadow-md"
+                />
+              </div>
+            </div>
+            <div className="relative z-10 space-y-2 pt-2 border-t border-white/15 text-xs text-white/90">
+              <div className="flex items-center gap-2">
+                <span className="text-[#8be294]">✓</span>
+                <span>Akses Cepat QR Code</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[#8be294]">✓</span>
+                <span>Status Pengerjaan Terbuka &amp; Realtime</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Kanan: form autentikasi */}
+          <div className="col-span-7 p-8 lg:p-10 flex flex-col justify-center bg-white max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between gap-3">
+              <img
+                src="/assets/GreenDesk.svg"
+                alt="GreenDesk Logo"
+                className="h-9 w-auto object-contain"
+              />
+              <Link
+                href="/dashboard/lapor"
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 hover:bg-emerald-200 text-[#1b5e45] text-[11px] font-bold transition border border-emerald-300"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Lapor Kerusakan</span>
+              </Link>
+            </div>
+
+            <div className="mt-2 mb-5">
+              {title && (
+                <h3 className="text-lg font-bold text-[#1b5e45] leading-tight">{title}</h3>
+              )}
+              <p className="text-xs text-slate-500 mt-1">
+                {authMode === "login"
+                  ? "Masuk dengan akun terdaftar untuk membuat dan memantau laporan"
+                  : subtitle}
+              </p>
+            </div>
+
+            {errorBanner}
+            {activeForm}
+            {demoPanel}
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
