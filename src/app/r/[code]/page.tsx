@@ -2,20 +2,25 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ChevronLeft } from "lucide-react";
 import { query, queryOne } from "@/lib/db";
-import type {
-  AssetRow,
-  CategoryRow,
-  ClusterRow,
-  CompanyRow,
-  ComplexRow,
-  ParkRow,
-  ReportRow,
-} from "@/lib/db-types";
+import type { AssetRow, ReportRow } from "@/lib/db-types";
 import { getCurrentSession } from "@/lib/auth";
 import { STATUS_METADATA, TERMINAL_REPORT_STATUSES } from "@/lib/permissions";
 import { assetUnreportableReason } from "@/lib/scopes";
 import { BottomNav } from "@/components/BottomNav";
 import { QrReportClientForm } from "./qr-report-client";
+
+type AssetContextRow = AssetRow & {
+  categoryName: string;
+  categoryDamageTypes: string[];
+  categoryIsActive: boolean;
+  parkName: string;
+  parkIsActive: boolean;
+  clusterName: string;
+  clusterIsActive: boolean;
+  complexName: string;
+  complexIsActive: boolean;
+  ownerCompanyId: string;
+};
 
 export default async function QrAssetShortlinkPage({
   params,
@@ -28,62 +33,65 @@ export default async function QrAssetShortlinkPage({
   const sp = searchParams ? await searchParams : {};
   const decodedCode = code.toUpperCase();
 
-  const [assetRow, session] = await Promise.all([
-    queryOne<AssetRow>(`SELECT * FROM "Asset" WHERE "code" = $1`, [decodedCode]),
-    getCurrentSession(),
-  ]);
-
-  if (!assetRow) {
-    notFound();
-  }
-
-  const [category, park, reports] = await Promise.all([
-    queryOne<CategoryRow>(`SELECT * FROM "Category" WHERE "id" = $1`, [
-      assetRow.categoryId,
-    ]),
-    queryOne<ParkRow>(`SELECT * FROM "Park" WHERE "id" = $1`, [assetRow.parkId]),
+  // Satu putaran paralel: aset + hierarki lokasi (INNER JOIN, relasi hilang → 404), laporan, sesi.
+  // Sebelumnya 5 query berurutan (aset → kategori/taman → cluster → komplek → perusahaan).
+  const [row, reports, session] = await Promise.all([
+    queryOne<AssetContextRow>(
+      `SELECT
+         a.*,
+         cat."name" AS "categoryName",
+         cat."damageTypes" AS "categoryDamageTypes",
+         cat."isActive" AS "categoryIsActive",
+         p."name" AS "parkName",
+         p."isActive" AS "parkIsActive",
+         cl."name" AS "clusterName",
+         cl."isActive" AS "clusterIsActive",
+         cx."name" AS "complexName",
+         cx."isActive" AS "complexIsActive",
+         co."id" AS "ownerCompanyId"
+       FROM "Asset" a
+       JOIN "Category" cat ON cat."id" = a."categoryId"
+       JOIN "Park" p ON p."id" = a."parkId"
+       JOIN "Cluster" cl ON cl."id" = p."clusterId"
+       JOIN "Complex" cx ON cx."id" = cl."complexId"
+       JOIN "Company" co ON co."id" = cx."companyId"
+       WHERE a."code" = $1
+       LIMIT 1`,
+      [decodedCode]
+    ),
     query<ReportRow>(
       `SELECT *
        FROM "Report"
-       WHERE "assetId" = $1 AND "archivedAt" IS NULL
+       WHERE "assetId" = (SELECT "id" FROM "Asset" WHERE "code" = $1)
+         AND "archivedAt" IS NULL
        ORDER BY "createdAt" DESC
        LIMIT 10`,
-      [assetRow.id]
+      [decodedCode]
     ),
+    getCurrentSession(),
   ]);
 
-  if (!category || !park) {
+  if (!row) {
     notFound();
   }
 
-  const cluster = await queryOne<ClusterRow>(
-    `SELECT * FROM "Cluster" WHERE "id" = $1`,
-    [park.clusterId]
-  );
-  if (!cluster) notFound();
-
-  const complex = await queryOne<ComplexRow>(
-    `SELECT * FROM "Complex" WHERE "id" = $1`,
-    [cluster.complexId]
-  );
-  if (!complex) notFound();
-
-  const company = await queryOne<CompanyRow>(
-    `SELECT * FROM "Company" WHERE "id" = $1`,
-    [complex.companyId]
-  );
-  if (!company) notFound();
-
+  const company = { id: row.ownerCompanyId };
   const asset = {
-    ...assetRow,
-    category,
+    ...row,
+    category: {
+      name: row.categoryName,
+      damageTypes: row.categoryDamageTypes,
+      isActive: row.categoryIsActive,
+    },
     park: {
-      ...park,
+      name: row.parkName,
+      isActive: row.parkIsActive,
       cluster: {
-        ...cluster,
+        name: row.clusterName,
+        isActive: row.clusterIsActive,
         complex: {
-          ...complex,
-          company,
+          name: row.complexName,
+          isActive: row.complexIsActive,
         },
       },
     },

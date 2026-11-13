@@ -7,6 +7,7 @@ public/uploads/*
 !public/uploads/.gitkeep
 *.tsbuildinfo
 next-env.d.ts
+.claude/
 
 # Excluded per user instruction
 PRD – Platform Manajemen Aset Taman Role Pengguna, Pengelola, dan Manager.md

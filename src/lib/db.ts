@@ -15,7 +15,17 @@ function createPool(): Pool {
       "Konfigurasi DATABASE_URL belum diatur. Periksa file .env atau .env.test."
     );
   }
-  return new Pool(buildPgPoolConfig(connectionString, 10));
+  const pool = new Pool({
+    ...buildPgPoolConfig(connectionString, 10),
+    // Default pg 10 detik: koneksi ditutup di sela klik, tiap navigasi bayar ulang TCP+TLS+auth (~300ms/koneksi).
+    idleTimeoutMillis: 5 * 60 * 1000,
+    keepAlive: true,
+  });
+  // Koneksi idle yang diputus server (pooler restart/jaringan) dibuang pool; tanpa listener, event 'error' mematikan proses.
+  pool.on("error", (err) => {
+    console.error("[db] koneksi idle PostgreSQL terputus:", err.message);
+  });
+  return pool;
 }
 
 export const pool: Pool = globalForPg.pgPool ?? createPool();
