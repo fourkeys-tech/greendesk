@@ -18,7 +18,8 @@ interface MasterDataFormsProps {
     id: string;
     name: string;
     clusterName: string;
-    complexName?: string;
+    complexId: string;
+    complexName: string;
   }>;
   categories: Array<{
     id: string;
@@ -44,6 +45,10 @@ export function MasterDataForms({
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(
     null
   );
+  // Form Aset: pilih Komplek dulu, lalu Taman di komplek tersebut.
+  const [selectedComplexId, setSelectedComplexId] = useState<string>(
+    parks[0]?.complexId || complexes[0]?.id || ""
+  );
   const [selectedParkId, setSelectedParkId] = useState<string>(
     parks[0]?.id || ""
   );
@@ -55,7 +60,16 @@ export function MasterDataForms({
     text: string;
   } | null>(null);
 
-  const selectedPark = parks.find((p) => p.id === selectedParkId) || parks[0];
+  const parkCountByComplex = new Map<string, number>();
+  for (const p of parks) {
+    parkCountByComplex.set(p.complexId, (parkCountByComplex.get(p.complexId) ?? 0) + 1);
+  }
+  const selectedComplex =
+    complexes.find((c) => c.id === selectedComplexId) || complexes[0];
+  const parksInComplex = parks.filter((p) => p.complexId === selectedComplex?.id);
+  // Taman terpilih selalu harus berada di komplek terpilih (mis. setelah komplek diganti).
+  const selectedPark =
+    parksInComplex.find((p) => p.id === selectedParkId) || parksInComplex[0];
   const selectedCat =
     activeCategories.find((c) => c.id === selectedCategoryId) ||
     activeCategories[0];
@@ -528,23 +542,60 @@ export function MasterDataForms({
             </div>
 
             <div>
-              <label className="block font-medium text-slate-700 mb-1">
+              <label
+                htmlFor="asset-complex"
+                className="block font-medium text-slate-700 mb-1"
+              >
+                Komplek
+              </label>
+              <select
+                id="asset-complex"
+                value={selectedComplex?.id ?? ""}
+                onChange={(e) => {
+                  setSelectedComplexId(e.target.value);
+                  setSelectedParkId(
+                    parks.find((p) => p.complexId === e.target.value)?.id ?? ""
+                  );
+                }}
+                disabled={complexes.length === 0}
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100"
+              >
+                {complexes.length === 0 ? (
+                  <option value="">-- Belum ada komplek aktif --</option>
+                ) : (
+                  complexes.map((c) => {
+                    const count = parkCountByComplex.get(c.id) ?? 0;
+                    return (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                        {count === 0 ? " (belum ada taman)" : ` (${count} taman)`}
+                      </option>
+                    );
+                  })
+                )}
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="asset-park"
+                className="block font-medium text-slate-700 mb-1"
+              >
                 Taman
               </label>
               <select
+                id="asset-park"
                 name="parkId"
                 required
-                value={selectedParkId}
+                value={selectedPark?.id ?? ""}
                 onChange={(e) => setSelectedParkId(e.target.value)}
-                disabled={parks.length === 0}
+                disabled={parksInComplex.length === 0}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100"
               >
-                {parks.length === 0 ? (
-                  <option value="">
-                    -- Belum ada taman aktif --
-                  </option>
+                {parksInComplex.length === 0 ? (
+                  <option value="">-- Komplek ini belum punya taman --</option>
                 ) : (
-                  parks.map((p) => (
+                  parksInComplex.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name} ({p.clusterName})
                     </option>
@@ -552,6 +603,23 @@ export function MasterDataForms({
                 )}
               </select>
             </div>
+
+            {selectedComplex && parksInComplex.length === 0 && (
+              <div className="sm:col-span-2 lg:col-span-3 p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 flex flex-wrap items-center justify-between gap-3">
+                <span>
+                  Komplek <strong>{selectedComplex.name}</strong> belum punya taman
+                  aktif. Buat <strong>Cluster</strong> lalu <strong>Taman</strong> untuk
+                  komplek ini dulu, baru aset &amp; QR-nya bisa dibuat.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("wilayah")}
+                  className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white font-semibold cursor-pointer"
+                >
+                  Tambah Cluster / Taman
+                </button>
+              </div>
+            )}
 
             <div>
               <label className="block font-medium text-slate-700 mb-1">
@@ -646,7 +714,9 @@ export function MasterDataForms({
               <button
                 type="submit"
                 disabled={
-                  isPending || parks.length === 0 || activeCategories.length === 0
+                  isPending ||
+                  parksInComplex.length === 0 ||
+                  activeCategories.length === 0
                 }
                 className="w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold cursor-pointer"
               >

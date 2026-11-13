@@ -148,7 +148,14 @@ export function MobileBottomNav({ items, badges = {} }: MobileBottomNavProps) {
                         <IconComponent className="w-4 h-4" />
                       </div>
                       <div className="min-w-0">
-                        <div className="truncate">{item.label}</div>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="truncate">{item.label}</span>
+                          {item.readOnly && (
+                            <span className="shrink-0 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-100 text-slate-400">
+                              Lihat
+                            </span>
+                          )}
+                        </div>
                         <div className="text-[11px] font-normal text-slate-500 truncate">
                           {item.description}
                         </div>

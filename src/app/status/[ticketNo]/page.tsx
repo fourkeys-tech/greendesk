@@ -14,7 +14,9 @@ import type {
   WorkPhotoRow,
 } from "@/lib/db-types";
 import { STATUS_METADATA } from "@/lib/permissions";
+import { buildActivityLog, buildReportProgress } from "@/lib/report-progress";
 import { sanitizeMediaHref } from "@/lib/url-safety";
+import { ReportActivityCard, ReportProgressCard } from "./report-progress-view";
 
 interface StatusPageProps {
   params: Promise<{ ticketNo: string }>;
@@ -23,28 +25,6 @@ interface StatusPageProps {
 
 /* ---------- Helpers kecil ---------- */
 
-const TERMINAL_STATUSES: ReportStatus[] = [
-  "SELESAI",
-  "TIDAK_VALID",
-  "DITOLAK",
-  "DIGABUNG",
-] as ReportStatus[];
-
-function fmtDate(value: string | Date) {
-  return new Date(value).toLocaleString("id-ID", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}
-
-function fmtDay(value: string | Date) {
-  return new Date(value).toLocaleDateString("id-ID", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-}
-
 function initials(name: string) {
   return name
     .split(" ")
@@ -52,23 +32,6 @@ function initials(name: string) {
     .slice(0, 2)
     .map((s) => s[0]?.toUpperCase())
     .join("");
-}
-
-function CheckIcon({ className = "w-3 h-3" }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="3"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="M5 12.5l4.5 4.5L19 7.5" />
-    </svg>
-  );
 }
 
 function MailIcon() {
@@ -226,12 +189,8 @@ export default async function PublicStatusPage({
     isReporterOwner || (session?.role && session.role !== "PENGGUNA")
   );
 
-  // ASUMSI: tabel "User" punya kolom id, name, email; WorkOrder punya technicianId.
-  // Sesuaikan nama tabel/kolom dengan skema kamu.
-  const technicianId = workOrderRow
-    ? (workOrderRow as unknown as { technicianId?: string | null })
-      .technicianId
-    : null;
+  // WorkOrder.technicianId mereferensikan tabel "Technician" (bukan "User").
+  const technicianId = workOrderRow?.technicianId ?? null;
 
   const [parkRow, categoryRow, workPhotos, reporterRow, technicianRow] =
     await Promise.all([
@@ -255,7 +214,7 @@ export default async function PublicStatusPage({
         : Promise.resolve(null),
       technicianId
         ? queryOne<{ name: string; email: string }>(
-          `SELECT "name", "email" FROM "User" WHERE "id" = $1`,
+          `SELECT "fullName" AS "name", "email" FROM "Technician" WHERE "id" = $1`,
           [technicianId]
         )
         : Promise.resolve(null),
@@ -304,37 +263,15 @@ export default async function PublicStatusPage({
       ? "Laporan Saya →"
       : "Dashboard →";
 
-  /* ----- Stepper "Status Penanganan" (diturunkan dari log status) ----- */
-  const isTerminal = TERMINAL_STATUSES.includes(report.status);
-  const firstLog = report.statusLogs[0];
-  const lastLog = report.statusLogs[report.statusLogs.length - 1];
-  const middleLogs = report.statusLogs
-    .slice(1)
-    .filter((l) => !TERMINAL_STATUSES.includes(l.toStatus));
-  const hasProgress = middleLogs.length > 0 || (isTerminal && report.statusLogs.length > 2);
-
-  const steps = [
-    {
-      title: "Dilaporkan",
-      sub: fmtDay(firstLog?.createdAt ?? report.createdAt),
-      done: true,
-      align: "items-start text-left",
-    },
-    {
-      title: "Diproses",
-      sub: middleLogs.length
-        ? fmtDay(middleLogs[middleLogs.length - 1].createdAt)
-        : "Menunggu",
-      done: hasProgress,
-      align: "items-center text-center",
-    },
-    {
-      title: isTerminal ? meta.label : "Selesai",
-      sub: isTerminal && lastLog ? fmtDay(lastLog.createdAt) : "Belum selesai",
-      done: isTerminal,
-      align: "items-end text-right",
-    },
-  ];
+  /* ----- Tahapan penanganan & riwayat aktivitas (diturunkan dari log status) ----- */
+  const now = new Date();
+  const progress = buildReportProgress({
+    status: report.status,
+    logs: report.statusLogs,
+    createdAt: report.createdAt,
+    stageEnteredAt: report.stageEnteredAt,
+  });
+  const activity = buildActivityLog(report.statusLogs);
 
   const showAfterCard =
     report.status === "SELESAI" && completionPhotos.length > 0;
@@ -401,31 +338,8 @@ export default async function PublicStatusPage({
               </div>
             </div>
 
-            {/* Status Penanganan */}
-            <div className={cardClass}>
-              <CardTitle>Status Penanganan</CardTitle>
-              <div className="relative mt-5 mb-1">
-                <div className="absolute top-3 left-3 right-3 h-0.5 bg-emerald-950" />
-                <div className="relative flex justify-between">
-                  {steps.map((s, i) => (
-                    <div key={i} className={`flex flex-col ${s.align}`}>
-                      <div
-                        className={`w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] font-bold ${s.done
-                            ? "bg-emerald-950 border-emerald-950 text-white"
-                            : "bg-white border-slate-300 text-slate-400"
-                          }`}
-                      >
-                        {s.done && i !== 2 ? <CheckIcon /> : i + 1}
-                      </div>
-                      <div className="text-xs font-bold text-slate-900 mt-1.5">
-                        {s.title}
-                      </div>
-                      <div className="text-[10px] text-slate-400">{s.sub}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
+            {/* Status Penanganan: tahap ke berapa dari total, tahap aktif, langkah berikutnya */}
+            <ReportProgressCard progress={progress} now={now} />
 
             {/* Profil Pelapor (hanya pemilik / staf) */}
             {reporterRow && (
@@ -593,48 +507,13 @@ export default async function PublicStatusPage({
                 <p className="mt-3 text-sm text-slate-600 bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 leading-relaxed">
                   Fasilitas taman telah selesai diperbaiki oleh teknisi
                   lapangan. Perkembangan dan hasil perbaikan dapat dilihat pada
-                  foto di atas serta riwayat status di bawah.
+                  foto di atas serta riwayat aktivitas di bawah.
                 </p>
               </div>
             )}
 
-            {/* Riwayat Status */}
-            <div className={cardClass}>
-              <CardTitle>Riwayat Status</CardTitle>
-              <div className="mt-4">
-                {report.statusLogs.map((log, i) => {
-                  const logMeta = STATUS_METADATA[log.toStatus];
-                  const isLast = i === report.statusLogs.length - 1;
-                  return (
-                    <div key={log.id} className="relative flex gap-3 pb-5 last:pb-0">
-                      {!isLast && (
-                        <div className="absolute left-[11px] top-6 bottom-0 w-px bg-slate-200" />
-                      )}
-                      <div className="relative z-10 w-6 h-6 rounded-full bg-slate-100 border border-slate-300 text-slate-600 flex items-center justify-center shrink-0">
-                        <CheckIcon className="w-3 h-3" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-2">
-                          <span className="text-sm font-bold text-slate-900">
-                            {logMeta.label}
-                          </span>
-                          <span className="text-[10px] text-slate-400 whitespace-nowrap">
-                            {fmtDate(log.createdAt)}
-                          </span>
-                        </div>
-                        {log.note &&
-                          (log.toStatus === "TIDAK_VALID" ||
-                            log.toStatus === "DITOLAK") && (
-                            <p className="text-xs text-slate-500 mt-0.5">
-                              {log.note}
-                            </p>
-                          )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+            {/* Riwayat Aktivitas: log status, terbaru di atas */}
+            <ReportActivityCard entries={activity} now={now} />
           </div>
         </div>
 
