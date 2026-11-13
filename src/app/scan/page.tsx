@@ -5,6 +5,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChevronLeft, Zap, ZapOff, QrCode, AlertCircle, X, ArrowRight, CameraOff } from "lucide-react";
 import { MobileContainer } from "@/components/MobileContainer";
+import { createQrFrameDecoder, parseScannedAssetCode, type QrFrameDecoder } from "@/lib/qr-scan";
+
+// ~5 frame/detik: cukup responsif tanpa menguras baterai/CPU HP.
+const SCAN_INTERVAL_MS = 200;
+// Pesan "QR bukan aset" hilang bila QR tersebut tidak terlihat lagi selama ini.
+const INVALID_HINT_TTL_MS = 2000;
 
 export default function QRScannerPage() {
   const router = useRouter();
@@ -18,6 +24,8 @@ export default function QRScannerPage() {
   const [manualCode, setManualCode] = useState("");
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [scanHint, setScanHint] = useState<string | null>(null);
+  const [scanFound, setScanFound] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -70,6 +78,76 @@ export default function QRScannerPage() {
     };
   }, []);
 
+  // Loop pembacaan QR dari frame kamera. Isi QR divalidasi lewat parseScannedAssetCode;
+  // navigasi selalu ke /r/{kode} lokal, URL dari QR tidak pernah dibuka langsung.
+  useEffect(() => {
+    if (!cameraActive) return;
+
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let decoder: QrFrameDecoder | null = null;
+    let lastInvalidAt = 0;
+
+    const tick = async () => {
+      if (stopped || !decoder) return;
+      try {
+        // Decode dari <video> yang sedang tampil (layout mobile atau desktop).
+        const video = [videoRef.current, desktopVideoRef.current].find(
+          (v): v is HTMLVideoElement =>
+            !!v && v.getClientRects().length > 0 && v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+        );
+        if (video && !document.hidden) {
+          let raw: string | null = null;
+          try {
+            raw = await decoder.decode(video);
+          } catch (err) {
+            // BarcodeDetector bawaan bisa gagal saat jalan di sebagian perangkat; pindah ke jsQR.
+            if (decoder.kind !== "native") throw err;
+            decoder = await createQrFrameDecoder({ allowNative: false });
+          }
+          if (stopped) return;
+
+          if (raw) {
+            const code = parseScannedAssetCode(raw);
+            if (code) {
+              stopped = true; // cegah navigasi ganda dari frame berikutnya
+              setScanFound(true);
+              router.push(`/r/${encodeURIComponent(code)}`);
+              return;
+            }
+            lastInvalidAt = Date.now();
+            setScanHint("QR Code ini bukan QR aset GreenDesk.");
+          } else if (Date.now() - lastInvalidAt > INVALID_HINT_TTL_MS) {
+            setScanHint(null);
+          }
+        }
+      } catch {
+        // Frame gagal dibaca: abaikan, coba frame berikutnya.
+      }
+      if (!stopped) timer = setTimeout(tick, SCAN_INTERVAL_MS);
+    };
+
+    createQrFrameDecoder()
+      .then((d) => {
+        if (stopped) return;
+        decoder = d;
+        void tick();
+      })
+      .catch(() => {
+        if (!stopped) setScanHint("Pemindai QR tidak tersedia. Gunakan input ID aset manual.");
+      });
+
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [cameraActive, router]);
+
+  const scanStatusText = scanFound
+    ? "QR terdeteksi, membuka halaman aset..."
+    : scanHint ?? "Arahkan kamera ke QR Code pada aset Taman";
+  const scanStatusTone = scanFound ? "text-emerald-300" : scanHint ? "text-amber-300" : "text-slate-200";
+
   const toggleFlashlight = async () => {
     const nextState = !flashlightOn;
     setFlashlightOn(nextState);
@@ -85,16 +163,6 @@ export default function QRScannerPage() {
         }
       }
     }
-  };
-
-  const handleSimulateScan = () => {
-    // Belum ada decoder QR; tanpa kode valid, arahkan ke input manual agar tidak jatuh ke 404.
-    const code = manualCode.trim();
-    if (!code) {
-      setShowManualModal(true);
-      return;
-    }
-    router.push(`/r/${encodeURIComponent(code.toUpperCase())}`);
   };
 
   const handleManualSubmit = (e: React.FormEvent) => {
@@ -147,11 +215,7 @@ export default function QRScannerPage() {
       </header>
 
       <div className="relative z-20 flex-1 flex flex-col items-center justify-center px-6 my-auto">
-        <div
-          onClick={handleSimulateScan}
-          className="relative w-64 h-64 sm:w-72 sm:h-72 cursor-pointer group"
-          title="Klik untuk simulasi scan QR Code"
-        >
+        <div className="relative w-64 h-64 sm:w-72 sm:h-72">
           <div className="absolute inset-0 border border-white/20 rounded-3xl" />
 
           <div className="absolute top-0 left-0 w-10 h-10 border-t-4 border-l-4 border-[#283330] rounded-tl-3xl shadow-[0_0_10px_#283330]" />
@@ -161,13 +225,15 @@ export default function QRScannerPage() {
 
           <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 h-0.5 bg-gradient-to-r from-transparent via-[#283330] to-transparent shadow-[0_0_12px_#283330] animate-pulse" />
 
-          <div className="w-full h-full flex flex-col items-center justify-center opacity-30 group-hover:opacity-50 transition-opacity">
-            <QrCode className="w-20 h-20 text-white stroke-[1]" />
-          </div>
+          {!cameraActive && (
+            <div className="w-full h-full flex flex-col items-center justify-center opacity-30">
+              <QrCode className="w-20 h-20 text-white stroke-[1]" />
+            </div>
+          )}
         </div>
 
-        <p className="mt-6 text-xs text-slate-200 font-medium text-center tracking-wide max-w-xs drop-shadow-md">
-          Arahkan kamera ke QR Code Pada aset Taman
+        <p aria-live="polite" className={`mt-6 text-xs font-medium text-center tracking-wide max-w-xs drop-shadow-md ${scanStatusTone}`}>
+          {scanStatusText}
         </p>
       </div>
 
@@ -281,20 +347,22 @@ export default function QRScannerPage() {
           </button>
         </header>
 
-        <div onClick={handleSimulateScan} className="relative w-80 h-80 cursor-pointer group" title="Klik untuk simulasi scan QR Code">
+        <div className="relative w-80 h-80">
           <div className="absolute inset-0 border border-white/20 rounded-3xl" />
           <div className="absolute top-0 left-0 w-12 h-12 border-t-4 border-l-4 border-[#283330] rounded-tl-3xl shadow-[0_0_10px_#283330]" />
           <div className="absolute top-0 right-0 w-12 h-12 border-t-4 border-r-4 border-[#283330] rounded-tr-3xl shadow-[0_0_10px_#283330]" />
           <div className="absolute bottom-0 left-0 w-12 h-12 border-b-4 border-l-4 border-[#283330] rounded-bl-3xl shadow-[0_0_10px_#283330]" />
           <div className="absolute bottom-0 right-0 w-12 h-12 border-b-4 border-r-4 border-[#283330] rounded-br-3xl shadow-[0_0_10px_#283330]" />
           <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 h-0.5 bg-gradient-to-r from-transparent via-[#283330] to-transparent shadow-[0_0_12px_#283330] animate-pulse" />
-          <div className="w-full h-full flex flex-col items-center justify-center opacity-30 group-hover:opacity-50 transition-opacity">
-            <QrCode className="w-24 h-24 text-white stroke-[1]" />
-          </div>
+          {!cameraActive && (
+            <div className="w-full h-full flex flex-col items-center justify-center opacity-30">
+              <QrCode className="w-24 h-24 text-white stroke-[1]" />
+            </div>
+          )}
         </div>
 
-        <p className="mt-8 text-sm text-slate-200 font-medium text-center tracking-wide max-w-md drop-shadow-md">
-          Arahkan kamera ke QR Code pada aset Taman
+        <p aria-live="polite" className={`mt-8 text-sm font-medium text-center tracking-wide max-w-md drop-shadow-md ${scanStatusTone}`}>
+          {scanStatusText}
         </p>
 
         <div className="mt-8 w-full max-w-md">
