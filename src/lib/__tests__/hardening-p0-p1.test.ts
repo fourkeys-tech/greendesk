@@ -302,7 +302,7 @@ describe("Hardening P0 + P1 – Keamanan, Penomoran, Konkurensi, Merge, OTP & Ou
         decision: "SETUJU",
         spkInput: {
           vendorId: vendorA.id,
-          spkFileUrl: "/uploads/spk/a.pdf",
+          spkFileUrl: "private://spk/a.pdf",
           spkFileName: "spk-a.pdf",
         },
       }),
@@ -311,7 +311,7 @@ describe("Hardening P0 + P1 – Keamanan, Penomoran, Konkurensi, Merge, OTP & Ou
         decision: "SETUJU",
         spkInput: {
           vendorId: vendorB.id,
-          spkFileUrl: "/uploads/spk/b.pdf",
+          spkFileUrl: "private://spk/b.pdf",
           spkFileName: "spk-b.pdf",
         },
       }),
@@ -373,7 +373,7 @@ describe("Hardening P0 + P1 – Keamanan, Penomoran, Konkurensi, Merge, OTP & Ou
         decision: "SETUJU",
         spkInput: {
           vendorId: vendorA.id,
-          spkFileUrl: "/uploads/spk/race-1.pdf",
+          spkFileUrl: "private://spk/race-1.pdf",
           spkFileName: "race-1.pdf",
         },
       }),
@@ -382,7 +382,7 @@ describe("Hardening P0 + P1 – Keamanan, Penomoran, Konkurensi, Merge, OTP & Ou
         decision: "SETUJU",
         spkInput: {
           vendorId: vendorA.id,
-          spkFileUrl: "/uploads/spk/race-2.pdf",
+          spkFileUrl: "private://spk/race-2.pdf",
           spkFileName: "race-2.pdf",
         },
       }),

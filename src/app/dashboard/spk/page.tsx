@@ -6,7 +6,7 @@ import { query } from "@/lib/db";
 import { getManagerAssignedClusterIds } from "@/lib/services/phase5-decision";
 import { ROLE_METADATA, STATUS_METADATA } from "@/lib/permissions";
 import { formatWibDate } from "@/lib/dates";
-import { sanitizeMediaHref } from "@/lib/url-safety";
+import { spkFileHref } from "@/lib/spk-file";
 import {
   AccessDeniedNotice,
   DbErrorNotice,
@@ -224,8 +224,7 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
                       {wo.underWarrantyOfVendorId ? " · Masa garansi" : ""}
                     </span>
                     <SpkActions
-                      spkFileUrl={sanitizeMediaHref(wo.spkFileUrl)}
-                      spkFileName={wo.spkFileName}
+                      spkFileHref={wo.spkFileUrl ? spkFileHref(wo.id) : null}
                       ticketNo={wo.reportTicketNo}
                     />
                   </div>
@@ -305,8 +304,7 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
                         </td>
                         <td className="px-4 py-3 text-right">
                           <SpkActions
-                            spkFileUrl={sanitizeMediaHref(wo.spkFileUrl)}
-                            spkFileName={wo.spkFileName}
+                            spkFileHref={wo.spkFileUrl ? spkFileHref(wo.id) : null}
                             ticketNo={wo.reportTicketNo}
                           />
                         </td>
@@ -324,22 +322,19 @@ export default async function SpkListPage({ searchParams }: SpkPageProps) {
 }
 
 function SpkActions({
-  spkFileUrl,
-  spkFileName,
+  spkFileHref,
   ticketNo,
 }: {
-  spkFileUrl: string | null;
-  spkFileName: string | null;
+  spkFileHref: string | null;
   ticketNo: string;
 }) {
   return (
     <div className="flex items-center justify-end gap-1.5 flex-wrap">
-      {spkFileUrl && (
+      {spkFileHref && (
         <a
-          href={spkFileUrl}
+          href={spkFileHref}
           target="_blank"
           rel="noopener noreferrer"
-          download={spkFileName || "SPK.pdf"}
           className="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-[11px] inline-flex items-center gap-1 border border-indigo-200"
         >
           Unduh SPK

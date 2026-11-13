@@ -215,14 +215,14 @@ describe("Fase 5, 6 & Bagian 7 PRD v0.2 – Keputusan Manager, SPK, Konfirmasi H
       spkInput: {
         vendorId: vendorJaya.id,
         notes: "Ganti rangkaian LED utama.",
-        spkFileUrl: "/uploads/spk/sample-spk.pdf",
+        spkFileUrl: "private://spk/sample-spk.pdf",
         spkFileName: "Surat_Perintah_Kerja_001.pdf",
       },
     });
     expect(approvedRes.status).toBe("DISETUJUI");
     expect(approvedRes.spkNo).toMatch(/^SPK-\d{6}-\d{4}$/);
     expect(approvedRes.workOrder?.technicianId).toBeNull();
-    expect(approvedRes.workOrder?.spkFileUrl).toBe("/uploads/spk/sample-spk.pdf");
+    expect(approvedRes.workOrder?.spkFileUrl).toBe("private://spk/sample-spk.pdf");
 
     const woId = approvedRes.workOrder!.id;
 

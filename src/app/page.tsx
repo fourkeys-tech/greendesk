@@ -111,7 +111,7 @@ export default function WelcomePage() {
               href="/login"
               className="block text-center text-[11px] font-semibold text-[#1b5e45]/80 hover:text-[#1b5e45] underline underline-offset-2 pt-1"
             >
-              Masuk sebagai petugas / pengelola →
+              {/* Masuk sebagai petugas / pengelola → */}
             </Link>
           </div>
         </main>

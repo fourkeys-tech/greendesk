@@ -3,6 +3,8 @@
  * serta injeksi path traversal maupun host eksternal tak terpercaya.
  */
 
+import { getStoragePublicBaseUrl, isSafeObjectKey } from "./storage-config";
+
 const SAFE_LOCAL_UPLOAD_RE = /^\/uploads\/[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)*$/;
 const SAFE_LOCAL_STATIC_RE = /^\/(?:uploads|images|assets)\/[a-zA-Z0-9._%/-]+$/;
 
@@ -14,11 +16,30 @@ export function isSafeLocalUploadUrl(url: string): boolean {
   return SAFE_LOCAL_UPLOAD_RE.test(trimmed);
 }
 
+/** URL objek di bucket storage aplikasi sendiri (`S3_PUBLIC_BASE_URL/<folder>/<file>`). */
+export function isSafeStorageUploadUrl(
+  url: string,
+  publicBaseUrl: string | null = getStoragePublicBaseUrl()
+): boolean {
+  if (!publicBaseUrl) return false;
+  const trimmed = url.trim();
+  if (!trimmed || trimmed.includes("..") || trimmed.includes("\\")) {
+    return false;
+  }
+  const prefix = `${publicBaseUrl}/`;
+  if (!trimmed.startsWith(prefix)) return false;
+  return isSafeObjectKey(trimmed.slice(prefix.length));
+}
+
+export function isSafeUploadUrl(url: string): boolean {
+  return isSafeLocalUploadUrl(url) || isSafeStorageUploadUrl(url);
+}
+
 export function assertSafeUploadUrl(url: string, label = "URL berkas"): string {
   const trimmed = url.trim();
-  if (!isSafeLocalUploadUrl(trimmed)) {
+  if (!isSafeUploadUrl(trimmed)) {
     throw new Error(
-      `${label} tidak valid. Hanya berkas unggahan lokal (/uploads/...) yang diizinkan.`
+      `${label} tidak valid. Hanya berkas unggahan aplikasi yang diizinkan.`
     );
   }
   return trimmed;
