@@ -16,8 +16,15 @@ import {
   type QrPrintItem,
 } from "./print-button";
 
-export default async function CetakQrPage() {
-  const session = await getCurrentSession();
+interface CetakQrPageProps {
+  searchParams: Promise<{ komplek?: string }>;
+}
+
+export default async function CetakQrPage({ searchParams }: CetakQrPageProps) {
+  const [session, { komplek }] = await Promise.all([
+    getCurrentSession(),
+    searchParams,
+  ]);
   if (!session) redirect("/login");
 
   // PRD §10: stiker QR dicetak oleh Admin.
@@ -37,6 +44,13 @@ export default async function CetakQrPage() {
 
   const companyName = session.companyName || undefined;
 
+  let complexes: {
+    id: string;
+    name: string;
+    isActive: boolean;
+    assetCount: number;
+  }[];
+  let selectedComplex: (typeof complexes)[number] | null = null;
   let cards: {
     id: string;
     item: QrPrintItem;
@@ -45,6 +59,26 @@ export default async function CetakQrPage() {
   }[];
 
   try {
+    complexes = await query<{
+      id: string;
+      name: string;
+      isActive: boolean;
+      assetCount: number;
+    }>(
+      `SELECT cx."id", cx."name", cx."isActive",
+              COUNT(a."id")::int AS "assetCount"
+       FROM "Complex" cx
+       LEFT JOIN "Cluster" cl ON cl."complexId" = cx."id"
+       LEFT JOIN "Park" p ON p."clusterId" = cl."id"
+       LEFT JOIN "Asset" a ON a."parkId" = p."id"
+       WHERE cx."companyId" = $1
+       GROUP BY cx."id"
+       ORDER BY cx."name" ASC`,
+      [session.companyId]
+    );
+    // Hanya terima id komplek milik perusahaan ini; nilai lain diperlakukan sebagai "semua".
+    selectedComplex = complexes.find((c) => c.id === komplek) ?? null;
+
     const assets = await query<{
       id: string;
       code: string;
@@ -69,8 +103,9 @@ export default async function CetakQrPage() {
        JOIN "Complex" cx ON cx."id" = cl."complexId"
        JOIN "Category" cat ON cat."id" = a."categoryId"
        WHERE a."companyId" = $1
+         AND ($2::text IS NULL OR cx."id" = $2)
        ORDER BY a."code" ASC`,
-      [session.companyId]
+      [session.companyId, selectedComplex?.id ?? null]
     );
 
     cards = await Promise.all(
@@ -110,6 +145,18 @@ export default async function CetakQrPage() {
     .filter((c) => !c.inactiveReason)
     .map((c) => c.item);
   const inactiveCount = cards.length - printableItems.length;
+  const totalAssets = complexes.reduce((sum, c) => sum + c.assetCount, 0);
+
+  const chipClass = (active: boolean) =>
+    `inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold transition ${
+      active
+        ? "bg-emerald-900 border-emerald-900 text-white"
+        : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+    }`;
+  const countClass = (active: boolean) =>
+    `rounded-full px-1.5 text-[10px] font-bold ${
+      active ? "bg-white/20 text-white" : "bg-slate-100 text-slate-500"
+    }`;
 
   return (
     <div className="w-full space-y-6">
@@ -143,9 +190,54 @@ export default async function CetakQrPage() {
         </div>
       </div>
 
+      {complexes.length > 1 && (
+        <nav
+          aria-label="Filter komplek"
+          className="flex flex-wrap items-center gap-2 print:hidden"
+        >
+          <span className="text-xs font-bold text-slate-500 mr-1">Komplek:</span>
+          <Link
+            href="/dashboard/wilayah/cetak-qr"
+            aria-current={!selectedComplex ? "page" : undefined}
+            className={chipClass(!selectedComplex)}
+          >
+            Semua
+            <span className={countClass(!selectedComplex)}>{totalAssets}</span>
+          </Link>
+          {complexes.map((c) => {
+            const active = selectedComplex?.id === c.id;
+            return (
+              <Link
+                key={c.id}
+                href={`/dashboard/wilayah/cetak-qr?komplek=${encodeURIComponent(c.id)}`}
+                aria-current={active ? "page" : undefined}
+                className={chipClass(active)}
+              >
+                {c.name}
+                {!c.isActive && (
+                  <span className="text-[10px] font-medium opacity-70">(nonaktif)</span>
+                )}
+                <span className={countClass(active)}>{c.assetCount}</span>
+              </Link>
+            );
+          })}
+        </nav>
+      )}
+
       {cards.length === 0 ? (
         <div className="bg-white rounded-3xl border border-slate-200/80 p-10 text-center text-sm text-slate-500">
-          Belum ada aset. Tambahkan aset di halaman Wilayah &amp; Aset.
+          {selectedComplex ? (
+            <>
+              Komplek <strong className="text-slate-700">{selectedComplex.name}</strong>{" "}
+              belum punya aset. Tambahkan taman dan aset untuk komplek ini di halaman{" "}
+              <Link href="/dashboard/wilayah" className="text-emerald-700 font-semibold hover:underline">
+                Wilayah &amp; Aset
+              </Link>
+              ; QR akan dibuat otomatis.
+            </>
+          ) : (
+            <>Belum ada aset. Tambahkan aset di halaman Wilayah &amp; Aset.</>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 print:grid-cols-3">

@@ -3,6 +3,13 @@
  * Mengikuti hierarki 5 tingkat: Kompleks > Klaster > Taman > Kategori > Nomor Urut
  */
 
+const GENERIC_AREA_WORDS = new Set([
+  "CLUSTER",
+  "KLASTER",
+  "KOMPLEK",
+  "KOMPLEKS",
+]);
+
 export function abbreviateEntity(rawName: string, length = 3): string {
   if (!rawName) return "AST";
 
@@ -39,10 +46,9 @@ export function abbreviateEntity(rawName: string, length = 3): string {
     if (joined === "TAMAN UTAMA") return "TMU";
     if (joined === "PLAYGROUND ANAK") return "PGA";
 
-    // Abaikan awalan umum seperti "CLUSTER" atau "KLASTER" jika masih ada kata lainnya
-    const filteredWords = words.filter(
-      (w) => w !== "CLUSTER" && w !== "KLASTER"
-    );
+    // Abaikan kata jenis wilayah ("Cluster", "Komplek", ...) jika masih ada kata lainnya,
+    // mis. "Komplek Alam Mutiara Residence" -> "AMR", bukan "KAMR".
+    const filteredWords = words.filter((w) => !GENERIC_AREA_WORDS.has(w));
     if (filteredWords.length >= 2) {
       const initials = filteredWords.map((w) => w[0]).join("");
       return initials.slice(0, 4);

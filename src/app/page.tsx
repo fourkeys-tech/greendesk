@@ -220,7 +220,7 @@ export default function WelcomePage() {
           className="pointer-events-none select-none absolute top-0 right-0 w-[28%] max-w-[420px] h-auto object-contain -scale-x-100 z-0"
         />
 
-        <section className="relative z-10 flex flex-col items-center text-center px-6 pt-20 lg:pt-28">
+        <section className="relative z-10 flex flex-col items-center text-center px-6 pt-28 lg:pt-36">
           <span className="text-2xl lg:text-4xl font-medium text-slate-800">
             Selamat Datang di
           </span>
@@ -236,18 +236,19 @@ export default function WelcomePage() {
             GreenDesk dan pantau proses perbaikannya hingga selesai.
           </p>
 
-          <div className="relative mt-10 lg:mt-12 w-full max-w-5xl flex items-center justify-center min-h-[240px] lg:min-h-[280px]">
+          {/* mt dikurangi menjadi mt-4 lg:mt-6, dan min-h dikurangi agar tidak ada ruang kosong berlebih di atas tombol */}
+          <div className="relative mt-4 lg:mt-6 w-full max-w-5xl flex items-center justify-center min-h-[160px] lg:min-h-[200px]">
             <img
               src="/assets/KursiTaman.svg"
               alt=""
               aria-hidden
-              className="pointer-events-none select-none absolute left-4 lg:left-12 bottom-0 w-[240px] lg:w-[320px] h-auto object-contain object-left-bottom -scale-x-100"
+              className="pointer-events-none select-none absolute left-4 lg:left-12 bottom-6 w-[240px] lg:w-[320px] h-auto object-contain object-left-bottom -scale-x-100"
             />
             <img
               src="/assets/KursiTaman.svg"
               alt=""
               aria-hidden
-              className="pointer-events-none select-none absolute right-4 lg:right-12 bottom-0 w-[240px] lg:w-[320px] h-auto object-contain object-right-bottom"
+              className="pointer-events-none select-none absolute right-4 lg:right-12 bottom-6 w-[240px] lg:w-[320px] h-auto object-contain object-right-bottom"
             />
 
             <Link

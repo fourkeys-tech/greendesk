@@ -28,11 +28,28 @@ function createPool(): Pool {
   return pool;
 }
 
-export const pool: Pool = globalForPg.pgPool ?? createPool();
-
-if (process.env.NODE_ENV !== "production") {
-  globalForPg.pgPool = pool;
+/**
+ * Lazy-initialized pool — dibuat hanya saat pertama kali diakses (bukan saat modul di-load).
+ * Ini memungkinkan Next.js build berjalan tanpa DATABASE_URL karena modul bisa di-import
+ * tanpa langsung throw error.
+ */
+function getPool(): Pool {
+  if (!globalForPg.pgPool) {
+    globalForPg.pgPool = createPool();
+  }
+  return globalForPg.pgPool;
 }
+
+/**
+ * Proxy Pool yang lazy — properti dan metode didelegasikan ke pool nyata
+ * hanya saat pertama kali diakses. Ini memungkinkan `import { pool } from "@/lib/db"`
+ * tanpa memerlukan DATABASE_URL saat module di-load.
+ */
+export const pool: Pool = new Proxy({} as Pool, {
+  get(_target, prop) {
+    return (getPool() as unknown as Record<string | symbol, unknown>)[prop];
+  },
+});
 
 /** Menjalankan query SELECT dan mengembalikan semua baris bertipe `T`. */
 export async function query<T extends QueryResultRow = QueryResultRow>(
@@ -82,7 +99,7 @@ export async function execute(
 export async function withTransaction<T>(
   fn: (tx: TxClient) => Promise<T>
 ): Promise<T> {
-  const client = await pool.connect();
+  const client = await getPool().connect();
   try {
     await client.query("BEGIN");
     const result = await fn(client);

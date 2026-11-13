@@ -339,7 +339,6 @@ export async function updateCategory(
  * [Kompleks]-[Klaster]-[Taman]-[Kategori]-[Seq] (misal: GPR-BGV-TMU-LMP-001)
  */
 export async function generateNextAssetCode(
-  companyId: string,
   complexName: string,
   clusterName: string,
   parkName: string,
@@ -347,9 +346,12 @@ export async function generateNextAssetCode(
 ): Promise<string> {
   const prefix = buildAssetPrefix(complexName, clusterName, parkName, categoryName);
 
+  // Kode aset unik GLOBAL (constraint Asset_code_key, dipakai shortlink QR /r/[code]),
+  // jadi nomor urut dihitung lintas perusahaan. Bila dihitung per perusahaan, dua perusahaan
+  // dengan singkatan sama akan menghasilkan kode yang sama dan pembuatan aset gagal.
   const existingAssets = await query<{ code: string }>(
-    `SELECT "code" FROM "Asset" WHERE "companyId" = $1 AND "code" LIKE $2`,
-    [companyId, `${prefix}-%`]
+    `SELECT "code" FROM "Asset" WHERE "code" LIKE $1`,
+    [`${prefix}-%`]
   );
 
   let maxSeq = 0;
@@ -443,7 +445,6 @@ export async function createAsset(
   let code = input.code?.trim().toUpperCase();
   if (!code) {
     code = await generateNextAssetCode(
-      companyId,
       park.complexName || "KMP",
       park.clusterName,
       park.name,

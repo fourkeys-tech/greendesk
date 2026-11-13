@@ -14,12 +14,85 @@ import type {
   WorkPhotoRow,
 } from "@/lib/db-types";
 import { STATUS_METADATA } from "@/lib/permissions";
+import { buildActivityLog, buildReportProgress } from "@/lib/report-progress";
 import { sanitizeMediaHref } from "@/lib/url-safety";
+import { ReportActivityCard, ReportProgressCard } from "./report-progress-view";
 
 interface StatusPageProps {
   params: Promise<{ ticketNo: string }>;
   searchParams: Promise<{ k?: string }>;
 }
+
+/* ---------- Helpers kecil ---------- */
+
+function initials(name: string) {
+  return name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((s) => s[0]?.toUpperCase())
+    .join("");
+}
+
+function MailIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="w-3 h-3 shrink-0"
+      aria-hidden="true"
+    >
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M3 7l9 6 9-6" />
+    </svg>
+  );
+}
+
+function SeatIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="w-6 h-6"
+      aria-hidden="true"
+    >
+      <path d="M5 11V8a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v3" />
+      <path d="M3 13a2 2 0 0 1 4 0v2h10v-2a2 2 0 0 1 4 0v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" />
+      <path d="M6 18v2M18 18v2" />
+    </svg>
+  );
+}
+
+function Avatar({ name, size = "w-9 h-9" }: { name: string; size?: string }) {
+  return (
+    <div
+      className={`${size} rounded-full bg-gradient-to-tr from-emerald-800 to-teal-500 text-white flex items-center justify-center text-xs font-bold shrink-0`}
+    >
+      {initials(name) || "?"}
+    </div>
+  );
+}
+
+function CardTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <h2 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+      {children}
+    </h2>
+  );
+}
+
+const cardClass =
+  "bg-white rounded-2xl shadow-sm border border-slate-200/70 p-5";
+
+/* ---------- Halaman ---------- */
 
 export default async function PublicStatusPage({
   params,
@@ -49,8 +122,8 @@ export default async function PublicStatusPage({
 
   if (!reportRow || (!isReporterOwner && !hasValidToken)) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white rounded-2xl shadow-lg border border-slate-200 p-6 text-center">
+      <div className="min-h-screen bg-[#f5f4ef] flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-sm border border-slate-200/70 p-6 text-center">
           <div className="w-12 h-12 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto mb-3 font-bold text-lg">
             ✕
           </div>
@@ -58,11 +131,15 @@ export default async function PublicStatusPage({
             Laporan Tidak Ditemukan
           </h1>
           <p className="text-sm text-slate-500 mb-6">
-            Nomor tiket <code className="font-mono font-bold text-slate-800">{ticketNo}</code> tidak terdaftar di sistem GreenPark atau telah diarsipkan.
+            Nomor tiket{" "}
+            <code className="font-mono font-bold text-slate-800">
+              {ticketNo}
+            </code>{" "}
+            tidak terdaftar di sistem GreenPark atau telah diarsipkan.
           </p>
           <Link
             href="/beranda"
-            className="inline-block px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 transition"
+            className="inline-block px-4 py-2 bg-emerald-900 text-white rounded-xl text-sm font-semibold hover:bg-emerald-800 transition"
           >
             Kembali ke Beranda
           </Link>
@@ -86,15 +163,15 @@ export default async function PublicStatusPage({
       ),
       reportRow.parentReportId
         ? queryOne<{
-            ticketNo: string;
-            status: ReportStatus;
-            statusToken: string;
-          }>(
-            `SELECT "ticketNo", "status", "statusToken"
+          ticketNo: string;
+          status: ReportStatus;
+          statusToken: string;
+        }>(
+          `SELECT "ticketNo", "status", "statusToken"
              FROM "Report"
              WHERE "id" = $1 AND "archivedAt" IS NULL`,
-            [reportRow.parentReportId]
-          )
+          [reportRow.parentReportId]
+        )
         : Promise.resolve(null),
       queryOne<WorkOrderRow>(
         `SELECT * FROM "WorkOrder" WHERE "reportId" = $1`,
@@ -106,18 +183,42 @@ export default async function PublicStatusPage({
     throw new Error("Aset laporan tidak ditemukan.");
   }
 
-  const [parkRow, categoryRow, workPhotos] = await Promise.all([
-    queryOne<ParkRow>(`SELECT * FROM "Park" WHERE "id" = $1`, [assetRow.parkId]),
-    queryOne<CategoryRow>(`SELECT * FROM "Category" WHERE "id" = $1`, [
-      assetRow.categoryId,
-    ]),
-    workOrderRow
-      ? query<WorkPhotoRow>(
+  // Data pribadi (pelapor & teknisi) hanya untuk pemilik laporan / staf,
+  // bukan untuk siapa saja yang memegang link token publik.
+  const canSeePrivate = Boolean(
+    isReporterOwner || (session?.role && session.role !== "PENGGUNA")
+  );
+
+  // WorkOrder.technicianId mereferensikan tabel "Technician" (bukan "User").
+  const technicianId = workOrderRow?.technicianId ?? null;
+
+  const [parkRow, categoryRow, workPhotos, reporterRow, technicianRow] =
+    await Promise.all([
+      queryOne<ParkRow>(`SELECT * FROM "Park" WHERE "id" = $1`, [
+        assetRow.parkId,
+      ]),
+      queryOne<CategoryRow>(`SELECT * FROM "Category" WHERE "id" = $1`, [
+        assetRow.categoryId,
+      ]),
+      workOrderRow
+        ? query<WorkPhotoRow>(
           `SELECT * FROM "WorkPhoto" WHERE "workOrderId" = $1 AND "type" = 'AFTER'`,
           [workOrderRow.id]
         )
-      : Promise.resolve([]),
-  ]);
+        : Promise.resolve([]),
+      canSeePrivate && reportRow.reporterId
+        ? queryOne<{ name: string; email: string }>(
+          `SELECT "name", "email" FROM "User" WHERE "id" = $1`,
+          [reportRow.reporterId]
+        )
+        : Promise.resolve(null),
+      technicianId
+        ? queryOne<{ name: string; email: string }>(
+          `SELECT "fullName" AS "name", "email" FROM "Technician" WHERE "id" = $1`,
+          [technicianId]
+        )
+        : Promise.resolve(null),
+    ]);
 
   if (!parkRow || !categoryRow) {
     throw new Error("Lokasi taman aset tidak ditemukan.");
@@ -162,110 +263,114 @@ export default async function PublicStatusPage({
       ? "Laporan Saya →"
       : "Dashboard →";
 
-  return (
-    <div className="min-h-screen bg-gradient-to-b from-emerald-50/50 via-slate-50 to-slate-100 py-10 px-4 sm:px-6">
-      <div className="max-w-2xl mx-auto">
-        {/* Header Branding */}
-        <div className="flex items-center justify-between mb-6">
-          <Link href={homeHref} className="flex items-center gap-2">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-700 to-teal-500 text-white flex items-center justify-center text-sm font-black shadow-xs">
-              GP
-            </div>
-            <div>
-              <span className="font-extrabold text-lg text-slate-900 block leading-tight">
-                GreenPark
-              </span>
-              <span className="text-[11px] text-slate-500 font-medium block">
-                Pelacakan Status Publik
-              </span>
-            </div>
-          </Link>
+  /* ----- Tahapan penanganan & riwayat aktivitas (diturunkan dari log status) ----- */
+  const now = new Date();
+  const progress = buildReportProgress({
+    status: report.status,
+    logs: report.statusLogs,
+    createdAt: report.createdAt,
+    stageEnteredAt: report.stageEnteredAt,
+  });
+  const activity = buildActivityLog(report.statusLogs);
 
+  const showAfterCard =
+    report.status === "SELESAI" && completionPhotos.length > 0;
+  const safeCompletion = completionPhotos
+    .map((cp) => ({ id: cp.id, url: sanitizeMediaHref(cp.url) }))
+    .filter((p): p is { id: string; url: string } => Boolean(p.url));
+
+  return (
+    <div className="min-h-screen bg-[#f5f4ef] py-8 px-4 sm:px-6">
+      <div className="max-w-5xl mx-auto">
+        {/* Header */}
+        <div className="relative flex items-center justify-center mb-6 min-h-10">
+          <Link
+            href={homeHref}
+            aria-label="Kembali"
+            className="absolute left-0 w-10 h-10 rounded-full bg-emerald-900 text-white flex items-center justify-center hover:bg-emerald-800 transition shadow-sm"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="w-4 h-4"
+              aria-hidden="true"
+            >
+              <path d="M15 5l-7 7 7 7" />
+            </svg>
+          </Link>
+          <h1 className="text-base font-extrabold text-slate-900">
+            Detail Laporan
+          </h1>
           <Link
             href={actionHref}
-            className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg"
+            className="absolute right-0 text-xs font-semibold text-emerald-800 bg-white border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-emerald-50 transition"
           >
             {actionLabel}
           </Link>
         </div>
 
-        {/* Card Utama */}
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-          {/* Header Tiket */}
-          <div className="bg-slate-900 text-white p-5 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="text-xs text-slate-400 font-medium uppercase tracking-wider">
-                Nomor Tiket
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+          {/* ================= KOLOM KIRI ================= */}
+          <div className="space-y-5">
+            {/* Kartu Aset */}
+            <div className={`${cardClass} flex items-center gap-4`}>
+              <div className="w-14 h-14 rounded-xl bg-slate-100 border border-slate-200 text-slate-500 flex items-center justify-center shrink-0">
+                <SeatIcon />
               </div>
-              <div className="text-xl font-black font-mono tracking-tight text-white mt-0.5">
-                {report.ticketNo}
+              <div className="min-w-0">
+                <div className="text-[10px] font-mono font-bold text-slate-400 tracking-wider">
+                  {report.ticketNo}
+                </div>
+                <div className="text-lg font-extrabold text-slate-900 leading-tight">
+                  {report.asset.name}
+                </div>
+                <div className="text-[11px] font-mono text-slate-500 mt-0.5 break-words">
+                  ID: {report.asset.code} • {report.asset.park.name} (
+                  {report.asset.park.cluster.name})
+                  {report.asset.locationNote
+                    ? ` - ${report.asset.locationNote}`
+                    : ""}
+                </div>
               </div>
             </div>
-            <div>
-              <span
-                className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold border ${meta.badgeColor}`}
-              >
-                {meta.label}
-              </span>
-            </div>
-          </div>
 
-          <div className="p-6 space-y-6">
-            {/* Info Aset */}
-            <div className="bg-slate-50 rounded-xl p-4 border border-slate-200/80">
-              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-                Informasi Aset
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                <div>
-                  <span className="text-slate-500 block text-xs">Nama Aset:</span>
-                  <span className="font-semibold text-slate-900">
-                    {report.asset.name}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block text-xs">Kode Aset:</span>
-                  <span className="font-mono font-semibold text-slate-800">
-                    {report.asset.code}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block text-xs">Lokasi Taman:</span>
-                  <span className="font-medium text-slate-800">
-                    {report.asset.park.name} ({report.asset.park.cluster.name})
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block text-xs">Tanggal Lapor:</span>
-                  <span className="font-medium text-slate-800">
-                    {new Date(report.createdAt).toLocaleString("id-ID", {
-                      dateStyle: "medium",
-                      timeStyle: "short",
-                    })}
-                  </span>
+            {/* Status Penanganan: tahap ke berapa dari total, tahap aktif, langkah berikutnya */}
+            <ReportProgressCard progress={progress} now={now} />
+
+            {/* Profil Pelapor (hanya pemilik / staf) */}
+            {reporterRow && (
+              <div className={cardClass}>
+                <CardTitle>Profil Pelapor</CardTitle>
+                <div className="flex items-center gap-3 mt-3">
+                  <Avatar name={reporterRow.name} size="w-11 h-11" />
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-slate-900">
+                      {reporterRow.name}
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                      <MailIcon />
+                      <span className="truncate">{reporterRow.email}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
+            )}
 
-              {report.asset.locationNote && (
-                <div className="mt-3 pt-3 border-t border-slate-200 text-xs text-slate-600">
-                  <span className="font-semibold">Titik Lokasi:</span> {report.asset.locationNote}
-                </div>
-              )}
-            </div>
-
-            {/* Deskripsi & Foto Kerusakan Awal */}
-            <div>
-              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-                Deskripsi Kerusakan yang Dilaporkan
-              </div>
-              <p className="text-sm text-slate-700 bg-slate-50/60 p-3.5 rounded-xl border border-slate-200">
+            {/* Deskripsi Kerusakan */}
+            <div className={cardClass}>
+              <CardTitle>Deskripsi Kerusakan</CardTitle>
+              <p className="mt-3 text-sm text-slate-700 bg-slate-50 p-3.5 rounded-xl border border-slate-200/80">
                 {report.description}
               </p>
 
               {report.photos.length > 0 && (
-                <div className="mt-3">
-                  <span className="text-xs font-semibold text-slate-500 block mb-2">
-                    Foto Kerusakan:
+                <div className="mt-4">
+                  <span className="text-xs font-bold text-slate-900 block mb-2">
+                    Foto Lampiran
                   </span>
                   <div className="flex flex-wrap gap-2">
                     {report.photos.map((p, idx) => {
@@ -277,13 +382,13 @@ export default async function PublicStatusPage({
                           href={safeUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="block rounded-lg overflow-hidden border border-slate-300 hover:opacity-90"
+                          className="block rounded-xl overflow-hidden border border-slate-200 hover:opacity-90 transition"
                         >
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
                             src={safeUrl}
                             alt={`Foto kerusakan ${idx + 1}`}
-                            className="w-24 h-24 object-cover"
+                            className="w-44 h-24 object-cover"
                           />
                         </a>
                       );
@@ -295,8 +400,8 @@ export default async function PublicStatusPage({
 
             {/* Catatan Alasan (Bila Tidak Valid atau Ditolak) */}
             {report.reason && (
-              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-                <div className="text-xs font-bold text-amber-800 uppercase tracking-wider mb-1">
+              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5">
+                <div className="text-[11px] font-bold text-amber-800 uppercase tracking-wider mb-1">
                   Catatan dari Tim Pengelola / Manager
                 </div>
                 <p className="text-sm text-amber-900 font-medium">
@@ -307,8 +412,8 @@ export default async function PublicStatusPage({
 
             {/* Info Jika Digabung */}
             {report.status === "DIGABUNG" && report.parentReport && (
-              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-                <div className="text-xs font-bold text-blue-800 uppercase tracking-wider mb-1">
+              <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5">
+                <div className="text-[11px] font-bold text-blue-800 uppercase tracking-wider mb-1">
                   Laporan Digabung
                 </div>
                 <p className="text-sm text-blue-900">
@@ -323,82 +428,97 @@ export default async function PublicStatusPage({
                 </p>
               </div>
             )}
+          </div>
 
-            {/* Foto Hasil Perbaikan (Bila Selesai) */}
-            {report.status === "SELESAI" && completionPhotos.length > 0 && (
-              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
-                <div className="text-xs font-bold text-emerald-800 uppercase tracking-wider mb-2">
-                  ✓ Foto Hasil Perbaikan Selesai
+          {/* ================= KOLOM KANAN ================= */}
+          <div className="space-y-5">
+            {/* Laporan Setelah Diperbaiki */}
+            {showAfterCard && (
+              <div className={cardClass}>
+                <div className="flex items-center justify-between">
+                  <CardTitle>Laporan Setelah Diperbaiki</CardTitle>
+                  <span
+                    className={`px-2.5 py-1 rounded-full text-[10px] font-bold border ${meta.badgeColor}`}
+                  >
+                    {meta.label}
+                  </span>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  {completionPhotos.map((cp, idx) => {
-                    const safeUrl = sanitizeMediaHref(cp.url);
-                    if (!safeUrl) return null;
-                    return (
-                      <a
-                        key={cp.id}
-                        href={safeUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="block rounded-lg overflow-hidden border border-emerald-300 hover:opacity-90"
-                      >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={safeUrl}
-                          alt={`Foto hasil ${idx + 1}`}
-                          className="w-28 h-28 object-cover"
-                        />
-                      </a>
-                    );
-                  })}
-                </div>
+
+                {technicianRow && (
+                  <div className="mt-3 flex items-center gap-3 bg-slate-50 border border-slate-200/80 rounded-xl p-3">
+                    <Avatar name={technicianRow.name} size="w-10 h-10" />
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
+                        Teknisi yang Mengerjakan
+                      </div>
+                      <div className="text-sm font-bold text-slate-900">
+                        {technicianRow.name}
+                      </div>
+                      {canSeePrivate && (
+                        <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                          <MailIcon />
+                          <span className="truncate">
+                            {technicianRow.email}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {safeCompletion.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    <a
+                      href={safeCompletion[0].url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block rounded-xl overflow-hidden border border-slate-200 hover:opacity-95 transition"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={safeCompletion[0].url}
+                        alt="Foto hasil perbaikan 1"
+                        className="w-full h-52 object-cover"
+                      />
+                    </a>
+                    {safeCompletion.length > 1 && (
+                      <div className="flex flex-wrap gap-2">
+                        {safeCompletion.slice(1).map((cp, idx) => (
+                          <a
+                            key={cp.id}
+                            href={cp.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="block rounded-lg overflow-hidden border border-slate-200 hover:opacity-90 transition"
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={cp.url}
+                              alt={`Foto hasil perbaikan ${idx + 2}`}
+                              className="w-24 h-24 object-cover"
+                            />
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <p className="mt-3 text-sm text-slate-600 bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 leading-relaxed">
+                  Fasilitas taman telah selesai diperbaiki oleh teknisi
+                  lapangan. Perkembangan dan hasil perbaikan dapat dilihat pada
+                  foto di atas serta riwayat aktivitas di bawah.
+                </p>
               </div>
             )}
 
-            {/* Timeline Perubahan Status */}
-            <div>
-              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
-                Riwayat Perkembangan Tiket
-              </div>
-
-              <div className="space-y-3 relative before:absolute before:inset-0 before:left-3 before:w-0.5 before:bg-slate-200">
-                {report.statusLogs.map((log) => {
-                  const logMeta = STATUS_METADATA[log.toStatus];
-                  return (
-                    <div key={log.id} className="relative flex items-start gap-3 pl-8">
-                      <div className="absolute left-1.5 top-1.5 w-3.5 h-3.5 rounded-full bg-emerald-600 border-2 border-white shadow-xs" />
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`px-2 py-0.5 rounded text-[11px] font-bold border ${logMeta.badgeColor}`}
-                          >
-                            {logMeta.label}
-                          </span>
-                          <span className="text-xs text-slate-400">
-                            {new Date(log.createdAt).toLocaleString("id-ID", {
-                              dateStyle: "medium",
-                              timeStyle: "short",
-                            })}
-                          </span>
-                        </div>
-                        {log.note &&
-                          (log.toStatus === "TIDAK_VALID" ||
-                            log.toStatus === "DITOLAK") && (
-                            <p className="text-xs text-slate-600 mt-1">
-                              {log.note}
-                            </p>
-                          )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+            {/* Riwayat Aktivitas: log status, terbaru di atas */}
+            <ReportActivityCard entries={activity} now={now} />
           </div>
         </div>
 
         {/* Footer */}
-        <div className="text-center text-xs text-slate-400 mt-6">
+        <div className="text-center text-xs text-slate-400 mt-8">
           Sistem Manajemen Fasilitas & Taman GreenPark · Pembaruan real-time
         </div>
       </div>

@@ -2,7 +2,7 @@ import React from "react";
 import Link from "next/link";
 import { DashboardNav } from "./dashboard-nav";
 import { logoutAction } from "@/app/actions/auth-actions";
-import { Building2, LogOut, ShieldCheck } from "lucide-react";
+import { LogOut } from "lucide-react";
 import type { NavItem, RoleMetadata } from "@/lib/permissions";
 import type { SessionPayload } from "@/lib/auth";
 
@@ -11,6 +11,11 @@ interface AppSidebarProps {
   navItems: NavItem[];
   roleMeta: RoleMetadata;
   badges?: Record<string, number>;
+}
+
+/** "Pengguna (Warga / Pengunjung)" → "Pengguna" agar muat di badge sempit. */
+function shortRoleLabel(label: string) {
+  return label.replace(/\s*\(.*\)\s*$/, "").trim();
 }
 
 export function AppSidebar({
@@ -28,77 +33,57 @@ export function AppSidebar({
     .toUpperCase();
 
   return (
-    <aside className="w-64 lg:w-72 h-screen sticky top-0 hidden md:flex flex-col bg-white border-r border-slate-200/80 shadow-2xs z-30 select-none">
-      {/* 1. Header Sidebar: Logo & Brand */}
-      <div className="p-5 border-b border-slate-100 flex flex-col gap-3">
-        <Link href="/dashboard" className="flex items-center gap-3 group">
-          <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center text-sm font-black shadow-md shadow-emerald-600/20 group-hover:scale-105 transition-transform shrink-0 tracking-tight">
+    <aside className="w-60 h-screen sticky top-0 hidden md:flex flex-col bg-white border-r border-slate-200/80 z-30 select-none">
+      {/* Brand + perusahaan */}
+      <div className="px-4 pt-4 pb-3 border-b border-slate-100">
+        <Link href="/dashboard" className="flex items-center gap-2.5 group">
+          <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center text-xs font-black shadow-sm shadow-emerald-600/20 group-hover:scale-105 transition-transform shrink-0">
             GP
           </div>
-          <div className="flex flex-col">
-            <span className="font-extrabold text-base text-slate-900 tracking-tight leading-none">
-              GreenPark
-            </span>
-            <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-widest mt-1">
-              Asset Desk
-            </span>
-          </div>
-        </Link>
-
-        {/* Perusahaan Terpilih */}
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-50 border border-slate-200/70 text-xs font-medium text-slate-600">
-          <Building2 className="w-4 h-4 text-slate-400 shrink-0" />
-          <span className="truncate">
-            {session.companyName || "PT Taman Hijau Nusantara"}
-          </span>
-        </div>
-      </div>
-
-      {/* 2. Middle Sidebar: Navigasi Menu */}
-      <div className="flex-1 py-4 px-3 space-y-4 overflow-y-auto">
-        <div>
-          <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-3 mb-2 flex items-center justify-between gap-2">
-            <span className="shrink-0">Menu Utama</span>
-            <span
-              className={`text-[10px] px-2 py-0.5 rounded-full border font-bold truncate ${roleMeta.badgeColor}`}
-            >
-              {roleMeta.label}
-            </span>
-          </div>
-          <DashboardNav items={navItems} badges={badges} />
-        </div>
-
-        {/* Info Cakupan Akses Role */}
-        <div className="pt-2 px-1">
-          <div className="p-3.5 rounded-xl border border-emerald-200/80 bg-emerald-50/60 space-y-1.5 text-xs">
-            <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-800 uppercase tracking-wider">
-              <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-              <span>Cakupan Tugas</span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="font-extrabold text-sm text-slate-900 tracking-tight leading-none">
+                GreenPark
+              </span>
+              <span className="text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                Asset Desk
+              </span>
             </div>
-            <p className="text-slate-600 text-[11px] leading-relaxed">
-              {roleMeta.scopeDescription}
+            <p
+              className="text-[11px] text-slate-500 font-medium truncate mt-1"
+              title={session.companyName || undefined}
+            >
+              {session.companyName || "PT Taman Hijau Nusantara"}
             </p>
           </div>
-        </div>
+        </Link>
       </div>
 
-      {/* 3. Footer Sidebar: Profil Pengguna & Tombol Logout */}
-      <div className="p-3 border-t border-slate-200/80 bg-slate-50/50">
-        <div className="flex items-center justify-between gap-2.5 p-2 rounded-xl bg-white border border-slate-200/60 shadow-2xs">
+      {/* Navigasi */}
+      <div className="flex-1 py-3 px-2.5 overflow-y-auto">
+        <DashboardNav items={navItems} badges={badges} />
+      </div>
+
+      {/* Profil + peran + keluar */}
+      <div className="p-2.5 border-t border-slate-200/80">
+        <div className="flex items-center gap-2 p-1.5 rounded-xl hover:bg-slate-50 transition-colors">
           <Link
             href="/dashboard/profil"
             className="flex items-center gap-2.5 min-w-0 flex-1 group"
+            title={`${session.name} · ${roleMeta.label}\n${roleMeta.scopeDescription}`}
           >
-            <div className="w-9 h-9 rounded-full bg-slate-900 text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-2xs group-hover:bg-emerald-700 transition">
+            <div className="w-8 h-8 rounded-full bg-slate-900 text-white font-bold text-[11px] flex items-center justify-center shrink-0 group-hover:bg-emerald-700 transition">
               {initials || "GP"}
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-xs font-bold text-slate-900 truncate">
                 {session.name}
               </div>
-              <div className="text-[11px] text-slate-500 truncate">
-                {session.email}
-              </div>
+              <span
+                className={`inline-block max-w-full truncate mt-0.5 text-[9px] font-bold px-1.5 py-px rounded border ${roleMeta.badgeColor}`}
+              >
+                {shortRoleLabel(roleMeta.label)}
+              </span>
             </div>
           </Link>
 

@@ -28,6 +28,22 @@ describe("Asset Code & Abbreviation Generator (Hierarki 5 Tingkat)", () => {
     expect(prefix).toBe("GPR-BGN-TMU-LMP");
   });
 
+  it("mengabaikan kata 'Komplek/Kompleks' seperti 'Cluster' saat ada kata lain", () => {
+    expect(abbreviateEntity("Komplek Alam Mutiara Residence")).toBe("AMR");
+    expect(abbreviateEntity("Kompleks Taman Sari")).toBe("TS");
+    expect(abbreviateEntity("Komplek Melati")).toBe("MLT");
+    // Hanya kata "Komplek" saja tetap menghasilkan singkatan, bukan kosong
+    expect(abbreviateEntity("Komplek")).toBe("KMP");
+    expect(
+      buildAssetPrefix(
+        "Komplek Alam Mutiara Residence",
+        "cluster buffalo",
+        "Taman Buffalo",
+        "Penerangan & Lampu Taman"
+      )
+    ).toBe("AMR-BFF-TB-PLT");
+  });
+
   it("menangani nama kosong atau karakter khusus dengan aman", () => {
     expect(abbreviateEntity("")).toBe("AST");
     expect(abbreviateEntity("   ")).toBe("AST");

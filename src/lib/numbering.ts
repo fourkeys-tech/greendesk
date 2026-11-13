@@ -13,8 +13,16 @@ import { execute, query, queryOne, type TxClient } from "./db";
 
 export type SequenceScope = "TKT" | "SPK" | "PGV";
 
-function yearMonth(date = new Date()): string {
-  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
+const WIB_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+/**
+ * Tahun-bulan (YYYYMM) menurut WIB (UTC+7), bukan zona waktu server.
+ * Server produksi biasanya UTC: tanpa ini, laporan tgl 1 pukul 00.00–06.59 WIB
+ * akan mendapat prefix bulan sebelumnya.
+ */
+export function yearMonth(date = new Date()): string {
+  const wib = new Date(date.getTime() + WIB_OFFSET_MS);
+  return `${wib.getUTCFullYear()}${String(wib.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
 function parseTrailingSeq(value: string | null | undefined): number {
