@@ -23,6 +23,7 @@ import { PicAssignPanel } from "./pic-assign-panel";
 import { TechnicianSubmitPanel } from "./technician-submit-panel";
 import type { Role, ReportStatus } from "@/lib/db-types";
 import { sanitizeMediaHref } from "@/lib/url-safety";
+import { canDownloadSpkFile, spkFileHref } from "@/lib/spk-file";
 
 interface LaporanClientBoardProps {
   reports: any[];
@@ -636,12 +637,11 @@ export function LaporanClientBoard({
                               </div>
                             )}
 
-                            {sanitizeMediaHref((report.workOrder as any)?.spkFileUrl) && (
+                            {canDownloadSpkFile(role) && (report.workOrder as any)?.spkFileUrl && (
                               <a
-                                href={sanitizeMediaHref((report.workOrder as any).spkFileUrl)!}
+                                href={spkFileHref(report.workOrder.id)}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                download={(report.workOrder as any).spkFileName || "SPK.pdf"}
                                 className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-800 text-[11px] font-bold border border-indigo-200 transition w-full mt-2"
                               >
                                 <Download className="w-3.5 h-3.5" />
@@ -753,8 +753,11 @@ export function LaporanClientBoard({
                           currentTechnicianId={report.workOrder.technicianId}
                           currentTechnicianName={report.workOrder.technician?.fullName}
                           isReplacing={report.status === "DIKERJAKAN"}
-                          spkFileUrl={sanitizeMediaHref((report.workOrder as any).spkFileUrl)}
-                          spkFileName={(report.workOrder as any).spkFileName}
+                          spkFileHref={
+                            (report.workOrder as any).spkFileUrl
+                              ? spkFileHref(report.workOrder.id)
+                              : null
+                          }
                         />
                       </div>
                     )}
@@ -775,8 +778,7 @@ export function LaporanClientBoard({
                                 ].note
                               : null
                           }
-                          spkFileUrl={sanitizeMediaHref((report.workOrder as any).spkFileUrl)}
-                          spkFileName={(report.workOrder as any).spkFileName}
+                          spkFileHref={spkFileHref(report.workOrder.id)}
                           existingBeforeCount={
                             (report.workOrder as any).photos?.filter(
                               (p: any) => p.type === "BEFORE"

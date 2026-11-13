@@ -1,6 +1,162 @@
-import { mkdir, writeFile } from "fs/promises";
+import { mkdir, readFile, writeFile } from "fs/promises";
 import path from "path";
 import crypto from "crypto";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import {
+  getPrivateS3StorageConfig,
+  getS3StorageConfig,
+  isSafeObjectKey,
+  toPrivateStorageRef,
+  type S3Credentials,
+} from "./storage-config";
+
+export type UploadFolder = "assets" | "reports" | "workorders" | "technicians";
+export type PrivateUploadFolder = "spk" | "documents";
+
+/** Lokasi fallback berkas private saat dev lokal (di luar `public/`, tidak tersaji statis). */
+const LOCAL_PRIVATE_DIR = path.join(process.cwd(), ".private-uploads");
+const PRIVATE_URL_TTL_SECONDS = 120;
+
+let cachedS3Client: { key: string; client: S3Client } | null = null;
+
+function getS3Client(config: S3Credentials): S3Client {
+  const key = `${config.endpoint}|${config.region}|${config.accessKeyId}`;
+  if (cachedS3Client?.key === key) return cachedS3Client.client;
+  const client = new S3Client({
+    endpoint: config.endpoint,
+    region: config.region,
+    forcePathStyle: true,
+    credentials: {
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey,
+    },
+  });
+  cachedS3Client = { key, client };
+  return client;
+}
+
+/**
+ * Menyimpan berkas ke object storage (S3-compatible) bila dikonfigurasi,
+ * atau ke `public/uploads` saat pengembangan lokal. Mengembalikan URL publik.
+ */
+export async function persistUpload(
+  folder: UploadFolder,
+  fileName: string,
+  buffer: Buffer,
+  contentType: string
+): Promise<string> {
+  const config = getS3StorageConfig();
+  if (config) {
+    const key = `${folder}/${fileName}`;
+    await getS3Client(config).send(
+      new PutObjectCommand({
+        Bucket: config.bucket,
+        Key: key,
+        Body: buffer,
+        ContentType: contentType,
+        CacheControl: "public, max-age=31536000, immutable",
+      })
+    );
+    return `${config.publicBaseUrl}/${key}`;
+  }
+
+  if (process.env.VERCEL) {
+    throw new Error(
+      "Penyimpanan berkas belum dikonfigurasi (S3_ENDPOINT, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_BUCKET)."
+    );
+  }
+
+  const uploadDir = path.join(process.cwd(), "public", "uploads", folder);
+  await mkdir(uploadDir, { recursive: true });
+  await writeFile(path.join(uploadDir, fileName), buffer);
+  return `/uploads/${folder}/${fileName}`;
+}
+
+function resolveLocalPrivatePath(key: string): string {
+  if (!isSafeObjectKey(key)) throw new Error("Kunci berkas private tidak valid.");
+  const resolved = path.resolve(LOCAL_PRIVATE_DIR, key);
+  if (!resolved.startsWith(LOCAL_PRIVATE_DIR + path.sep)) {
+    throw new Error("Kunci berkas private tidak valid.");
+  }
+  return resolved;
+}
+
+/**
+ * Menyimpan berkas ke bucket private. Mengembalikan referensi `private://<key>`
+ * (bukan URL) — berkas hanya bisa diunduh lewat route yang memeriksa otorisasi.
+ */
+export async function persistPrivateUpload(
+  folder: PrivateUploadFolder,
+  fileName: string,
+  buffer: Buffer,
+  contentType: string
+): Promise<string> {
+  const key = `${folder}/${fileName}`;
+  const config = getPrivateS3StorageConfig();
+  if (config) {
+    await getS3Client(config).send(
+      new PutObjectCommand({
+        Bucket: config.bucket,
+        Key: key,
+        Body: buffer,
+        ContentType: contentType,
+      })
+    );
+    return toPrivateStorageRef(key);
+  }
+
+  if (process.env.VERCEL) {
+    throw new Error(
+      "Penyimpanan dokumen private belum dikonfigurasi (S3_PRIVATE_BUCKET)."
+    );
+  }
+
+  const filePath = resolveLocalPrivatePath(key);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, buffer);
+  return toPrivateStorageRef(key);
+}
+
+export type PrivateDownload =
+  | { kind: "redirect"; url: string }
+  | { kind: "file"; body: Buffer };
+
+export function buildContentDisposition(fileName: string): string {
+  const fallback = fileName.replace(/[^A-Za-z0-9._ -]/g, "_") || "dokumen";
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+}
+
+/**
+ * Menyiapkan unduhan berkas private. Panggil HANYA setelah otorisasi lolos.
+ * Bucket S3: presigned URL berumur pendek. Dev lokal: isi berkas dari disk.
+ */
+export async function resolvePrivateDownload(
+  key: string,
+  fileName: string,
+  contentType: string
+): Promise<PrivateDownload> {
+  const config = getPrivateS3StorageConfig();
+  if (config) {
+    if (!isSafeObjectKey(key)) throw new Error("Kunci berkas private tidak valid.");
+    const url = await getSignedUrl(
+      getS3Client(config),
+      new GetObjectCommand({
+        Bucket: config.bucket,
+        Key: key,
+        ResponseContentDisposition: buildContentDisposition(fileName),
+        ResponseContentType: contentType,
+      }),
+      { expiresIn: PRIVATE_URL_TTL_SECONDS }
+    );
+    return { kind: "redirect", url };
+  }
+
+  if (process.env.VERCEL) {
+    throw new Error("Penyimpanan dokumen private belum dikonfigurasi (S3_PRIVATE_BUCKET).");
+  }
+  return { kind: "file", body: await readFile(resolveLocalPrivatePath(key)) };
+}
 
 export interface UploadResult {
   url: string;
@@ -110,8 +266,8 @@ function detectDocumentFormat(
 
 /**
  * Layanan penyimpanan foto (Fase 0).
- * Menggunakan penyimpanan lokal `public/uploads` di mode pengembangan,
- * dan siap dialihkan ke S3 / Cloudflare R2 lewat adapter yang sama.
+ * Object storage S3-compatible (Supabase Storage) bila dikonfigurasi,
+ * fallback ke `public/uploads` saat pengembangan lokal.
  */
 export async function saveUploadedPhoto(
   file: File,
@@ -137,15 +293,10 @@ export async function saveUploadedPhoto(
   }
 
   const uniqueName = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}.${detected.ext}`;
-
-  const uploadDir = path.join(process.cwd(), "public", "uploads", folder);
-  await mkdir(uploadDir, { recursive: true });
-
-  const filePath = path.join(uploadDir, uniqueName);
-  await writeFile(filePath, buffer);
+  const url = await persistUpload(folder, uniqueName, buffer, detected.mime);
 
   return {
-    url: `/uploads/${folder}/${uniqueName}`,
+    url,
     fileName: uniqueName,
     sizeBytes: buffer.byteLength,
     mimeType: detected.mime,
@@ -162,12 +313,13 @@ const ALLOWED_DOCUMENT_MIME_TYPES = [
 const MAX_DOC_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB sesuai PRD v0.2 Keputusan 14
 
 /**
- * Layanan penyimpanan file dokumen resmi (Surat Perintah Kerja / SPK).
+ * Layanan penyimpanan file dokumen resmi (Surat Perintah Kerja / SPK) ke bucket private.
  * Mendukung PDF, DOC, DOCX, dan scan image hingga 10 MB dengan validasi magic bytes.
+ * `url` berisi referensi `private://...`, bukan URL publik.
  */
 export async function saveUploadedDocument(
   file: File,
-  folder: "spk" | "documents" = "spk"
+  folder: PrivateUploadFolder = "spk"
 ): Promise<UploadResult> {
   const lowerName = file.name.toLowerCase();
   const hasAllowedExtension =
@@ -201,16 +353,11 @@ export async function saveUploadedDocument(
     );
   }
 
-  const uniqueName = `SPK-${Date.now()}-${crypto.randomBytes(4).toString("hex")}.${detected.ext}`;
-
-  const uploadDir = path.join(process.cwd(), "public", "uploads", folder);
-  await mkdir(uploadDir, { recursive: true });
-
-  const filePath = path.join(uploadDir, uniqueName);
-  await writeFile(filePath, buffer);
+  const uniqueName = `SPK-${Date.now()}-${crypto.randomBytes(8).toString("hex")}.${detected.ext}`;
+  const url = await persistPrivateUpload(folder, uniqueName, buffer, detected.mime);
 
   return {
-    url: `/uploads/${folder}/${uniqueName}`,
+    url,
     fileName: path.basename(file.name) || uniqueName,
     sizeBytes: buffer.byteLength,
     mimeType: detected.mime,

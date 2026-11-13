@@ -1,7 +1,5 @@
 "use server";
 
-import { mkdir, writeFile } from "fs/promises";
-import path from "path";
 import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { after } from "next/server";
@@ -12,7 +10,7 @@ import {
   type SessionUser,
 } from "@/lib/auth";
 import { queryOne, withTransaction } from "@/lib/db";
-import { detectImageFormat, saveUploadedPhoto } from "@/lib/storage";
+import { detectImageFormat, persistUpload, saveUploadedPhoto } from "@/lib/storage";
 import { flushEmailOutboxSafely } from "@/lib/email";
 import {
   issueOtp,
@@ -47,10 +45,7 @@ async function saveBase64PhotoToUploads(dataUrl: string): Promise<string> {
   }
 
   const fileName = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}.${detected.ext}`;
-  const uploadDir = path.join(process.cwd(), "public", "uploads", "reports");
-  await mkdir(uploadDir, { recursive: true });
-  await writeFile(path.join(uploadDir, fileName), buffer);
-  return `/uploads/reports/${fileName}`;
+  return persistUpload("reports", fileName, buffer, detected.mime);
 }
 
 /** Submit an authenticated report from QR or dashboard. */

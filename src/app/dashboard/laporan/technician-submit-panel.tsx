@@ -3,15 +3,13 @@
 import { useState, useTransition } from "react";
 import { AlertCircle, Camera, Download, FileText, Upload } from "lucide-react";
 import { submitWorkResultAction } from "@/app/actions/phase6-actions";
-import { sanitizeMediaHref } from "@/lib/url-safety";
 
 interface TechnicianSubmitPanelProps {
   workOrderId: string;
   spkNo: string;
   ticketNo: string;
   revisionNote?: string | null;
-  spkFileUrl?: string | null;
-  spkFileName?: string | null;
+  spkFileHref?: string | null;
   existingBeforeCount?: number;
 }
 
@@ -20,8 +18,7 @@ export function TechnicianSubmitPanel({
   spkNo,
   ticketNo,
   revisionNote,
-  spkFileUrl,
-  spkFileName,
+  spkFileHref,
   existingBeforeCount = 0,
 }: TechnicianSubmitPanelProps) {
   const [beforeFile, setBeforeFile] = useState<File | null>(null);
@@ -85,12 +82,11 @@ export function TechnicianSubmitPanel({
           </span>
         </div>
 
-        {sanitizeMediaHref(spkFileUrl) && (
+        {spkFileHref && (
           <a
-            href={sanitizeMediaHref(spkFileUrl)!}
+            href={spkFileHref}
             target="_blank"
             rel="noopener noreferrer"
-            download={spkFileName || "SPK.pdf"}
             className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold border border-indigo-200 transition"
           >
             <Download className="w-3.5 h-3.5" />

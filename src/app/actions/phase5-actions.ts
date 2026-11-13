@@ -63,8 +63,9 @@ export async function decideManagerReportAction(formData: FormData) {
       if (!eligibleVendor) throw new Error("Vendor tidak melayani cluster laporan ini.");
     }
 
-    let spkFileUrl = (formData.get("spkFileUrl") as string) || undefined;
-    let spkFileName = (formData.get("spkFileName") as string) || undefined;
+    // Referensi berkas SPK hanya berasal dari upload di server, tidak dari input klien.
+    let spkFileUrl: string | undefined = undefined;
+    let spkFileName: string | undefined = undefined;
     let spkFileSize: number | undefined = undefined;
     let spkFileMime: string | undefined = undefined;
 

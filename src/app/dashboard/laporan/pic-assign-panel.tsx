@@ -6,7 +6,6 @@ import {
   assignTechnicianAction,
   replaceTechnicianAction,
 } from "@/app/actions/phase6-actions";
-import { sanitizeMediaHref } from "@/lib/url-safety";
 
 interface TechnicianOption {
   id: string;
@@ -20,8 +19,7 @@ interface PicAssignPanelProps {
   currentTechnicianId?: string | null;
   currentTechnicianName?: string | null;
   isReplacing?: boolean;
-  spkFileUrl?: string | null;
-  spkFileName?: string | null;
+  spkFileHref?: string | null;
 }
 
 export function PicAssignPanel({
@@ -31,8 +29,7 @@ export function PicAssignPanel({
   currentTechnicianId,
   currentTechnicianName,
   isReplacing = false,
-  spkFileUrl,
-  spkFileName,
+  spkFileHref,
 }: PicAssignPanelProps) {
   const [selectedTechId, setSelectedTechId] = useState(
     technicians.find((t) => t.id !== currentTechnicianId)?.id || technicians[0]?.id || ""
@@ -113,12 +110,11 @@ export function PicAssignPanel({
           </span>
         </div>
 
-        {sanitizeMediaHref(spkFileUrl) && (
+        {spkFileHref && (
           <a
-            href={sanitizeMediaHref(spkFileUrl)!}
+            href={spkFileHref}
             target="_blank"
             rel="noopener noreferrer"
-            download={spkFileName || "SPK.pdf"}
             className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold border border-indigo-200 transition"
           >
             <Download className="w-3.5 h-3.5" />

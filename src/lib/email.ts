@@ -1,7 +1,7 @@
 import { pool, execute, query, queryOne, type DbClient } from "./db";
 import type { EmailLogRow } from "./db-types";
 import { getMailer } from "./mailer";
-import { isSafeLocalUploadUrl } from "./url-safety";
+import { isSafeLocalUploadUrl, isSafeStorageUploadUrl } from "./url-safety";
 import { getPublicAppBaseUrl } from "./app-url";
 
 export type EmailTriggerType =
@@ -65,6 +65,7 @@ export function buildStatusUrl(ticketNo: string, statusToken: string): string {
 }
 
 function toAbsoluteUrl(url: string): string | null {
+  if (isSafeStorageUploadUrl(url)) return url.trim();
   if (!isSafeLocalUploadUrl(url)) return null;
   return `${getAppBaseUrl()}${url.trim()}`;
 }

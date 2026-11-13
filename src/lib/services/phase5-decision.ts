@@ -16,7 +16,7 @@ import { recordAuditLog } from "../audit";
 import { nextSpkNumber } from "../numbering";
 import { transitionReport } from "../report-transition";
 import { activeAssignmentSql } from "../scopes";
-import { assertSafeUploadUrl } from "../url-safety";
+import { parsePrivateStorageRef } from "../storage-config";
 import type { SessionUser } from "../auth";
 
 /**
@@ -376,7 +376,10 @@ export async function decideManagerReport(
 
     const { vendorId, assignedDate, notes, spkFileName, spkFileSize, spkFileMime } =
       input.spkInput;
-    const spkFileUrl = assertSafeUploadUrl(input.spkInput.spkFileUrl, "File SPK");
+    const spkFileUrl = input.spkInput.spkFileUrl.trim();
+    if (!parsePrivateStorageRef(spkFileUrl)) {
+      throw new Error("File SPK tidak valid. Unggah ulang dokumen SPK.");
+    }
 
     // Verifikasi vendor melayani cluster laporan ini
     const vendor = await queryOne<VendorRow>(

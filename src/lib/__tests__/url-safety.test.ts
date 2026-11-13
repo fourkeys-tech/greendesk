@@ -3,6 +3,7 @@ import {
   assertSafeUploadUrl,
   assertSafeUploadUrls,
   isSafeLocalUploadUrl,
+  isSafeStorageUploadUrl,
   sanitizeInternalHref,
   sanitizeMediaHref,
 } from "../url-safety";
@@ -17,6 +18,23 @@ describe("URL safety", () => {
     expect(assertSafeUploadUrls(["/uploads/a.jpg", " "])).toEqual([
       "/uploads/a.jpg",
     ]);
+  });
+
+  it("allows only object URLs under the configured storage base", () => {
+    const base = "https://proj.supabase.co/storage/v1/object/public/uploads";
+    expect(isSafeStorageUploadUrl(`${base}/reports/1-ab.jpg`, base)).toBe(true);
+    expect(isSafeStorageUploadUrl(`${base}/spk/SPK-1-ab.pdf`, base)).toBe(true);
+    for (const url of [
+      `${base}/../secret`,
+      `${base}/reports/a.jpg?x=1`,
+      `${base}reports/a.jpg`,
+      `${base}/`,
+      "https://evil.example/storage/v1/object/public/uploads/a.jpg",
+      "/uploads/reports/a.jpg",
+    ]) {
+      expect(isSafeStorageUploadUrl(url, base)).toBe(false);
+    }
+    expect(isSafeStorageUploadUrl(`${base}/reports/a.jpg`, null)).toBe(false);
   });
 
   it("only renders valid HTTP(S) or local media URLs", () => {
