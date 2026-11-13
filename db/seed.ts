@@ -527,7 +527,211 @@ async function main() {
       ]
     );
 
-    // 8. Contoh AuditLog Awal
+    // 8. Laporan yang sudah SELESAI (data demo lengkap dengan WorkOrder, WorkPhoto, ReportStatusLog)
+    // Tambah 2 aset extra untuk laporan selesai agar tidak bentrok dengan aset aktif
+    let catPemdaId = await queryOneId(
+      client,
+      `SELECT "id" FROM "Category" WHERE "companyId" = $1 AND "name" = $2 LIMIT 1`,
+      [companyAId, "Furnitur & Bangku Taman"]
+    );
+    if (!catPemdaId) {
+      catPemdaId = (
+        await client.query<{ id: string }>(
+          `INSERT INTO "Category" ("companyId", "name", "damageTypes")
+           VALUES ($1, $2, $3) RETURNING "id"`,
+          [
+            companyAId,
+            "Furnitur & Bangku Taman",
+            ["Kayu lapuk", "Cat terkelupas", "Baut patah", "Sandaran rusak"],
+          ]
+        )
+      ).rows[0].id;
+    }
+
+    const assetDoneAId = (
+      await client.query<{ id: string }>(
+        `INSERT INTO "Asset" ("companyId", "code", "parkId", "categoryId", "name", "locationNote", "installedAt", "isActive")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+         ON CONFLICT ("code") DO UPDATE SET "code" = EXCLUDED."code"
+         RETURNING "id"`,
+        [
+          companyAId,
+          "AST-BGV-010",
+          parkBougenvilleId,
+          catPemdaId,
+          "Bangku Taman Kayu Jati #03",
+          "Dekat Gazebo Bougenville Barat",
+          new Date("2025-04-20"),
+        ]
+      )
+    ).rows[0].id;
+
+    const assetDoneBId = (
+      await client.query<{ id: string }>(
+        `INSERT INTO "Asset" ("companyId", "code", "parkId", "categoryId", "name", "locationNote", "installedAt", "isActive")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+         ON CONFLICT ("code") DO UPDATE SET "code" = EXCLUDED."code"
+         RETURNING "id"`,
+        [
+          companyAId,
+          "AST-EDW-005",
+          parkEdelweissId,
+          catLampuId,
+          "Lampu Sorot Jalur Jogging #02",
+          "Sudut Selatan jalur jogging Edelweiss",
+          new Date("2025-05-10"),
+        ]
+      )
+    ).rows[0].id;
+
+    const assetDoneCId = (
+      await client.query<{ id: string }>(
+        `INSERT INTO "Asset" ("companyId", "code", "parkId", "categoryId", "name", "locationNote", "installedAt", "isActive")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+         ON CONFLICT ("code") DO UPDATE SET "code" = EXCLUDED."code"
+         RETURNING "id"`,
+        [
+          companyAId,
+          "AST-BGV-011",
+          parkBougenvilleId,
+          catPlaygroundId,
+          "Perosotan Anak Fiber #01",
+          "Zona Playground Timur Bougenville",
+          new Date("2025-07-01"),
+        ]
+      )
+    ).rows[0].id;
+
+    // Ambil userId pengelola yang sudah ada
+    const userPengelolaRes = await client.query<{ id: string }>(
+      `SELECT "id" FROM "User" WHERE "email" = $1 LIMIT 1`,
+      ["pengelola.bgv@greenpark.id"]
+    );
+    const userPengelolaId = userPengelolaRes.rows[0]?.id ?? userAdminId;
+
+    // Helper: insert laporan SELESAI berikut seluruh trail-nya
+    async function insertSelesaiReport(params: {
+      ticketNo: string;
+      spkNo: string;
+      assetId: string;
+      description: string;
+      createdDaysAgo: number;
+    }) {
+      const { ticketNo, spkNo, assetId, description, createdDaysAgo } = params;
+
+      // Waktu-waktu bertahap
+      const tCreated = new Date(Date.now() - createdDaysAgo * 86_400_000);
+      const tVerified = new Date(tCreated.getTime() + 2 * 3_600_000);   // +2 jam
+      const tDecided = new Date(tCreated.getTime() + 6 * 3_600_000);    // +6 jam
+      const tDikerjakan = new Date(tCreated.getTime() + 8 * 3_600_000); // +8 jam
+      const tSubmitted = new Date(tCreated.getTime() + 1 * 86_400_000); // +1 hari
+      const tConfirmed = new Date(tCreated.getTime() + 2 * 86_400_000); // +2 hari
+      const tSelesai = new Date(tCreated.getTime() + 2 * 86_400_000 + 3_600_000);
+
+      // Periksa apakah tiket sudah ada
+      const existing = await queryOneId(
+        client,
+        `SELECT "id" FROM "Report" WHERE "ticketNo" = $1 LIMIT 1`,
+        [ticketNo]
+      );
+      if (existing) return;
+
+      // Insert Report dengan status SELESAI
+      const reportId = (
+        await client.query<{ id: string }>(
+          `INSERT INTO "Report" (
+             "companyId", "ticketNo", "assetId", "reporterId", "channel",
+             "description", "status", "priority", "stageEnteredAt", "createdAt", "updatedAt"
+           )
+           VALUES ($1, $2, $3, $4, 'QR', $5, 'SELESAI', 'NORMAL', $6, $7, $8)
+           RETURNING "id"`,
+          [companyAId, ticketNo, assetId, userPenggunaId, description, tSelesai, tCreated, tSelesai]
+        )
+      ).rows[0].id;
+
+      // ReportStatusLog – rekam seluruh perjalanan status
+      const statusTrail: Array<{
+        from: string | null;
+        to: string;
+        by: string;
+        note: string;
+        at: Date;
+      }> = [
+        { from: null, to: "BARU", by: userPenggunaId, note: "Laporan masuk dari QR code.", at: tCreated },
+        { from: "BARU", to: "MENUNGGU_KEPUTUSAN", by: userPengelolaId, note: "Laporan telah diverifikasi oleh pengelola.", at: tVerified },
+        { from: "MENUNGGU_KEPUTUSAN", to: "DISETUJUI", by: userManagerId, note: "Manajer menyetujui perbaikan dan menerbitkan SPK.", at: tDecided },
+        { from: "DISETUJUI", to: "DIKERJAKAN", by: userPicVendorId, note: "SPK diterima, teknisi mulai mengerjakan.", at: tDikerjakan },
+        { from: "DIKERJAKAN", to: "MENUNGGU_KONFIRMASI", by: userTeknisiId, note: "Pekerjaan selesai, menunggu konfirmasi manajer.", at: tSubmitted },
+        { from: "MENUNGGU_KONFIRMASI", to: "SELESAI", by: userManagerId, note: "Manajer mengkonfirmasi perbaikan selesai dengan baik.", at: tSelesai },
+      ];
+
+      for (const s of statusTrail) {
+        await client.query(
+          `INSERT INTO "ReportStatusLog" ("reportId", "fromStatus", "toStatus", "changedById", "note", "createdAt")
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [reportId, s.from, s.to, s.by, s.note, s.at]
+        );
+      }
+
+      // WorkOrder – sudah completed
+      const woId = (
+        await client.query<{ id: string }>(
+          `INSERT INTO "WorkOrder" (
+             "companyId", "spkNo", "reportId", "vendorId", "technicianId",
+             "assignedAt", "submittedAt", "completedAt", "confirmedAt", "createdAt", "updatedAt"
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           ON CONFLICT ("companyId", "spkNo") DO NOTHING
+           RETURNING "id"`,
+          [
+            companyAId, spkNo, reportId, vendor1Id, tech1Id,
+            tDikerjakan, tSubmitted, tSelesai, tConfirmed,
+            tCreated, tSelesai,
+          ]
+        )
+      ).rows[0]?.id;
+
+      if (!woId) return;
+
+      // WorkPhoto – foto sebelum & sesudah (pakai placeholder URL)
+      await client.query(
+        `INSERT INTO "WorkPhoto" ("workOrderId", "type", "url", "uploadedById", "createdAt")
+         VALUES ($1, 'BEFORE', $2, $3, $4)`,
+        [woId, "https://placehold.co/800x600?text=Sebelum+Perbaikan", userTeknisiId, tDikerjakan]
+      );
+      await client.query(
+        `INSERT INTO "WorkPhoto" ("workOrderId", "type", "url", "uploadedById", "createdAt")
+         VALUES ($1, 'AFTER', $2, $3, $4)`,
+        [woId, "https://placehold.co/800x600?text=Sesudah+Perbaikan", userTeknisiId, tSubmitted]
+      );
+    }
+
+    // Insert 3 laporan selesai
+    await insertSelesaiReport({
+      ticketNo: "TKT-202610-0001",
+      spkNo: "SPK-202610-0001",
+      assetId: assetDoneAId,
+      description: "Bangku taman kayu jati #03 — kayu sandaran belakang lapuk dan retak, perlu diganti.",
+      createdDaysAgo: 30,
+    });
+
+    await insertSelesaiReport({
+      ticketNo: "TKT-202610-0002",
+      spkNo: "SPK-202610-0002",
+      assetId: assetDoneBId,
+      description: "Lampu sorot jalur jogging #02 tidak menyala sejak 3 hari lalu, kemungkinan driver LED rusak.",
+      createdDaysAgo: 22,
+    });
+
+    await insertSelesaiReport({
+      ticketNo: "TKT-202610-0003",
+      spkNo: "SPK-202610-0003",
+      assetId: assetDoneCId,
+      description: "Perosotan anak fiber #01 — sambungan atas bergerak dan bersuara saat dipakai, baut pengikat kendur.",
+      createdDaysAgo: 15,
+    });
+
+    // 10. Contoh AuditLog Awal
     const auditCountRes = await client.query<{ count: number }>(
       `SELECT COUNT(*)::int AS count FROM "AuditLog" WHERE "companyId" = $1`,
       [companyAId]
@@ -570,7 +774,7 @@ async function main() {
       );
     }
 
-    // 9. Contoh EmailLog Awal
+    // 11. Contoh EmailLog Awal
     const emailCountRes = await client.query<{ count: number }>(
       `SELECT COUNT(*)::int AS count FROM "EmailLog" WHERE "companyId" = $1`,
       [companyAId]

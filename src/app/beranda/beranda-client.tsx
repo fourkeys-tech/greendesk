@@ -16,6 +16,7 @@ import {
   LogIn,
   LayoutDashboard,
   UserRound,
+  Megaphone,
 } from "lucide-react";
 import { BottomNav } from "@/components/BottomNav";
 import { MobileContainer } from "@/components/MobileContainer";
@@ -151,17 +152,15 @@ function ParkSelector({
           <span>{selectedLabel}</span>
         </span>
         <ChevronDown
-          className={`transition-transform ${
-            isMobile ? "h-3.5 w-3.5" : "h-4 w-4 text-[#1b5e45]"
-          } ${open ? "rotate-180" : ""}`}
+          className={`transition-transform ${isMobile ? "h-3.5 w-3.5" : "h-4 w-4 text-[#1b5e45]"
+            } ${open ? "rotate-180" : ""}`}
         />
       </button>
 
       {open && (
         <div
-          className={`absolute top-full z-30 mt-2 w-64 max-h-72 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl ${
-            isMobile ? "left-1/2 -translate-x-1/2" : "left-0"
-          }`}
+          className={`absolute top-full z-[60] mt-2 w-64 max-h-72 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl ${isMobile ? "left-1/2 -translate-x-1/2" : "left-0"
+            }`}
         >
           {!isMobile && (
             <span className="block px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400">
@@ -174,11 +173,10 @@ function ParkSelector({
               onChange(ALL_PARKS_ID);
               setOpen(false);
             }}
-            className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs transition-colors ${
-              selectedId === ALL_PARKS_ID
-                ? "bg-[#283330] font-bold text-white"
-                : "text-slate-700 hover:bg-slate-50"
-            }`}
+            className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs transition-colors ${selectedId === ALL_PARKS_ID
+              ? "bg-[#283330] font-bold text-white"
+              : "text-slate-700 hover:bg-slate-50"
+              }`}
           >
             <span>Semua Kawasan Taman</span>
             {selectedId === ALL_PARKS_ID && <Check className="h-3.5 w-3.5" />}
@@ -191,18 +189,16 @@ function ParkSelector({
                 onChange(park.id);
                 setOpen(false);
               }}
-              className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs transition-colors ${
-                selectedId === park.id
-                  ? "bg-[#283330] font-bold text-white"
-                  : "text-slate-700 hover:bg-slate-50"
-              }`}
+              className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs transition-colors ${selectedId === park.id
+                ? "bg-[#283330] font-bold text-white"
+                : "text-slate-700 hover:bg-slate-50"
+                }`}
             >
               <span className="truncate">
                 {park.name}
                 <span
-                  className={`block text-[10px] font-normal ${
-                    selectedId === park.id ? "text-emerald-200" : "text-slate-400"
-                  }`}
+                  className={`block text-[10px] font-normal ${selectedId === park.id ? "text-emerald-200" : "text-slate-400"
+                    }`}
                 >
                   {park.clusterName}
                 </span>
@@ -312,11 +308,10 @@ function ReportItem({
   return (
     <Link
       href={href}
-      className={`group flex items-center justify-between gap-3 rounded-2xl bg-white shadow-sm transition-all hover:shadow-md ${
-        isMobile
-          ? "p-2.5"
-          : "p-4 border border-slate-200/70 hover:border-[#1b5e45]/40"
-      }`}
+      className={`group flex items-center justify-between gap-3 rounded-2xl bg-white shadow-sm transition-all hover:shadow-md ${isMobile
+        ? "p-2.5"
+        : "p-4 border border-slate-200/70 hover:border-[#1b5e45]/40"
+        }`}
     >
       <div className="flex min-w-0 items-center gap-3">
         {safePhotoUrl ? (
@@ -337,9 +332,8 @@ function ReportItem({
             {report.ticketNo}
           </span>
           <h4
-            className={`mt-1 truncate font-extrabold leading-tight text-black transition-colors ${
-              isMobile ? "text-[13px]" : "text-sm group-hover:text-[#1b5e45]"
-            }`}
+            className={`mt-1 truncate font-extrabold leading-tight text-black transition-colors ${isMobile ? "text-[13px]" : "text-sm group-hover:text-[#1b5e45]"
+              }`}
           >
             {report.assetName}
           </h4>
@@ -587,7 +581,7 @@ export function BerandaClient({
 
         <div className="mx-auto flex w-full max-w-screen-xl flex-1 flex-col gap-5 px-6 pb-14 lg:px-12 xl:px-16">
           {/* Hero */}
-          <div className="relative overflow-hidden rounded-3xl border border-slate-200/80 bg-white shadow-sm">
+          <div className="relative overflow-visible rounded-3xl border border-slate-200/80 bg-white shadow-sm">
             <img
               src="/assets/BackgroundLeaf.svg"
               alt=""
@@ -640,22 +634,79 @@ export function BerandaClient({
           <TrackTicket />
 
           {/* Panduan */}
-          <button
-            type="button"
-            onClick={() => setIsGuideOpen(true)}
-            className="relative flex h-24 flex-col justify-center overflow-hidden rounded-3xl border border-slate-200/80 bg-white px-7 text-left shadow-sm transition-all hover:shadow-md cursor-pointer"
-          >
-            <span className="text-xl font-bold text-[#1b5e45]">Panduan</span>
-            <span className="text-base text-[#1b5e45]">
-              Pelajari Cara Menggunakan Aplikasi
-            </span>
-            <img
-              src="/assets/LeafButton.svg"
-              alt=""
-              aria-hidden
-              className="absolute bottom-0 right-0 h-full w-auto"
-            />
-          </button>
+          <section className="flex flex-col gap-5">
+            <div className="relative overflow-hidden w-full rounded-3xl bg-white p-7 lg:p-8 shadow-sm border border-slate-100">
+              <div className="flex items-center justify-between mb-5">
+                <div>
+                  <h3 className="text-lg font-bold text-[#1b5e45]">Panduan</h3>
+                  <p className="text-sm text-[#1f7a55] mt-0.5">Pelajari Cara Menggunakan Aplikasi</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsGuideOpen(true)}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#1b5e45]/10 text-[#1b5e45] text-sm font-bold hover:bg-[#1b5e45]/20 transition-colors"
+                >
+                  <BookOpen className="w-4 h-4" />
+                  <span>Lihat Panduan</span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-4 gap-4 lg:gap-5">
+                <div className="rounded-2xl border border-slate-100 bg-[#fcfcfb] p-4 lg:p-5 flex flex-col justify-start">
+                  <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#e6f6ee] text-[#1b5e45] text-xs font-bold w-fit">
+                    <span>1</span>
+                    <span className="text-[10px] opacity-75">🍃</span>
+                  </div>
+                  <h4 className="font-bold text-sm text-slate-900 mt-2.5 leading-snug">Scan QR di aset</h4>
+                  <p className="text-xs text-slate-500 leading-relaxed mt-1.5">Form terbuka dengan aset dan lokasi sudah terisi. Laporan aktif untuk aset itu ikut tampil agar tidak dobel.</p>
+                </div>
+                <div className="rounded-2xl border border-slate-100 bg-[#fcfcfb] p-4 lg:p-5 flex flex-col justify-start">
+                  <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#e6f6ee] text-[#1b5e45] text-xs font-bold w-fit">
+                    <span>2</span>
+                    <span className="text-[10px] opacity-75">🍃</span>
+                  </div>
+                  <h4 className="font-bold text-sm text-slate-900 mt-2.5 leading-snug">Isi dan kirim</h4>
+                  <p className="text-xs text-slate-500 leading-relaxed mt-1.5">Unggah minimal satu foto dan tulis deskripsi singkat. Belum login? Isian disimpan, lalu Anda masuk dan laporan terkirim otomatis.</p>
+                </div>
+                <div className="rounded-2xl border border-slate-100 bg-[#fcfcfb] p-4 lg:p-5 flex flex-col justify-start">
+                  <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#e6f6ee] text-[#1b5e45] text-xs font-bold w-fit">
+                    <span>3</span>
+                    <span className="text-[10px] opacity-75">🍃</span>
+                  </div>
+                  <h4 className="font-bold text-sm text-slate-900 mt-2.5 leading-snug">Diverifikasi pengelola</h4>
+                  <p className="text-xs text-slate-500 leading-relaxed mt-1.5">Pengelola taman memeriksa laporan dan menentukan prioritas, lalu manager memutuskan perbaikan.</p>
+                </div>
+                <div className="rounded-2xl border border-slate-100 bg-[#fcfcfb] p-4 lg:p-5 flex flex-col justify-start">
+                  <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#e6f6ee] text-[#1b5e45] text-xs font-bold w-fit">
+                    <span>4</span>
+                    <span className="text-[10px] opacity-75">🍃</span>
+                  </div>
+                  <h4 className="font-bold text-sm text-slate-900 mt-2.5 leading-snug">Dikerjakan, Anda diberi kabar</h4>
+                  <p className="text-xs text-slate-500 leading-relaxed mt-1.5">Email dikirim di setiap tahap. Saat selesai, Anda menerima foto hasil perbaikan.</p>
+                </div>
+              </div>
+
+              <img src="/assets/LeafButton.svg" alt="" aria-hidden className="pointer-events-none select-none absolute -bottom-4 -left-2 w-32 h-auto object-contain opacity-90 scale-x-[-1]" />
+              <img src="/assets/LeafButton.svg" alt="" aria-hidden className="pointer-events-none select-none absolute -bottom-4 -right-2 w-32 h-auto object-contain opacity-90" />
+            </div>
+
+            <div className="relative overflow-hidden flex items-center justify-between h-24 px-8 rounded-2xl bg-white shadow-sm border border-slate-100">
+              <div className="flex items-center gap-4 z-10">
+                <div className="relative w-12 h-12 shrink-0 flex items-center justify-center">
+                  <Megaphone className="w-10 h-10 text-[#1b5e45] fill-[#1b5e45]/90" strokeWidth={1.5} />
+                  <svg viewBox="0 0 24 24" className="absolute -top-0.5 right-0 w-4 h-4 text-[#f5b800]" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden>
+                    <path d="M12 3v4M18 6l-2.5 2.5M21 12h-4" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 leading-tight">Bersama Menjaga Taman</h3>
+                  <p className="text-sm text-slate-600 leading-snug mt-0.5">Laporkan, Dukung, dan Bantu Kami Merawat Fasilitas Taman.</p>
+                </div>
+              </div>
+              <img src="/assets/LeafButton.svg" alt="" aria-hidden className="pointer-events-none select-none absolute -bottom-6 right-0 w-28 h-auto object-contain opacity-90" />
+            </div>
+          </section>
+
 
           {/* Laporan terbaru */}
           <div>
