@@ -45,7 +45,7 @@ export function AppSidebar({
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <span className="font-extrabold text-sm text-slate-900 tracking-tight leading-none">
-                GreenPark
+                GreenDesk
               </span>
               <span className="text-[9px] font-bold tracking-wider uppercase px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
                 Asset Desk

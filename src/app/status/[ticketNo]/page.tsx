@@ -135,7 +135,7 @@ export default async function PublicStatusPage({
             <code className="font-mono font-bold text-slate-800">
               {ticketNo}
             </code>{" "}
-            tidak terdaftar di sistem GreenPark atau telah diarsipkan.
+            tidak terdaftar di sistem GreenDesk atau telah diarsipkan.
           </p>
           <Link
             href="/beranda"
@@ -519,7 +519,7 @@ export default async function PublicStatusPage({
 
         {/* Footer */}
         <div className="text-center text-xs text-slate-400 mt-8">
-          Sistem Manajemen Fasilitas & Taman GreenPark · Pembaruan real-time
+          Sistem Manajemen Fasilitas & Taman GreenDesk · Pembaruan real-time
         </div>
       </div>
     </div>
