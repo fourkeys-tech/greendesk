@@ -142,7 +142,6 @@ export function TechnicianSubmitPanel({
             <input
               type="file"
               accept="image/*"
-              capture="environment"
               suppressHydrationWarning
               onChange={(e) => setBeforeFile(e.target.files?.[0] || null)}
               className="w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-orange-100 file:text-orange-800 hover:file:bg-orange-200 border border-slate-200 rounded-lg p-1 bg-white"
@@ -176,7 +175,6 @@ export function TechnicianSubmitPanel({
             <input
               type="file"
               accept="image/*"
-              capture="environment"
               suppressHydrationWarning
               onChange={(e) => setAfterFile(e.target.files?.[0] || null)}
               className="w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-emerald-100 file:text-emerald-800 hover:file:bg-emerald-200 border border-slate-200 rounded-lg p-1 bg-white"

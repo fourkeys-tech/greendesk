@@ -316,7 +316,6 @@ export function QrReportClientForm({
           <input
             type="file"
             accept="image/jpeg,image/png,image/webp"
-            capture="environment"
             onChange={handlePhotoChange}
             className="block w-full text-xs text-slate-600 file:mr-3 file:py-2 file:px-3.5 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-emerald-600 file:text-white hover:file:bg-emerald-700"
           />
