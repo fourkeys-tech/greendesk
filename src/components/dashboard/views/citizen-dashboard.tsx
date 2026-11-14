@@ -109,7 +109,7 @@ export function CitizenDashboard({ session, reports }: CitizenDashboardProps) {
             </div>
             <div className="font-bold text-slate-800">Scan QR di Fasilitas</div>
             <p className="text-slate-500 text-[11px]">
-              Setiap lampu taman, ayunan, atau bangku memiliki stiker QR Code resmi GreenPark.
+              Setiap lampu taman, ayunan, atau bangku memiliki stiker QR Code resmi GreenDesk.
             </p>
           </div>
 

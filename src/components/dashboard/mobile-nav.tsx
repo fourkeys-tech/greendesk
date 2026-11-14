@@ -71,7 +71,7 @@ export function MobileNav({
                   alt="GreenDesk Logo"
                   className="w-8 h-8 object-contain shrink-0"
                 />
-                <span>GreenPark</span>
+                <span>GreenDesk</span>
               </Link>
               <button
                 type="button"
@@ -114,7 +114,7 @@ export function MobileNav({
 
             <div className="pt-4 border-t border-slate-200 text-xs text-slate-400 flex items-center justify-center gap-1.5">
               <Shield className="w-3.5 h-3.5 text-emerald-600" />
-              <span>GreenPark Asset Management v0.1</span>
+              <span>GreenDesk Asset Management v0.1</span>
             </div>
           </aside>
         </>

@@ -495,7 +495,7 @@ export function LoginClient({
           {/* Header Bar: Link cepat Lapor Warga */}
           <div className="flex items-center justify-between pb-3">
             <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-              GreenPark v0.2
+              GreenDesk v0.2
             </span>
             <Link
               href="/scan"
