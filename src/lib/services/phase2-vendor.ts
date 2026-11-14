@@ -912,7 +912,7 @@ export async function updateVendor(
     warrantyDays: number;
     address?: string | null;
     npwp?: string | null;
-    clusterIds: string[];
+    clusterIds?: string[];
   }
 ) {
   assertPermission(actor.role, "MANAGE_VENDORS");
@@ -945,50 +945,63 @@ export async function updateVendor(
   }
   assertContractRange(input.contractStart ?? null, input.contractEnd ?? null);
 
-  const clusterIds = Array.from(new Set(input.clusterIds));
-  if (clusterIds.length === 0) {
+  const shouldSyncAreas = input.clusterIds !== undefined;
+  const clusterIds = shouldSyncAreas
+    ? Array.from(new Set(input.clusterIds))
+    : [];
+  if (shouldSyncAreas && clusterIds.length === 0) {
     throw new Error("Pilih minimal satu cluster sebagai area layanan vendor.");
   }
   const existingClusterIds = new Set(serviceAreas.map((a) => a.clusterId));
-  const clusters = await query<ClusterRow>(
-    `SELECT * FROM "Cluster" WHERE "id" = ANY($1::text[]) AND "companyId" = $2`,
-    [clusterIds, companyId]
-  );
-  if (clusters.length !== clusterIds.length) {
-    throw new Error("Satu atau lebih cluster area layanan tidak valid.");
-  }
-  const newlyAddedInactive = clusters.filter(
-    (c) => !c.isActive && !existingClusterIds.has(c.id)
-  );
-  if (newlyAddedInactive.length > 0) {
-    throw new Error(
-      `Cluster nonaktif tidak bisa ditambahkan sebagai area layanan: ${newlyAddedInactive
-        .map((c) => c.name)
-        .join(", ")}.`
+
+  let clusters: ClusterRow[] = [];
+  let clusterNameById = new Map<string, string>();
+  let toRemoveIds: string[] = [];
+  let toAdd: string[] = [];
+
+  if (shouldSyncAreas) {
+    clusters = await query<ClusterRow>(
+      `SELECT * FROM "Cluster" WHERE "id" = ANY($1::text[]) AND "companyId" = $2`,
+      [clusterIds, companyId]
     );
-  }
-
-  const toRemoveIds = serviceAreas
-    .filter((a) => !clusterIds.includes(a.clusterId))
-    .map((a) => a.id);
-  const toAdd = clusterIds.filter((id) => !existingClusterIds.has(id));
-  const clusterNameById = new Map(clusters.map((c) => [c.id, c.name]));
-
-  return withTransaction(async (tx) => {
-    if (toRemoveIds.length > 0) {
-      await execute(
-        `DELETE FROM "VendorServiceArea" WHERE "id" = ANY($1::text[])`,
-        [toRemoveIds],
-        tx
+    if (clusters.length !== clusterIds.length) {
+      throw new Error("Satu atau lebih cluster area layanan tidak valid.");
+    }
+    const newlyAddedInactive = clusters.filter(
+      (c) => !c.isActive && !existingClusterIds.has(c.id)
+    );
+    if (newlyAddedInactive.length > 0) {
+      throw new Error(
+        `Cluster nonaktif tidak bisa ditambahkan sebagai area layanan: ${newlyAddedInactive
+          .map((c) => c.name)
+          .join(", ")}.`
       );
     }
-    if (toAdd.length > 0) {
-      await execute(
-        `INSERT INTO "VendorServiceArea" ("vendorId", "clusterId")
-         SELECT $1, cid FROM unnest($2::text[]) AS cid`,
-        [vendor.id, toAdd],
-        tx
-      );
+
+    toRemoveIds = serviceAreas
+      .filter((a) => !clusterIds.includes(a.clusterId))
+      .map((a) => a.id);
+    toAdd = clusterIds.filter((id) => !existingClusterIds.has(id));
+    clusterNameById = new Map(clusters.map((c) => [c.id, c.name]));
+  }
+
+  return withTransaction(async (tx) => {
+    if (shouldSyncAreas) {
+      if (toRemoveIds.length > 0) {
+        await execute(
+          `DELETE FROM "VendorServiceArea" WHERE "id" = ANY($1::text[])`,
+          [toRemoveIds],
+          tx
+        );
+      }
+      if (toAdd.length > 0) {
+        await execute(
+          `INSERT INTO "VendorServiceArea" ("vendorId", "clusterId")
+           SELECT $1, cid FROM unnest($2::text[]) AS cid`,
+          [vendor.id, toAdd],
+          tx
+        );
+      }
     }
 
     const updated = await queryOne<VendorRow>(
@@ -1038,7 +1051,9 @@ export async function updateVendor(
           warrantyDays: vendor.warrantyDays,
           address: vendor.address,
           npwp: vendor.npwp,
-          serviceClusters: serviceAreas.map((a) => a.clusterName),
+          ...(shouldSyncAreas
+            ? { serviceClusters: serviceAreas.map((a) => a.clusterName) }
+            : {}),
         },
         newValues: {
           name: updated.name,
@@ -1050,13 +1065,314 @@ export async function updateVendor(
           warrantyDays: updated.warrantyDays,
           address: updated.address,
           npwp: updated.npwp,
-          serviceClusters: clusterIds.map((id) => clusterNameById.get(id) ?? id),
+          ...(shouldSyncAreas
+            ? { serviceClusters: clusterIds.map((id) => clusterNameById.get(id) ?? id) }
+            : {}),
         },
       },
       tx
     );
 
     return updated;
+  });
+}
+
+/**
+ * Mengatur area layanan sebuah vendor (dari tampilan per-vendor di Penanggung Jawab).
+ */
+export async function setVendorServiceAreas(
+  actor: SessionUser,
+  vendorId: string,
+  clusterIds: string[]
+): Promise<{ warnings: string[] }> {
+  assertPermission(actor.role, "MANAGE_VENDORS");
+  const companyId = requireCompany(actor);
+
+  const vendor = await queryOne<VendorRow>(
+    `SELECT * FROM "Vendor" WHERE "id" = $1 AND "companyId" = $2`,
+    [vendorId, companyId]
+  );
+  if (!vendor) throw new Error("Vendor tidak ditemukan di perusahaan Anda.");
+
+  const cleanIds = Array.from(new Set(clusterIds.filter(Boolean)));
+  if (cleanIds.length === 0) {
+    throw new Error("Vendor wajib memiliki minimal satu cluster area layanan.");
+  }
+
+  const [existingAreas, clusters] = await Promise.all([
+    query<{ id: string; clusterId: string; clusterName: string }>(
+      `SELECT vsa."id", vsa."clusterId", cl."name" AS "clusterName"
+       FROM "VendorServiceArea" vsa
+       JOIN "Cluster" cl ON cl."id" = vsa."clusterId"
+       WHERE vsa."vendorId" = $1`,
+      [vendor.id]
+    ),
+    query<ClusterRow>(
+      `SELECT * FROM "Cluster" WHERE "id" = ANY($1::text[]) AND "companyId" = $2`,
+      [cleanIds, companyId]
+    ),
+  ]);
+
+  if (clusters.length !== cleanIds.length) {
+    throw new Error("Satu atau lebih cluster area layanan tidak valid.");
+  }
+
+  const existingIds = new Set(existingAreas.map((a) => a.clusterId));
+  const newlyAddedInactive = clusters.filter(
+    (c) => !c.isActive && !existingIds.has(c.id)
+  );
+  if (newlyAddedInactive.length > 0) {
+    throw new Error(
+      `Cluster nonaktif tidak bisa ditambahkan sebagai area layanan: ${newlyAddedInactive
+        .map((c) => c.name)
+        .join(", ")}.`
+    );
+  }
+
+  const toRemoveIds = existingAreas
+    .filter((a) => !cleanIds.includes(a.clusterId))
+    .map((a) => a.id);
+  const toAdd = cleanIds.filter((id) => !existingIds.has(id));
+  const clusterNameById = new Map(clusters.map((c) => [c.id, c.name]));
+
+  const warnings: string[] = [];
+
+  return withTransaction(async (tx) => {
+    if (toRemoveIds.length > 0) {
+      await execute(
+        `DELETE FROM "VendorServiceArea" WHERE "id" = ANY($1::text[])`,
+        [toRemoveIds],
+        tx
+      );
+    }
+    if (toAdd.length > 0) {
+      await execute(
+        `INSERT INTO "VendorServiceArea" ("vendorId", "clusterId")
+         SELECT $1, cid FROM unnest($2::text[]) AS cid`,
+        [vendor.id, toAdd],
+        tx
+      );
+    }
+
+    await recordAuditLog(
+      {
+        actor: auditActorOf(actor, companyId),
+        entityName: "Vendor",
+        entityId: vendor.id,
+        action: "UPDATE",
+        summary: `Mengatur area layanan vendor ${vendor.name} (${cleanIds.length} cluster)`,
+        oldValues: {
+          serviceClusters: existingAreas.map((a) => a.clusterName),
+        },
+        newValues: {
+          serviceClusters: cleanIds.map((id) => clusterNameById.get(id) ?? id),
+        },
+      },
+      tx
+    );
+
+    return { warnings };
+  });
+}
+
+/**
+ * Mengganti PIC Vendor (pilih user PIC yang ada atau buat user PIC baru).
+ * Bila deactivateOldPic = true, akun PIC lama dinonaktifkan (hanya jika ia bukan Teknisi).
+ */
+export async function changeVendorPic(
+  actor: SessionUser,
+  vendorId: string,
+  input:
+    | {
+        mode: "existing";
+        picUserId: string;
+        deactivateOldPic?: boolean;
+      }
+    | {
+        mode: "new";
+        picName: string;
+        picEmail: string;
+        picPassword?: string;
+        deactivateOldPic?: boolean;
+      }
+): Promise<{
+  vendor: VendorRow;
+  newPicUser: UserRow;
+  temporaryPassword?: string | null;
+  deactivatedOldPic: boolean;
+}> {
+  assertPermission(actor.role, "MANAGE_VENDORS");
+  const companyId = requireCompany(actor);
+
+  const vendor = await queryOne<VendorRow>(
+    `SELECT * FROM "Vendor" WHERE "id" = $1 AND "companyId" = $2`,
+    [vendorId, companyId]
+  );
+  if (!vendor) throw new Error("Vendor tidak ditemukan di perusahaan Anda.");
+
+  const oldPic = vendor.picUserId
+    ? await queryOne<UserRow>(
+        `SELECT * FROM "User" WHERE "id" = $1 AND "companyId" = $2`,
+        [vendor.picUserId, companyId]
+      )
+    : null;
+
+  let newPicUser: UserRow;
+  let temporaryPassword: string | null = null;
+
+  if (input.mode === "existing") {
+    const candidateId = input.picUserId.trim();
+    if (!candidateId) throw new Error("Pilih akun PIC baru.");
+    if (vendor.picUserId && candidateId === vendor.picUserId) {
+      throw new Error("Akun yang dipilih sudah menjadi PIC vendor ini.");
+    }
+
+    const candidate = await queryOne<UserRow>(
+      `SELECT * FROM "User" WHERE "id" = $1 AND "companyId" = $2`,
+      [candidateId, companyId]
+    );
+    if (!candidate || !candidate.isActive) {
+      throw new Error("Akun PIC baru tidak valid atau sedang nonaktif.");
+    }
+
+    // Pastikan tidak sedang menjadi PIC vendor aktif lain (picUserId bersifat UNIQUE)
+    const existingVendor = await queryOne<{ id: string; name: string }>(
+      `SELECT "id", "name" FROM "Vendor"
+       WHERE "picUserId" = $1 AND "companyId" = $2 AND "id" <> $3`,
+      [candidate.id, companyId, vendor.id]
+    );
+    if (existingVendor) {
+      throw new Error(
+        `${candidate.name} sudah menjadi PIC untuk vendor "${existingVendor.name}". Satu akun hanya boleh menjadi PIC untuk satu vendor.`
+      );
+    }
+
+    newPicUser = candidate;
+  } else {
+    const picName = input.picName.trim();
+    const picEmail = input.picEmail.trim().toLowerCase();
+    if (!picName || !picEmail) {
+      throw new Error("Nama dan email PIC baru wajib diisi.");
+    }
+
+    const existingUser = await queryOne<{ id: string }>(
+      `SELECT "id" FROM "User" WHERE "email" = $1`,
+      [picEmail]
+    );
+    if (existingUser) {
+      throw new Error(`Email PIC ${picEmail} sudah terdaftar di sistem.`);
+    }
+
+    const suppliedPassword = input.picPassword?.trim();
+    temporaryPassword = suppliedPassword ? null : generateTemporaryPassword();
+    const rawPassword = suppliedPassword || temporaryPassword!;
+    const passwordHash = await bcrypt.hash(rawPassword, 10);
+
+    const created = await queryOne<UserRow>(
+      `INSERT INTO "User" ("companyId", "name", "email", "passwordHash", "role", "isActive")
+       VALUES ($1, $2, $3, $4, 'PIC_VENDOR'::"Role", true)
+       RETURNING *`,
+      [companyId, picName, picEmail, passwordHash]
+    );
+    if (!created) throw new Error("Gagal membuat akun PIC baru.");
+    newPicUser = created;
+  }
+
+  const shouldDeactivateOld = Boolean(input.deactivateOldPic ?? true);
+
+  return withTransaction(async (tx) => {
+    // Kunci baris vendor
+    await queryOne<{ id: string }>(
+      `SELECT "id" FROM "Vendor" WHERE "id" = $1 FOR UPDATE`,
+      [vendor.id],
+      tx
+    );
+
+    const updated = await queryOne<VendorRow>(
+      `UPDATE "Vendor"
+       SET "picUserId" = $2, "updatedAt" = NOW()
+       WHERE "id" = $1
+       RETURNING *`,
+      [vendor.id, newPicUser.id],
+      tx
+    );
+    if (!updated) throw new Error("Gagal memperbarui PIC vendor.");
+
+    let deactivatedOldPic = false;
+    if (oldPic && shouldDeactivateOld && oldPic.id !== newPicUser.id) {
+      // Hanya nonaktifkan bila user ini bukan teknisi yang memiliki akun sendiri
+      const isTech = await queryCount(
+        `SELECT COUNT(*)::int AS count FROM "Technician" WHERE "userId" = $1`,
+        [oldPic.id],
+        tx
+      );
+      if (isTech === 0) {
+        await execute(
+          `UPDATE "User" SET "isActive" = false, "updatedAt" = NOW() WHERE "id" = $1`,
+          [oldPic.id],
+          tx
+        );
+        deactivatedOldPic = true;
+      }
+    }
+
+    // Email undangan bila akun dibuat baru
+    if (input.mode === "new") {
+      await enqueueEmail(tx, {
+        companyId,
+        toEmail: newPicUser.email,
+        subject: `Undangan PIC Vendor – ${vendor.name}`,
+        bodyHtml: `
+          <div style="font-family: sans-serif; line-height: 1.6;">
+            <p>Halo <strong>${escapeHtml(newPicUser.name)}</strong>,</p>
+            <p>Anda telah ditunjuk sebagai PIC baru untuk vendor rekanan <strong>${escapeHtml(vendor.name)}</strong> di platform GreenPark.</p>
+            <p>Silakan masuk menggunakan email <strong>${escapeHtml(newPicUser.email)}</strong> untuk mengelola teknisi dan SPK.</p>
+          </div>
+        `.trim(),
+        triggerType: "VENDOR_INVITE",
+      });
+    }
+
+    // Notifikasi web ke PIC baru
+    await execute(
+      `INSERT INTO "Notification" ("companyId", "recipientId", "title", "message", "linkUrl")
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        companyId,
+        newPicUser.id,
+        "Penunjukan PIC Vendor",
+        `Admin menunjuk Anda sebagai PIC untuk vendor ${vendor.name}.`,
+        "/dashboard/teknisi",
+      ],
+      tx
+    );
+
+    await recordAuditLog(
+      {
+        actor: auditActorOf(actor, companyId),
+        entityName: "Vendor",
+        entityId: vendor.id,
+        action: "UPDATE",
+        summary: `Mengganti PIC vendor ${vendor.name}: ${oldPic ? oldPic.name : "-"} → ${newPicUser.name}`,
+        oldValues: {
+          picName: oldPic ? oldPic.name : null,
+          picEmail: oldPic ? oldPic.email : null,
+        },
+        newValues: {
+          picName: newPicUser.name,
+          picEmail: newPicUser.email,
+          deactivatedOldPic,
+        },
+      },
+      tx
+    );
+
+    return {
+      vendor: updated,
+      newPicUser,
+      temporaryPassword,
+      deactivatedOldPic,
+    };
   });
 }
 

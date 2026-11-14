@@ -1,9 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import Link from "next/link";
+import { useState } from "react";
 import {
-  assignTemporaryManagerAction,
-  cancelTemporaryManagerAction,
   createInternalAccountAction,
   setInternalAccountActiveAction,
   setUserBlockStatusAction,
@@ -156,7 +155,7 @@ export function CreateStaffForm({ clusters }: { clusters: ClusterOption[] }) {
 /* ---------------------------------------------------------------- */
 export function StaffRowActions({
   user,
-  clusters,
+  clusters: _clusters,
   isSelf,
 }: {
   user: {
@@ -171,9 +170,6 @@ export function StaffRowActions({
 }) {
   const [editing, setEditing] = useState(false);
   const { feedback, isPending, run } = useActionRunner();
-  const selectable = clusters.filter(
-    (c) => c.isActive || user.clusterIds.includes(c.id)
-  );
 
   return (
     <div className="space-y-2">
@@ -183,8 +179,14 @@ export function StaffRowActions({
           onClick={() => setEditing((v) => !v)}
           className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 cursor-pointer"
         >
-          {editing ? "Tutup" : "Edit"}
+          {editing ? "Tutup" : "Edit Nama"}
         </button>
+        <Link
+          href="/dashboard/penanggung-jawab?tab=manager&view=orang"
+          className="px-3 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-xs font-semibold text-emerald-800"
+        >
+          Atur Cluster →
+        </Link>
         {!isSelf && (
           <button
             type="button"
@@ -223,7 +225,7 @@ export function StaffRowActions({
           <input type="hidden" name="userId" value={user.id} />
           <div>
             <label className={labelClass} htmlFor={`name-${user.id}`}>
-              Nama
+              Nama lengkap
             </label>
             <input
               id={`name-${user.id}`}
@@ -233,43 +235,32 @@ export function StaffRowActions({
               className={inputClass}
             />
           </div>
-          <fieldset>
-            <legend className={labelClass}>
-              {user.role === "PENGELOLA" ? "Cluster (pilih satu)" : "Cluster tetap"}
-            </legend>
-            <div className="flex flex-wrap gap-2">
-              {selectable.map((cl) => (
-                <label
-                  key={cl.id}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white border border-slate-300 text-xs cursor-pointer"
-                >
-                  <input
-                    type={user.role === "PENGELOLA" ? "radio" : "checkbox"}
-                    name="clusterIds"
-                    value={cl.id}
-                    defaultChecked={user.clusterIds.includes(cl.id)}
-                  />
-                  {cl.name}
-                  {!cl.isActive && (
-                    <span className="text-[10px] text-slate-500">(nonaktif)</span>
-                  )}
-                </label>
-              ))}
-            </div>
-            {user.role === "MANAGER" && (
-              <p className="text-[11px] text-slate-500 mt-1">
-                Delegasi sementara tidak ikut berubah. Kelola di tab Delegasi
-                Manager.
-              </p>
-            )}
-          </fieldset>
-          <button
-            type="submit"
-            disabled={isPending}
-            className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
-          >
-            {isPending ? "Menyimpan..." : "Simpan perubahan"}
-          </button>
+          <p className="text-[11px] text-slate-500">
+            Penugasan cluster untuk akun ini dikelola di menu{" "}
+            <Link
+              href="/dashboard/penanggung-jawab?tab=manager&view=orang"
+              className="text-emerald-700 font-semibold underline"
+            >
+              Penanggung Jawab
+            </Link>
+            .
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={isPending}
+              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
+            >
+              {isPending ? "Menyimpan..." : "Simpan nama"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              className="px-3 py-2 rounded-lg border border-slate-300 text-slate-700 text-xs font-semibold hover:bg-white cursor-pointer"
+            >
+              Batal
+            </button>
+          </div>
         </form>
       )}
       <FeedbackBanner feedback={feedback} compact />
@@ -363,205 +354,6 @@ export function ReporterBlockActions({
           </div>
         </div>
       )}
-      <FeedbackBanner feedback={feedback} compact />
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------- */
-/* Delegasi Manager pengganti sementara                              */
-/* ---------------------------------------------------------------- */
-export function DelegationForm({
-  managers,
-  clusters,
-  permanentClusterIdsByManager,
-  defaultFrom,
-  defaultUntil,
-}: {
-  managers: Array<{ id: string; name: string; email: string }>;
-  clusters: ClusterOption[];
-  permanentClusterIdsByManager: Record<string, string[]>;
-  defaultFrom: string;
-  defaultUntil: string;
-}) {
-  const [replacedId, setReplacedId] = useState(managers[0]?.id ?? "");
-  const [formKey, setFormKey] = useState(0);
-  const { feedback, isPending, run } = useActionRunner();
-
-  const replacedClusters = useMemo(() => {
-    const ids = permanentClusterIdsByManager[replacedId] ?? [];
-    return clusters.filter((c) => c.isActive && ids.includes(c.id));
-  }, [clusters, permanentClusterIdsByManager, replacedId]);
-  const [clusterId, setClusterId] = useState("");
-  const effectiveClusterId = replacedClusters.some((c) => c.id === clusterId)
-    ? clusterId
-    : replacedClusters[0]?.id ?? "";
-
-  const substitutes = managers.filter(
-    (m) =>
-      m.id !== replacedId &&
-      !(permanentClusterIdsByManager[m.id] ?? []).includes(effectiveClusterId)
-  );
-
-  const disabled =
-    isPending ||
-    managers.length < 2 ||
-    replacedClusters.length === 0 ||
-    substitutes.length === 0;
-
-  return (
-    <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
-      <div>
-        <h2 className="text-sm font-bold text-slate-900">
-          Tunjuk Manager pengganti sementara
-        </h2>
-        <p className="text-xs text-slate-500 mt-0.5">
-          Saat Manager berhalangan, tunjuk Manager lain untuk memegang
-          cluster-nya selama periode tertentu. Setiap penunjukan tersimpan di
-          riwayat.
-        </p>
-      </div>
-      <FeedbackBanner feedback={feedback} />
-      {managers.length < 2 ? (
-        <p className="text-xs text-slate-600">
-          Butuh minimal 2 akun Manager aktif untuk membuat delegasi.
-        </p>
-      ) : (
-        <form
-          key={formKey}
-          action={(fd) =>
-            run(() => assignTemporaryManagerAction(fd), {
-              onSuccess: () => setFormKey((k) => k + 1),
-            })
-          }
-          className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
-        >
-          <div>
-            <label className={labelClass} htmlFor="del-replaced">
-              Manager yang berhalangan
-            </label>
-            <select
-              id="del-replaced"
-              name="replacedManagerId"
-              required
-              value={replacedId}
-              onChange={(e) => setReplacedId(e.target.value)}
-              className={inputClass}
-            >
-              {managers.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className={labelClass} htmlFor="del-cluster">
-              Cluster yang digantikan
-            </label>
-            <select
-              id="del-cluster"
-              name="clusterId"
-              required
-              value={effectiveClusterId}
-              onChange={(e) => setClusterId(e.target.value)}
-              className={inputClass}
-            >
-              {replacedClusters.length === 0 && (
-                <option value="">Manager ini tidak memegang cluster tetap</option>
-              )}
-              {replacedClusters.map((cl) => (
-                <option key={cl.id} value={cl.id}>
-                  {cl.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className={labelClass} htmlFor="del-substitute">
-              Manager pengganti
-            </label>
-            <select
-              id="del-substitute"
-              name="substituteManagerId"
-              required
-              className={inputClass}
-            >
-              {substitutes.length === 0 && (
-                <option value="">Tidak ada Manager lain yang bisa ditunjuk</option>
-              )}
-              {substitutes.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className={labelClass} htmlFor="del-from">
-              Mulai (WIB)
-            </label>
-            <input
-              id="del-from"
-              type="date"
-              name="validFrom"
-              defaultValue={defaultFrom}
-              min={defaultFrom}
-              required
-              className={inputClass}
-            />
-          </div>
-          <div>
-            <label className={labelClass} htmlFor="del-until">
-              Sampai (WIB, termasuk hari itu)
-            </label>
-            <input
-              id="del-until"
-              type="date"
-              name="validUntil"
-              defaultValue={defaultUntil}
-              min={defaultFrom}
-              required
-              className={inputClass}
-            />
-          </div>
-          <div className="flex items-end">
-            <button
-              type="submit"
-              disabled={disabled}
-              className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
-            >
-              {isPending ? "Menyimpan..." : "Simpan penunjukan"}
-            </button>
-          </div>
-        </form>
-      )}
-    </div>
-  );
-}
-
-export function CancelDelegationButton({
-  assignmentId,
-  label,
-}: {
-  assignmentId: string;
-  label: string;
-}) {
-  const { feedback, isPending, run } = useActionRunner();
-  return (
-    <div className="space-y-1">
-      <button
-        type="button"
-        disabled={isPending}
-        onClick={() =>
-          run(() => cancelTemporaryManagerAction(assignmentId), {
-            confirmText: `Batalkan delegasi ${label}? Riwayatnya tetap tersimpan.`,
-          })
-        }
-        className="px-3 py-1.5 rounded-lg bg-rose-50 border border-rose-200 hover:bg-rose-100 disabled:opacity-50 text-rose-700 text-xs font-semibold cursor-pointer"
-      >
-        {isPending ? "Memproses..." : "Batalkan"}
-      </button>
       <FeedbackBanner feedback={feedback} compact />
     </div>
   );

@@ -33,6 +33,7 @@ function errorMessage(err: unknown, fallback: string) {
 }
 
 function revalidateVendorPaths() {
+  revalidatePath("/dashboard/penanggung-jawab");
   revalidatePath("/dashboard/vendor");
   revalidatePath("/dashboard/teknisi");
   revalidatePath("/dashboard/audit");
@@ -342,7 +343,9 @@ export async function updateVendorAction(formData: FormData) {
       warrantyDays: Number(formData.get("warrantyDays") ?? 30),
       address: (formData.get("address") as string) ?? null,
       npwp: (formData.get("npwp") as string) ?? null,
-      clusterIds: formData.getAll("clusterIds") as string[],
+      clusterIds: formData.has("clusterIds")
+        ? (formData.getAll("clusterIds") as string[])
+        : undefined,
     });
     revalidateVendorPaths();
     return { success: true, message: `Data vendor "${updated.name}" berhasil diperbarui.` };

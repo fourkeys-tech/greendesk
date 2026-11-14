@@ -27,6 +27,7 @@ describe("Fase 0 – Matriks Hak Akses & Transisi Status", () => {
   it("menampilkan menu navigasi yang spesifik sesuai masing-masing 7 role", () => {
     const adminMenus = getNavigationForRole("ADMIN").map((m) => m.href);
     expect(adminMenus).toContain("/dashboard/wilayah");
+    expect(adminMenus).toContain("/dashboard/penanggung-jawab");
     expect(adminMenus).toContain("/dashboard/audit");
     expect(adminMenus).not.toContain("/dashboard/lapor");
 

@@ -89,6 +89,7 @@ export function VendorManagePanel({
             idPrefix={`edit-vendor-${vendorId}`}
             clusters={clusters}
             defaults={defaults}
+            showServiceArea={false}
           />
           <div className="sm:col-span-2 lg:col-span-3 flex flex-wrap gap-2 pt-1">
             <button

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentSession } from "@/lib/auth";
 import { hasPermission, ROLE_METADATA } from "@/lib/permissions";
@@ -367,6 +368,16 @@ export default async function VendorPage() {
                             {sa.cluster.name}
                           </span>
                         ))}
+                      </div>
+                    )}
+                    {canManage && (
+                      <div className="mt-1.5">
+                        <Link
+                          href="/dashboard/penanggung-jawab?tab=vendor&view=vendor"
+                          className="text-[11px] font-semibold text-emerald-700 hover:underline inline-flex items-center gap-1"
+                        >
+                          Ganti PIC / atur area di Penanggung Jawab →
+                        </Link>
                       </div>
                     )}
                   </InfoTile>

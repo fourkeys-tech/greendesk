@@ -422,6 +422,13 @@ export function getNavigationForRole(
         iconName: "MapPin",
       },
       {
+        href: "/dashboard/penanggung-jawab",
+        label: "Penanggung Jawab",
+        shortLabel: "PJ Cluster",
+        description: "Pengelola, Manager & Vendor per cluster",
+        iconName: "UserCog",
+      },
+      {
         href: "/dashboard/vendor",
         label: "Vendor & Teknisi",
         shortLabel: "Vendor",
