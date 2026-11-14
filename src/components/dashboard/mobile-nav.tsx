@@ -66,9 +66,11 @@ export function MobileNav({
                 onClick={() => setIsOpen(false)}
                 className="flex items-center gap-2.5 font-bold text-lg text-slate-900"
               >
-                <span className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center text-sm font-extrabold shadow-xs">
-                  GP
-                </span>
+                <img
+                  src="/assets/greendesk_favicon.svg"
+                  alt="GreenDesk Logo"
+                  className="w-8 h-8 object-contain shrink-0"
+                />
                 <span>GreenPark</span>
               </Link>
               <button

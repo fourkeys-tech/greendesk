@@ -37,9 +37,11 @@ export function AppSidebar({
       {/* Brand + perusahaan */}
       <div className="px-4 pt-4 pb-3 border-b border-slate-100">
         <Link href="/dashboard" className="flex items-center gap-2.5 group">
-          <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center text-xs font-black shadow-sm shadow-emerald-600/20 group-hover:scale-105 transition-transform shrink-0">
-            GP
-          </div>
+          <img
+            src="/assets/greendesk_favicon.svg"
+            alt="GreenDesk Logo"
+            className="w-9 h-9 object-contain group-hover:scale-105 transition-transform shrink-0"
+          />
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <span className="font-extrabold text-sm text-slate-900 tracking-tight leading-none">

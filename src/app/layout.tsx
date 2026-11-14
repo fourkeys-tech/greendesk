@@ -5,6 +5,11 @@ export const metadata: Metadata = {
   title: "GreenPark – Platform Manajemen Aset Taman",
   description:
     "Platform pelaporan kerusakan dan pemeliharaan fasilitas taman berbasis QR untuk perumahan dan cluster swasta.",
+  icons: {
+    icon: "/assets/greendesk_favicon.svg",
+    shortcut: "/assets/greendesk_favicon.svg",
+    apple: "/assets/greendesk_favicon.svg",
+  },
 };
 
 export default function RootLayout({

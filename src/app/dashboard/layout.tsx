@@ -269,9 +269,11 @@ export default async function DashboardLayout({
           <div className="px-4 py-3 flex items-center justify-between">
             <div className="flex items-center gap-2.5 min-w-0">
               <Link href="/dashboard" className="flex items-center gap-2.5 min-w-0">
-                <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-black text-xs shadow-sm shadow-emerald-600/20 shrink-0">
-                  GP
-                </div>
+                <img
+                  src="/assets/greendesk_favicon.svg"
+                  alt="GreenDesk Logo"
+                  className="w-9 h-9 object-contain shrink-0"
+                />
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5">
                     <span className="font-extrabold text-slate-900 text-sm tracking-tight leading-none">
