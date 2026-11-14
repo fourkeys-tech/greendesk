@@ -15,20 +15,17 @@ import {
   DbErrorNotice,
 } from "@/components/dashboard/db-error-notice";
 import {
-  CancelDelegationButton,
-  CreateStaffForm,
-  DelegationForm,
   ReporterBlockActions,
   StaffRowActions,
+  CreateStaffForm,
 } from "./internal-account-forms";
 
-type Tab = "staf" | "pelapor" | "delegasi";
+type Tab = "staf" | "pelapor";
 const PAGE_SIZE = 25;
 
 const TABS: Array<{ key: Tab; label: string }> = [
   { key: "staf", label: "Staf Internal" },
   { key: "pelapor", label: "Pelapor & Blokir" },
-  { key: "delegasi", label: "Delegasi Manager" },
 ];
 
 function tabHref(tab: Tab, extra?: Record<string, string>) {
@@ -51,6 +48,9 @@ export default async function AkunInternalPage({
   }
 
   const params = await searchParams;
+  if (params.tab === "delegasi") {
+    redirect("/dashboard/penanggung-jawab?tab=manager&view=delegasi");
+  }
   const tab: Tab = TABS.some((t) => t.key === params.tab)
     ? (params.tab as Tab)
     : "staf";
@@ -62,8 +62,8 @@ export default async function AkunInternalPage({
           Akun & Pengguna
         </h1>
         <p className="text-xs sm:text-sm text-slate-600 mt-1">
-          Kelola akun Pengelola dan Manager {session.companyName ? `di ${session.companyName}` : ""},
-          blokir pelapor bermasalah, dan atur Manager pengganti sementara.
+          Kelola akun staf internal Pengelola dan Manager {session.companyName ? `di ${session.companyName}` : ""} serta
+          blokir pelapor bermasalah. Penugasan cluster & delegasi diatur di menu <strong>Penanggung Jawab</strong>.
         </p>
         <nav
           aria-label="Bagian halaman akun"
@@ -93,14 +93,12 @@ export default async function AkunInternalPage({
         />
       ) : tab === "staf" ? (
         <StaffTab companyId={session.companyId} selfId={session.id} />
-      ) : tab === "pelapor" ? (
+      ) : (
         <ReporterTab
           companyId={session.companyId}
           q={params.q?.trim() ?? ""}
           page={Math.max(1, Number(params.page) || 1)}
         />
-      ) : (
-        <DelegationTab companyId={session.companyId} />
       )}
     </div>
   );
@@ -517,201 +515,6 @@ async function ReporterTab({
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------- */
-function delegationStatus(a: {
-  validFrom: Date;
-  validUntil: Date | null;
-  cancelledAt: Date | null;
-}, now: Date) {
-  if (a.cancelledAt) return { label: "Dibatalkan", cls: "bg-slate-200 text-slate-700", cancellable: false };
-  if (a.validFrom > now) return { label: "Terjadwal", cls: "bg-sky-100 text-sky-800", cancellable: true };
-  if (!a.validUntil || a.validUntil >= now)
-    return { label: "Aktif", cls: "bg-emerald-100 text-emerald-800", cancellable: true };
-  return { label: "Selesai", cls: "bg-slate-100 text-slate-600", cancellable: false };
-}
-
-async function DelegationTab({ companyId }: { companyId: string }) {
-  const now = new Date();
-  let managers: Array<{ id: string; name: string; email: string }>;
-  let permAssignments: Array<{ userId: string; clusterId: string }>;
-  let clusters: Array<{ id: string; name: string; isActive: boolean }>;
-  let history: Array<{
-    id: string;
-    validFrom: Date;
-    validUntil: Date | null;
-    cancelledAt: Date | null;
-    replacedManagerId: string | null;
-    cancelledById: string | null;
-    user: { id: string; name: string };
-    cluster: { name: string };
-  }>;
-
-  try {
-    const [managerRows, permRows, clusterRows, historyRows] = await Promise.all([
-      query<{ id: string; name: string; email: string }>(
-        `SELECT "id", "name", "email"
-         FROM "User"
-         WHERE "companyId" = $1 AND "role" = 'MANAGER'::"Role" AND "isActive" = true
-         ORDER BY "name" ASC`,
-        [companyId]
-      ),
-      query<{ userId: string; clusterId: string }>(
-        `SELECT cma."userId", cma."clusterId"
-         FROM "ClusterManagerAssignment" cma
-         JOIN "User" u ON u."id" = cma."userId"
-         WHERE u."companyId" = $1
-           AND u."role" = 'MANAGER'::"Role"
-           AND u."isActive" = true
-           AND cma."isTemporary" = false`,
-        [companyId]
-      ),
-      query<{ id: string; name: string; isActive: boolean }>(
-        `SELECT "id", "name", "isActive"
-         FROM "Cluster"
-         WHERE "companyId" = $1
-         ORDER BY "name" ASC`,
-        [companyId]
-      ),
-      query<{
-        id: string;
-        validFrom: Date;
-        validUntil: Date | null;
-        cancelledAt: Date | null;
-        replacedManagerId: string | null;
-        cancelledById: string | null;
-        userId: string;
-        userName: string;
-        clusterName: string;
-      }>(
-        `SELECT cma."id", cma."validFrom", cma."validUntil", cma."cancelledAt",
-                cma."replacedManagerId", cma."cancelledById",
-                u."id" AS "userId", u."name" AS "userName", cl."name" AS "clusterName"
-         FROM "ClusterManagerAssignment" cma
-         JOIN "Cluster" cl ON cl."id" = cma."clusterId"
-         JOIN "User" u ON u."id" = cma."userId"
-         WHERE cma."isTemporary" = true AND cl."companyId" = $1
-         ORDER BY cma."createdAt" DESC
-         LIMIT 50`,
-        [companyId]
-      ),
-    ]);
-
-    managers = managerRows;
-    permAssignments = permRows;
-    clusters = clusterRows;
-    history = historyRows.map((h) => ({
-      id: h.id,
-      validFrom: h.validFrom,
-      validUntil: h.validUntil,
-      cancelledAt: h.cancelledAt,
-      replacedManagerId: h.replacedManagerId,
-      cancelledById: h.cancelledById,
-      user: { id: h.userId, name: h.userName },
-      cluster: { name: h.clusterName },
-    }));
-  } catch (error) {
-    console.error("[akun/delegasi] gagal memuat data:", error);
-    return <DbErrorNotice />;
-  }
-
-  const relatedIds = Array.from(
-    new Set(
-      history.flatMap((h) => [h.replacedManagerId, h.cancelledById].filter(Boolean) as string[])
-    )
-  );
-  let nameById = new Map<string, string>();
-  if (relatedIds.length > 0) {
-    try {
-      const related = await query<{ id: string; name: string }>(
-        `SELECT "id", "name" FROM "User" WHERE "id" = ANY($1::text[])`,
-        [relatedIds]
-      );
-      nameById = new Map(related.map((u) => [u.id, u.name]));
-    } catch {
-      // nama tetap tampil sebagai "-"
-    }
-  }
-
-  const permanentClusterIdsByManager: Record<string, string[]> = {};
-  for (const m of managers) {
-    permanentClusterIdsByManager[m.id] = [];
-  }
-  for (const a of permAssignments) {
-    permanentClusterIdsByManager[a.userId]?.push(a.clusterId);
-  }
-
-  return (
-    <div className="space-y-6">
-      <DelegationForm
-        managers={managers.map((m) => ({ id: m.id, name: m.name, email: m.email }))}
-        clusters={clusters}
-        permanentClusterIdsByManager={permanentClusterIdsByManager}
-        defaultFrom={wibDateInputValue(0)}
-        defaultUntil={wibDateInputValue(7)}
-      />
-
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200">
-          <h2 className="text-sm font-bold text-slate-900">
-            Riwayat delegasi (50 terakhir)
-          </h2>
-        </div>
-        {history.length === 0 ? (
-          <p className="p-5 text-xs text-slate-500">Belum ada delegasi.</p>
-        ) : (
-          <ul className="divide-y divide-slate-200">
-            {history.map((h) => {
-              const st = delegationStatus(h, now);
-              const replacedName = h.replacedManagerId
-                ? nameById.get(h.replacedManagerId) ?? "-"
-                : "-";
-              return (
-                <li
-                  key={h.id}
-                  className="p-4 sm:px-5 grid grid-cols-1 md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_auto] gap-3 items-start"
-                >
-                  <div className="text-xs text-slate-700 min-w-0">
-                    <div className="text-sm font-semibold text-slate-900">
-                      {h.user.name}{" "}
-                      <span className="font-normal text-slate-500">menggantikan</span>{" "}
-                      {replacedName}
-                    </div>
-                    <div>Cluster: {h.cluster.name}</div>
-                    {h.cancelledAt && (
-                      <div className="text-[11px] text-slate-500">
-                        Dibatalkan {formatWibDate(h.cancelledAt)}
-                        {h.cancelledById ? ` oleh ${nameById.get(h.cancelledById) ?? "-"}` : ""}
-                      </div>
-                    )}
-                  </div>
-                  <div className="text-xs text-slate-700">
-                    <span
-                      className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full ${st.cls}`}
-                    >
-                      {st.label}
-                    </span>
-                    <div className="mt-1">
-                      {formatWibDate(h.validFrom)} – {formatWibDate(h.validUntil)}
-                    </div>
-                  </div>
-                  <div>
-                    {st.cancellable && (
-                      <CancelDelegationButton
-                        assignmentId={h.id}
-                        label={`${h.user.name} di ${h.cluster.name}`}
-                      />
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
     </div>
   );
 }

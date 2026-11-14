@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import type { VendorType } from "@/lib/db-types";
 
 export interface VendorClusterOption {
@@ -29,10 +30,12 @@ export function VendorFormFields({
   idPrefix,
   clusters,
   defaults = {},
+  showServiceArea = true,
 }: {
   idPrefix: string;
   clusters: VendorClusterOption[];
   defaults?: VendorFormDefaults;
+  showServiceArea?: boolean;
 }) {
   const selected = new Set(defaults.clusterIds ?? []);
   const id = (field: string) => `${idPrefix}-${field}`;
@@ -167,40 +170,53 @@ export function VendorFormFields({
         />
       </div>
 
-      <fieldset className="sm:col-span-2 lg:col-span-3">
-        <legend className="block font-semibold text-slate-700 mb-1.5">
-          Area Layanan (minimal 1 cluster)
-        </legend>
-        {clusters.length === 0 ? (
-          <div className="text-amber-800 bg-amber-50 p-2.5 rounded-lg border border-amber-200">
-            Belum ada cluster aktif. Buat atau aktifkan cluster di menu Wilayah
-            terlebih dahulu.
-          </div>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {clusters.map((cl) => (
-              <label
-                key={cl.id}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-slate-300 cursor-pointer"
-              >
-                <input
-                  type="checkbox"
-                  name="clusterIds"
-                  value={cl.id}
-                  defaultChecked={selected.has(cl.id)}
-                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                />
-                <span className="font-medium text-slate-800">{cl.name}</span>
-                {cl.isActive === false && (
-                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200">
-                    Nonaktif
-                  </span>
-                )}
-              </label>
-            ))}
-          </div>
-        )}
-      </fieldset>
+      {showServiceArea ? (
+        <fieldset className="sm:col-span-2 lg:col-span-3">
+          <legend className="block font-semibold text-slate-700 mb-1.5">
+            Area Layanan (minimal 1 cluster)
+          </legend>
+          {clusters.length === 0 ? (
+            <div className="text-amber-800 bg-amber-50 p-2.5 rounded-lg border border-amber-200">
+              Belum ada cluster aktif. Buat atau aktifkan cluster di menu Wilayah
+              terlebih dahulu.
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {clusters.map((cl) => (
+                <label
+                  key={cl.id}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-slate-300 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    name="clusterIds"
+                    value={cl.id}
+                    defaultChecked={selected.has(cl.id)}
+                    className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <span className="font-medium text-slate-800">{cl.name}</span>
+                  {cl.isActive === false && (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200">
+                      Nonaktif
+                    </span>
+                  )}
+                </label>
+              ))}
+            </div>
+          )}
+        </fieldset>
+      ) : (
+        <div className="sm:col-span-2 lg:col-span-3 p-3 rounded-lg bg-slate-100 text-slate-600 text-xs">
+          Area layanan cluster untuk vendor ini dikelola di menu{" "}
+          <Link
+            href="/dashboard/penanggung-jawab?tab=vendor&view=vendor"
+            className="text-emerald-700 font-bold underline"
+          >
+            Penanggung Jawab
+          </Link>
+          .
+        </div>
+      )}
     </>
   );
 }

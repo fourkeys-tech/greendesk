@@ -35,6 +35,7 @@ function parseActiveFlag(formData: FormData): boolean | undefined {
 }
 
 function revalidateMasterPaths() {
+  revalidatePath("/dashboard/penanggung-jawab");
   revalidatePath("/dashboard/wilayah");
   revalidatePath("/dashboard/wilayah/cetak-qr");
   revalidatePath("/dashboard/akun");

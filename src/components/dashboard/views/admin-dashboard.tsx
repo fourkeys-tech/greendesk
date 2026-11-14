@@ -178,7 +178,7 @@ export function AdminDashboard({
             </div>
           </div>
           <Link
-            href="/dashboard/akun?tab=delegasi"
+            href="/dashboard/penanggung-jawab?tab=manager&view=delegasi"
             className="text-[11px] font-bold text-amber-900 hover:underline px-2.5 py-1 rounded-lg bg-amber-200/70 shrink-0"
           >
             Kelola Delegasi →

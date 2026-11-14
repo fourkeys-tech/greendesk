@@ -6,6 +6,7 @@ import { query, queryCount, queryOne } from "@/lib/db";
 import { activeAssignmentSql } from "@/lib/scopes";
 import { getNavigationForRole, ROLE_METADATA } from "@/lib/permissions";
 import { sanitizeInternalHref } from "@/lib/url-safety";
+import { countIncompleteClusters } from "@/lib/services/cluster-responsibility";
 import { AppSidebar } from "@/components/dashboard/app-sidebar";
 import { MobileBottomNav } from "@/components/dashboard/mobile-bottom-nav";
 import {
@@ -49,6 +50,7 @@ export default async function DashboardLayout({
   let pendingQueueCount = 0;
   let adminVendorBadgeCount = 0;
   let adminReplacementBadgeCount = 0;
+  let adminIncompleteClusterCount = 0;
 
   try {
     [
@@ -58,6 +60,7 @@ export default async function DashboardLayout({
       pendingQueueCount,
       adminVendorBadgeCount,
       adminReplacementBadgeCount,
+      adminIncompleteClusterCount,
     ] = await Promise.all([
       query<{
         id: string;
@@ -171,6 +174,12 @@ export default async function DashboardLayout({
             [session.companyId]
           )
         : Promise.resolve(0),
+      session.role === "ADMIN" && session.companyId
+        ? countIncompleteClusters(session.companyId, now).catch((err) => {
+            console.error("[dashboard/layout] gagal menghitung cluster kurang:", err);
+            return 0;
+          })
+        : Promise.resolve(0),
     ]);
   } catch (err) {
     console.error("[dashboard/layout] gagal memuat data header:", err);
@@ -190,6 +199,9 @@ export default async function DashboardLayout({
   const navBadges: Record<string, number> = {};
   if (pendingQueueCount > 0) {
     navBadges["/dashboard/laporan"] = pendingQueueCount;
+  }
+  if (adminIncompleteClusterCount > 0) {
+    navBadges["/dashboard/penanggung-jawab"] = adminIncompleteClusterCount;
   }
   if (adminVendorBadgeCount > 0) {
     navBadges["/dashboard/vendor"] = adminVendorBadgeCount;
